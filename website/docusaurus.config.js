@@ -94,9 +94,9 @@ const config = {
         content: `⭐️ If you like AIKit, please give it a star on <a target="_blank" rel="noopener noreferrer" href="https://github.com/kaito-project/aikit">GitHub</a>!</a>`,
       },
       algolia: {
-        appId: 'RHJCSXGPIU',
-        apiKey: '87916a9628113114a3b81499694c8fe1',
-        indexName: 'sozercanio',
+        appId: 'BWYV6PMJ5K',
+        apiKey: 'e2cfa004b0a812062660e0039aca0bda',
+        indexName: 'kaito-aikit',
       },
     }),
 };
