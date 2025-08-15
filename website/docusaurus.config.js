@@ -98,6 +98,17 @@ const config = {
         apiKey: 'e2cfa004b0a812062660e0039aca0bda',
         indexName: 'kaito-aikit',
       },
+      headTags: [
+        {
+          tagName: "meta",
+          attributes: {
+            // Allow Algolia crawler to index the site
+            // See https://www.algolia.com/doc/tools/crawler/getting-started/create-crawler/#verify-your-domain.
+            name: "algolia-site-verification",
+            content: "58101301D914B63C",
+          }
+        },
+      ],
     }),
 };
 
