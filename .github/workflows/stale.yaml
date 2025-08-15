@@ -1,0 +1,58 @@
+name: Mark stale issues and pull requests
+
+on:
+  schedule:
+    - cron: '0 1 * * *' # Run daily at 1 AM UTC
+  workflow_dispatch: # Allow manual triggering
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+        with:
+          disable-sudo: true
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+
+      - uses: actions/stale@28ca1036281a5e5922ead5184a1bbf96e5fc984e # v9.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          
+          # Configuration for issues
+          stale-issue-message: >
+            This issue has been automatically marked as stale because it has not had
+            recent activity. It will be closed if no further activity occurs. Thank you
+            for your contributions.
+          close-issue-message: >
+            This issue has been automatically closed because it has not had recent activity.
+            Please feel free to reopen if you believe this issue is still relevant.
+          days-before-stale: 60
+          days-before-close: 14
+          stale-issue-label: 'status/stale'
+          exempt-issue-labels: 'status/blocked,status/in-progress,priority/critical,kind/bug'
+          
+          # Configuration for pull requests
+          stale-pr-message: >
+            This pull request has been automatically marked as stale because it has not had
+            recent activity. It will be closed if no further activity occurs. Thank you
+            for your contributions.
+          close-pr-message: >
+            This pull request has been automatically closed because it has not had recent activity.
+            Please feel free to reopen if you believe this PR is still relevant.
+          days-before-pr-stale: 45
+          days-before-pr-close: 14
+          stale-pr-label: 'status/stale'
+          exempt-pr-labels: 'status/blocked,status/in-progress,priority/critical'
+          
+          # General settings
+          operations-per-run: 200
+          remove-stale-when-updated: true
+          debug-only: false
