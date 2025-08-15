@@ -107,7 +107,7 @@ const config = {
       algolia: {
         appId: 'BWYV6PMJ5K',
         apiKey: 'e2cfa004b0a812062660e0039aca0bda',
-        indexName: 'kaito-aikit',
+        indexName: 'aikit-crawler',
       },
     }),
 };
