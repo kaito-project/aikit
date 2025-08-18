@@ -63,7 +63,7 @@ jobs:
             *.azureedge.net:443
             ghcr.io:443
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
       # need containerd image store for testing local images
       - uses: crazy-max/ghaction-setup-docker@b60f85385d03ac8acfca6d9996982511d8620a19 # v4.3.0
