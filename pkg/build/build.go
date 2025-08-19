@@ -452,7 +452,11 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 		return errors.New("only one backend is supported at this time")
 	}
 
-	if (slices.Contains(c.Backends, utils.BackendExllamaV2) || slices.Contains(c.Backends, utils.BackendMamba) || slices.Contains(c.Backends, utils.BackendDiffusers)) && c.Runtime != utils.RuntimeNVIDIA {
+	if (slices.Contains(c.Backends, utils.BackendExllamaV2) ||
+		slices.Contains(c.Backends, utils.BackendMamba) ||
+		slices.Contains(c.Backends, utils.BackendDiffusers) ||
+		slices.Contains(c.Backends, utils.BackendVLLM)) &&
+		c.Runtime != utils.RuntimeNVIDIA {
 		return errors.New("exllama, mamba, and diffusers backends only supports nvidia cuda runtime. please add 'runtime: cuda' to your aikitfile.yaml")
 	}
 
@@ -460,7 +464,12 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 		return errors.New("apple silicon runtime only supports the default llama-cpp backend")
 	}
 
-	backends := []string{utils.BackendExllamaV2, utils.BackendMamba, utils.BackendDiffusers}
+	backends := []string{
+		utils.BackendExllamaV2,
+		utils.BackendMamba,
+		utils.BackendDiffusers,
+		utils.BackendVLLM,
+	}
 	for _, b := range c.Backends {
 		if !slices.Contains(backends, b) {
 			return errors.Errorf("backend %s is not supported", b)

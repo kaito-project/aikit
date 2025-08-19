@@ -69,6 +69,12 @@ func emptyImage(c *config.InferenceConfig, platform *specs.Platform) *specs.Imag
 				"CUDA_HOME=/usr/local/cuda",
 			}
 			img.Config.Env = append(img.Config.Env, diffusersEnv...)
+		case utils.BackendVLLM:
+			vllmEnv := []string{
+				"EXTERNAL_GRPC_BACKENDS=vllm:/tmp/localai/backend/python/vllm/run.sh",
+				"CUDA_HOME=/usr/local/cuda",
+			}
+			img.Config.Env = append(img.Config.Env, vllmEnv...)
 		}
 	}
 
