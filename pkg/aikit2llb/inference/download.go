@@ -51,7 +51,7 @@ func handleOllamaRegistry(artifactURL string) (string, string) {
 	artifactURLWithoutTag := strings.Split(artifactURL, ":")[0]
 	tag := strings.Split(artifactURL, ":")[1]
 	modelName := strings.Split(artifactURLWithoutTag, "/")[2]
-	orasCmd := fmt.Sprintf("oras blob fetch %[1]s@$(curl https://%[2]s/v2/library/%[3]s/manifests/%[4]s | jq -r '.layers[] | select(.mediaType == \"application/vnd.ollama.image.model\").digest') --output %[2]s", artifactURLWithoutTag, ollamaRegistryURL, modelName, tag)
+	orasCmd := fmt.Sprintf("oras blob fetch %[1]s@$(curl https://%[2]s/v2/library/%[3]s/manifests/%[4]s | jq -r '.layers[] | select(.mediaType == \"application/vnd.ollama.image.model\").digest') --output %[3]s", artifactURLWithoutTag, ollamaRegistryURL, modelName, tag)
 	return modelName, orasCmd
 }
 
