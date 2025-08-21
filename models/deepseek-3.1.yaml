@@ -1,0 +1,51 @@
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
+apiVersion: v1alpha1
+debug: true
+runtime: cuda
+models:
+  - name: DeepSeek-V3.1-UD-Q2_K_XL-00001-of-00006
+    source: https://huggingface.co/unsloth/DeepSeek-V3.1-GGUF/resolve/main/UD-Q2_K_XL/DeepSeek-V3.1-UD-Q2_K_XL-00001-of-00006.gguf
+    sha256: f3ed1fc1de5a76be448cdfe36e0ff3e0206ac042a517b2a1c0e721cdb0e84f9f
+  - name: DeepSeek-V3.1-UD-Q2_K_XL-00002-of-00006
+    source: https://huggingface.co/unsloth/DeepSeek-V3.1-GGUF/resolve/main/UD-Q2_K_XL/DeepSeek-V3.1-UD-Q2_K_XL-00002-of-00006.gguf
+    sha256: e527b9c3106d520b4b4f7371f44e3932b374424ff1c8f55701b62bc01c83def7
+  - name: DeepSeek-V3.1-UD-Q2_K_XL-00003-of-00006
+    source: https://huggingface.co/unsloth/DeepSeek-V3.1-GGUF/resolve/main/UD-Q2_K_XL/DeepSeek-V3.1-UD-Q2_K_XL-00003-of-00006.gguf
+    sha256: 18f3a60b2d8a0f163b2cd5d863014cccd96aac9780081bd114f7260939609b69
+  - name: DeepSeek-V3.1-UD-Q2_K_XL-00004-of-00006
+    source: https://huggingface.co/unsloth/DeepSeek-V3.1-GGUF/resolve/main/UD-Q2_K_XL/DeepSeek-V3.1-UD-Q2_K_XL-00004-of-00006.gguf
+    sha256: 05fd641a2b10353236e684170c375d1f089229db377d7ecbd4ba147f6c6827d1
+  - name: DeepSeek-V3.1-UD-Q2_K_XL-00005-of-00006
+    source: https://huggingface.co/unsloth/DeepSeek-V3.1-GGUF/resolve/main/UD-Q2_K_XL/DeepSeek-V3.1-UD-Q2_K_XL-00005-of-00006.gguf
+    sha256: c45b2732b2e241d38c90fe2c28072abfbfe610cfd213a8e7817bb459032f8d08
+  - name: DeepSeek-V3.1-UD-Q2_K_XL-00006-of-00006
+    source: https://huggingface.co/unsloth/DeepSeek-V3.1-GGUF/resolve/main/UD-Q2_K_XL/DeepSeek-V3.1-UD-Q2_K_XL-00006-of-00006.gguf
+    sha256: 9dcfdfd6c4508bfa6b595b8ba1dae40e73bdde52cd4c8811c30278564325435c
+config: |
+  - name: deepseek-3.1
+    backend: llama-cpp
+    parameters:
+      model: DeepSeek-V3.1-UD-Q2_K_XL-00001-of-00006.gguf
+      temperature: 0.6
+      top_p: 0.95
+    context_size: 131072
+    mmap: true
+    f16: true
+    template:
+      chat_message: |
+        {{if eq .RoleName "system" -}}{{.Content }}
+        {{ end -}}
+        {{if eq .RoleName "user" -}}<｜User｜>{{.Content}}
+        {{end -}}
+        {{if eq .RoleName "assistant" -}}<｜Assistant｜>{{.Content}}<｜end▁of▁sentence｜>{{end}}
+
+      chat: |
+        {{.Input -}}<｜Assistant｜>
+
+      completion: |
+        {{.Input}}
+    stopwords:
+      - <｜begin▁of▁sentence｜>
+      - <｜end▁of▁sentence｜>
+      - <｜User｜>
+      - <｜Assistant｜>
