@@ -11,7 +11,7 @@ on:
       models:
         description: "models to update"
         required: true
-        default: '["llama-3.2-1b-instruct", "llama-3.2-3b-instruct", "llama-3.1-8b-instruct", "phi-3.5-3.8b-instruct", "gemma-2-2b-instruct", "flux-1-dev"]'
+        default: '["llama-3.2-1b-instruct", "llama-3.2-3b-instruct", "llama-3.1-8b-instruct", "phi-3.5-3.8b-instruct", "gemma-2-2b-instruct", "flux-1-dev", "gpt-oss-20b"]'
         type: string
       runtime:
         description: "runtime to build"
@@ -93,9 +93,9 @@ jobs:
 
       - name: parse matrix
         run: |
-          echo "MODEL_NAME=$(echo ${{ matrix.model }} | sed -E 's/^llama-(3\.[1-9])-([0-9]+\.?[0-9]*b)-.*/llama\1/;t; s/^flux-([0-9]+)-dev$/flux\1/;t; s/^phi-(3\.5)-([0-9]+\.?[0-9]*b)-.*/phi\1/;t; s/^([a-z]+)-([0-9]+x[0-9]+b|[0-9]+\.?[0-9]*b)-.*/\1/; s/^([a-z]+)-([0-9]+)-.*/\1\2/; s/^([a-z]+)-([0-9]+\.?[0-9]*b)$/\1/')" >> $GITHUB_ENV
+          echo "MODEL_NAME=$(echo ${{ matrix.model }} | sed -E 's/^llama-(3\.[1-9])-([0-9]+\.?[0-9]*b)-.*/llama\1/;t; s/^flux-([0-9]+)-dev$/flux\1/;t; s/^phi-(3\.5)-([0-9]+\.?[0-9]*b)-.*/phi\1/;t; s/^([a-z]+-[a-z]+)-([0-9]+\.?[0-9]*b)$/\1/;t; s/^([a-z]+)-([0-9]+x[0-9]+b|[0-9]+\.?[0-9]*b)-.*/\1/; s/^([a-z]+)-([0-9]+)-.*/\1\2/; s/^([a-z]+)-([0-9]+\.?[0-9]*b)$/\1/')" >> $GITHUB_ENV
 
-          echo "MODEL_SIZE=$(echo ${{ matrix.model }} | sed -E 's/^llama-(3\.[1-9])-([0-9]+\.?[0-9]*b)-.*/\2/;t; s/^flux-[0-9]+-dev$/dev/;t; s/^[a-z]+-([0-9]+x[0-9]+b|[0-9]+\.?[0-9]*b)-.*/\1/; s/^[a-z]+-[0-9]+(\.[0-9]+)?-([0-9]+\.?[0-9]*b).*/\2/; s/^[a-z]+-([0-9]+\.?[0-9]*b)$/\1/')" >> $GITHUB_ENV
+          echo "MODEL_SIZE=$(echo ${{ matrix.model }} | sed -E 's/^llama-(3\.[1-9])-([0-9]+\.?[0-9]*b)-.*/\2/;t; s/^flux-[0-9]+-dev$/dev/;t; s/^[a-z]+-[a-z]+-([0-9]+\.?[0-9]*b)$/\1/;t; s/^[a-z]+-([0-9]+x[0-9]+b|[0-9]+\.?[0-9]*b)-.*/\1/; s/^[a-z]+-[0-9]+(\.[0-9]+)?-([0-9]+\.?[0-9]*b).*/\2/; s/^[a-z]+-([0-9]+\.?[0-9]*b)$/\1/')" >> $GITHUB_ENV
 
           echo "MODEL_TYPE=-$(echo ${{ matrix.model }} | sed -n -e 's/^flux-[0-9]+-\(dev\)$/\1/p' -e 's/.*\(chat\).*/\1/p' -e 's/.*\(instruct\).*/\1/p')" >> $GITHUB_ENV
 
