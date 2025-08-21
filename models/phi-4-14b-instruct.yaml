@@ -1,0 +1,29 @@
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
+apiVersion: v1alpha1
+debug: true
+runtime: cuda
+models:
+  - name: phi-4-14b-instruct
+    source: https://huggingface.co/unsloth/phi-4-GGUF/resolve/main/phi-4-Q4_K_M.gguf
+    sha256: 01e1f25b3e6931054c6c2227b06f4969828434eebc299e8e171f55dab6814485
+config: |
+  - name: phi-4-14b-instruct
+    backend: llama
+    parameters:
+      model: phi-4-Q4_K_M.gguf
+    context_size: 4096
+    template:
+      chat_message: |
+        <|im_start|>{{ .RoleName }}<|im_sep|>
+        {{.Content}}<|im_end|>
+      chat: |
+        {{.Input}}
+        <|im_start|>assistant<|im_sep|>
+      completion: |
+        {{.Input}}
+    stopwords:
+    - <|end|>
+    - <|endoftext|>
+    - <|im_end|>
+    f16: true
+    mmap: true
