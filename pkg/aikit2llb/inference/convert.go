@@ -12,8 +12,7 @@ import (
 )
 
 const (
-	// distrolessBase = "ghcr.io/kaito-project/aikit/base:latest".
-	distrolessBase = "docker.io/sozercan/base:test"
+	distrolessBase = "ghcr.io/kaito-project/aikit/base:latest"
 	localAIRepo    = "https://github.com/mudler/LocalAI"
 	localAIVersion = "v3.4.0"
 	cudaVersion    = "12-5"
