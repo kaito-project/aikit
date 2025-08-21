@@ -2,16 +2,10 @@ name: docker-test
 
 on:
   push:
-    branches:
-      - main
-      - 'release-*'
     paths-ignore:
       - '**.md'
       - 'website/**'
   pull_request:
-    branches:
-      - main
-      - 'release-*'
     paths-ignore:
       - '**.md'
       - 'website/**'
