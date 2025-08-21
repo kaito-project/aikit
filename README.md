@@ -73,9 +73,9 @@ Output should be similar to:
 
 That's it! 🎉 API is OpenAI compatible so this is a drop-in replacement for any OpenAI API compatible client.
 
-## Pre-made Models
+## Model Gallery
 
-AIKit comes with pre-made models that you can use out-of-the-box!
+AIKit comes with a model gallery that you can use out-of-the-box!
 
 If it doesn't include a specific model, you can always [create your own images](https://kaito-project.github.io/aikit/docs/create-images), and host in a container registry of your choice!
 

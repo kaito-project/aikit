@@ -1,8 +1,8 @@
 ---
-title: Pre-made Models
+title: Model Gallery
 ---
 
-AIKit comes with pre-made models that you can use out-of-the-box!
+AIKit comes with a model gallery that you can use out-of-the-box!
 
 If it doesn't include a specific model, you can always [create your own images](https://kaito-project.github.io/aikit/premade-models/), and host in a container registry of your choice!
 
@@ -45,11 +45,11 @@ Depending on your CPU capabilities, AIKit will automatically select the most opt
 | 🤖 GPT-OSS       |               | 120B       | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/gpt-oss:120b`  | `gpt-oss-120b`           | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/)                                                               |
 
 :::note
-Please see [models folder](https://github.com/kaito-project/aikit/tree/main/models) for pre-made model definitions.
+Please see [models folder](https://github.com/kaito-project/aikit/tree/main/models) for model gallery definitions.
 
 If not being offloaded to GPU VRAM, minimum of 8GB of RAM is required for 7B models, 16GB of RAM to run 13B models, and 32GB of RAM to run 8x7B models.
 
-All pre-made models include CUDA v12 libraries. They are used with [NVIDIA GPU acceleration](gpu.md). If a supported NVIDIA GPU is not found in your system, AIKit will automatically fallback to CPU with the most optimized runtime (`avx2`, `avx`, or `fallback`).
+All model gallery images include CUDA v12 libraries. They are used with [NVIDIA GPU acceleration](gpu.md). If a supported NVIDIA GPU is not found in your system, AIKit will automatically fallback to CPU with the most optimized runtime (`avx2`, `avx`, or `fallback`).
 :::
 
 ## Apple Silicon (experimental)
