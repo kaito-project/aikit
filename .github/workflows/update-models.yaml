@@ -11,7 +11,7 @@ on:
       models:
         description: "models to update"
         required: true
-        default: '["llama-3.2-1b-instruct", "llama-3.2-3b-instruct", "llama-3.1-8b-instruct", "phi-4-14b-instruct", "gemma-2-2b-instruct", "flux-1-dev", "gpt-oss-20b"]'
+        default: '["llama-3.2-1b-instruct", "llama-3.2-3b-instruct", "llama-3.1-8b-instruct", "phi-4-14b-instruct", "gemma-2-2b-instruct", "flux-1-dev"]'
         type: string
       runtime:
         description: "runtime to build"

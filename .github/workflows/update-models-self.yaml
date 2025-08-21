@@ -6,7 +6,7 @@ on:
       models:
         description: "models to update"
         required: true
-        default: '["llama-3.3-70b-instruct", "mixtral-8x7b-instruct", "codestral-22b", "qwq-32b", "gpt-oss-120b"]'
+        default: '["llama-3.3-70b-instruct", "mixtral-8x7b-instruct", "codestral-22b", "qwq-32b", "gpt-oss-20b", "gpt-oss-120b"]'
         type: string
       staging:
         description: "push to test registry"
