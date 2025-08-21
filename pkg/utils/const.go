@@ -5,8 +5,10 @@ const (
 	RuntimeAppleSilicon = "applesilicon" // experimental apple silicon runtime with vulkan arm64 support
 
 	BackendExllamaV2 = "exllama2"
-	BackendMamba     = "mamba"
 	BackendDiffusers = "diffusers"
+	BackendLlamaCpp  = "llama-cpp"
+
+	BackendOCIRegistry = "quay.io/go-skynet/local-ai-backends"
 
 	TargetUnsloth = "unsloth"
 

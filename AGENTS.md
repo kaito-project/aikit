@@ -5,7 +5,7 @@ Trust this file first. Search the repo ONLY if info needed for your task is miss
 
 Summary / Stack
 ---------------
-AIKit builds minimal container images bundling open AI model artifacts (LLMs, diffusion, mamba, etc.) plus an OpenAI‑compatible runtime (LocalAI). Declarative YAML ("aikitfile") -> parsed & validated -> transformed into a BuildKit LLB graph -> multi‑arch Docker image (CPU; optional CUDA; experimental Apple Silicon via Podman). Primary language: Go. Aux: YAML (Helm, specs), Docker, Markdown, a Docusaurus (Node 18+) docs site.
+AIKit builds minimal container images bundling open AI model artifacts (LLMs, diffusion, etc.) plus an OpenAI‑compatible runtime (LocalAI). Declarative YAML ("aikitfile") -> parsed & validated -> transformed into a BuildKit LLB graph -> multi‑arch Docker image (CPU; optional CUDA; experimental Apple Silicon via Podman). Primary language: Go. Aux: YAML (Helm, specs), Docker, Markdown, a Docusaurus (Node 18+) docs site.
 
 Repo Size & Layout (Key Paths)
 ------------------------------

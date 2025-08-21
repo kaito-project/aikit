@@ -52,7 +52,7 @@ jobs:
       - name: Harden Runner
         uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
         with:
-          egress-policy: block
+          egress-policy: audit
           allowed-endpoints: >
             auth.docker.io:443
             huggingface.co:443
@@ -68,8 +68,8 @@ jobs:
             rekor.sigstore.dev:443
             storage.googleapis.com:443
             tuf-repo-cdn.sigstore.dev:443
-            sertaccdnvs.azureedge.net:443
-            sertacstoragevs.blob.core.windows.net:443
+            *.azureedge.net:443
+            *.blob.core.windows.net:443
             developer.download.nvidia.com:443
             *.ubuntu.com:80
             pypi.org:443

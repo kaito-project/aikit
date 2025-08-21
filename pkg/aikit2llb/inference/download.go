@@ -13,14 +13,16 @@ import (
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-const orasImage = "ghcr.io/oras-project/oras:v1.2.0"
+const (
+	orasImage         = "ghcr.io/oras-project/oras:v1.2.0"
+	ollamaRegistryURL = "registry.ollama.ai"
+)
 
 // handleOCI handles OCI artifact downloading and processing.
 func handleOCI(source string, s llb.State, platform specs.Platform) llb.State {
 	toolingImage := llb.Image(orasImage, llb.Platform(platform))
 
 	artifactURL := strings.TrimPrefix(source, "oci://")
-	const ollamaRegistryURL = "registry.ollama.ai"
 	var orasCmd, modelName string
 
 	if strings.HasPrefix(artifactURL, ollamaRegistryURL) {
@@ -49,7 +51,7 @@ func handleOllamaRegistry(artifactURL string) (string, string) {
 	artifactURLWithoutTag := strings.Split(artifactURL, ":")[0]
 	tag := strings.Split(artifactURL, ":")[1]
 	modelName := strings.Split(artifactURLWithoutTag, "/")[2]
-	orasCmd := fmt.Sprintf("oras blob fetch %[1]s@$(curl https://registry.ollama.ai/v2/library/%[2]s/manifests/%[3]s | jq -r '.layers[] | select(.mediaType == \"application/vnd.ollama.image.model\").digest') --output %[2]s", artifactURLWithoutTag, modelName, tag)
+	orasCmd := fmt.Sprintf("oras blob fetch %[1]s@$(curl https://%[2]s/v2/library/%[3]s/manifests/%[4]s | jq -r '.layers[] | select(.mediaType == \"application/vnd.ollama.image.model\").digest') --output %[3]s", artifactURLWithoutTag, ollamaRegistryURL, modelName, tag)
 	return modelName, orasCmd
 }
 

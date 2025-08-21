@@ -52,6 +52,7 @@ models:
           {{.Input }}
           <|start_header_id|>assistant<|end_header_id|>
       - name: completion
+        template: |
           {{.Input}}
 config: |
   - name: llama-3.2-1b-instruct

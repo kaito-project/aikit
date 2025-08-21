@@ -48,7 +48,7 @@ jobs:
       - name: Harden Runner
         uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
         with:
-          egress-policy: block
+          egress-policy: audit
           allowed-endpoints: >
             auth.docker.io:443
             huggingface.co:443
@@ -71,6 +71,7 @@ jobs:
             *.ubuntu.com:80
             ghcr.io:443
             sum.golang.org:443
+            quay.io:443
 
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
@@ -161,7 +162,7 @@ jobs:
       - name: Harden Runner
         uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
         with:
-          egress-policy: block
+          egress-policy: audit
           allowed-endpoints: >
             auth.docker.io:443
             huggingface.co:443
@@ -186,6 +187,7 @@ jobs:
             *.cloudflarestorage.com:443
             ghcr.io:443
             sum.golang.org:443
+            quay.io:443
 
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 

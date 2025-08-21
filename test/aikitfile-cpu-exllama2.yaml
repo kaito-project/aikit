@@ -1,0 +1,19 @@
+#syntax=aikit:test
+apiVersion: v1alpha1
+debug: true
+backends:
+  - exllama2
+models:
+  - name: Llama2-7B-chat-exl2/output.safetensors
+    source: https://huggingface.co/turboderp/Llama2-7B-chat-exl2/resolve/2.5bpw/output.safetensors
+  - name: Llama2-7B-chat-exl2/tokenizer.model
+    source: https://huggingface.co/turboderp/Llama2-7B-chat-exl2/resolve/2.5bpw/tokenizer.model
+  - name: Llama2-7B-chat-exl2/config.json
+    source: https://huggingface.co/turboderp/Llama2-7B-chat-exl2/raw/2.5bpw/config.json
+config: |
+  - name: llama-2-7b-chat
+    backend: exllama2
+    context_size: 4096
+    parameters:
+      model: "Llama2-7B-chat-exl2"
+      temperature: 0.2

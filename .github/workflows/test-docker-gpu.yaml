@@ -14,7 +14,6 @@ on:
           - exllama2-gptq
           - exllama2-exl2
           - diffusers
-          - mamba
 
 permissions: read-all
 
@@ -26,7 +25,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        backend: ${{ inputs.backend == 'all' && fromJson('["llama-cuda", "exllama2-gptq", "exllama2-exl2", "diffusers", "mamba"]') || fromJson(format('["{0}"]', inputs.backend)) }}
+        backend: ${{ inputs.backend == 'all' && fromJson('["llama-cuda", "exllama2-gptq", "exllama2-exl2", "diffusers"]') || fromJson(format('["{0}"]', inputs.backend)) }}
     steps:
       - name: cleanup workspace
         run: |
@@ -83,20 +82,6 @@ jobs:
             exit 1
           fi
 
-      - name: run test (mamba)
-        if: matrix.backend == 'mamba'
-        run: |
-          result=$(curl --fail --retry 10 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
-            "model": "mamba-chat",
-            "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
-          }')
-          echo $result
-
-          choices=$(echo "$result" | jq '.choices')
-          if [ -z "$choices" ]; then
-            exit 1
-          fi
-
       - name: run test (diffusers)
         if: matrix.backend == 'diffusers'
         run: |
@@ -114,7 +99,7 @@ jobs:
 
       - name: save generated image
         if: matrix.backend == 'diffusers'
-        run: docker cp testmodel:/tmp/generated/images /tmp
+        run: docker cp testmodel:/tmp/generated/content/images /tmp
 
       - name: save logs
         if: always()

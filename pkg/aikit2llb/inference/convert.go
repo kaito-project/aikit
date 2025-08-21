@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	distrolessBase = "ghcr.io/kaito-project/aikit/base:latest"
+	// distrolessBase = "ghcr.io/kaito-project/aikit/base:latest".
+	distrolessBase = "docker.io/sozercan/base:test"
 	localAIRepo    = "https://github.com/mudler/LocalAI"
-	localAIVersion = "v2.26.0"
+	localAIVersion = "v3.4.0"
 	cudaVersion    = "12-5"
 )
 
@@ -34,7 +35,7 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 		return state, nil, err
 	}
 
-	state, merge, err = addLocalAI(c, state, merge, *platform)
+	state, merge, err = addLocalAI(state, merge, *platform)
 	if err != nil {
 		return state, nil, err
 	}
@@ -45,16 +46,7 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 	}
 
 	// install backend dependencies
-	for b := range c.Backends {
-		switch c.Backends[b] {
-		case utils.BackendExllamaV2:
-			merge = installExllama(state, merge)
-		case utils.BackendMamba:
-			merge = installMamba(state, merge)
-		case utils.BackendDiffusers:
-			merge = installDiffusers(state, merge)
-		}
-	}
+	merge = installBackends(c, *platform, state, merge)
 
 	imageCfg := NewImageConfig(c, platform)
 	return merge, imageCfg, nil
@@ -105,7 +97,8 @@ func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, platform
 
 	// create config file if defined
 	if c.Config != "" {
-		s = s.Run(utils.Shf("mkdir -p /configuration && echo -n \"%s\" > /config.yaml", c.Config)).Root()
+		s = s.Run(utils.Shf("mkdir -p /configuration && echo -n \"%s\" > /config.yaml", c.Config),
+			llb.WithCustomName(fmt.Sprintf("Creating config for platform %s/%s", platform.OS, platform.Architecture))).Root()
 	}
 
 	diff := llb.Diff(savedState, s)
@@ -141,11 +134,6 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 
 			s = s.Run(utils.Sh(exllamaDeps)).Root()
 		}
-
-		if c.Backends[b] == utils.BackendMamba {
-			mambaDeps := fmt.Sprintf("apt-get install -y --no-install-recommends cuda-crt-%[1]s cuda-cudart-dev-%[1]s cuda-nvcc-%[1]s && apt-get clean", cudaVersion)
-			s = s.Run(utils.Sh(mambaDeps)).Root()
-		}
 	}
 
 	diff := llb.Diff(savedState, s)
@@ -153,21 +141,17 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 }
 
 // addLocalAI adds the LocalAI binary to the image.
-func addLocalAI(c *config.InferenceConfig, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State, error) {
+func addLocalAI(s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State, error) {
 	var localAIURL string
-	if c.Runtime == utils.RuntimeAppleSilicon {
-		localAIURL = fmt.Sprintf("https://sertaccdnvs.azureedge.net/localai/%[1]s/kompute/local-ai", localAIVersion)
-	} else {
-		binaryNames := map[string]string{
-			utils.PlatformAMD64: "local-ai-Linux-x86_64",
-			utils.PlatformARM64: "local-ai-Linux-arm64",
-		}
-		binaryName, exists := binaryNames[platform.Architecture]
-		if !exists {
-			return s, merge, fmt.Errorf("unsupported architecture %s", platform.Architecture)
-		}
-		localAIURL = fmt.Sprintf("https://github.com/mudler/LocalAI/releases/download/%[1]s/%[2]s", localAIVersion, binaryName)
+	binaryNames := map[string]string{
+		utils.PlatformAMD64: "local-ai-v3.4.0-linux-amd64",
+		utils.PlatformARM64: "local-ai-v3.4.0-linux-arm64",
 	}
+	binaryName, exists := binaryNames[platform.Architecture]
+	if !exists {
+		return s, merge, fmt.Errorf("unsupported architecture %s", platform.Architecture)
+	}
+	localAIURL = fmt.Sprintf("https://github.com/mudler/LocalAI/releases/download/%[1]s/%[2]s", localAIVersion, binaryName)
 
 	savedState := s
 
@@ -181,9 +165,4 @@ func addLocalAI(c *config.InferenceConfig, s llb.State, merge llb.State, platfor
 
 	diff := llb.Diff(savedState, s)
 	return s, llb.Merge([]llb.State{merge, diff}), nil
-}
-
-// cloneLocalAI clones the LocalAI repository to the image used for python backends.
-func cloneLocalAI(s llb.State) llb.State {
-	return s.Run(utils.Shf("git clone --filter=blob:none --no-checkout %[1]s /tmp/localai/ && cd /tmp/localai && git sparse-checkout init --cone && git sparse-checkout set backend/python && git checkout %[2]s && rm -rf .git", localAIRepo, localAIVersion)).Root()
 }

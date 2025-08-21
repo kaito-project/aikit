@@ -54,7 +54,6 @@ const sidebars = {
       items: [
         'llama-cpp',
         'exllama2',
-        'mamba',
         'diffusion',
       ],
     },
