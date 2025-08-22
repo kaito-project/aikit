@@ -1,0 +1,86 @@
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
+apiVersion: v1alpha1
+debug: true
+runtime: cuda
+models:
+  - name: gpt-oss-120b-1
+    source: https://huggingface.co/ggml-org/gpt-oss-120b-GGUF/resolve/main/gpt-oss-120b-mxfp4-00001-of-00003.gguf
+    sha256: e2865eb6c1df7b2ffbebf305cd5d9074d5ccc0fe3b862f98d343a46dad1606f9
+  - name: gpt-oss-120b-2
+    source: https://huggingface.co/ggml-org/gpt-oss-120b-GGUF/resolve/main/gpt-oss-120b-mxfp4-00002-of-00003.gguf
+    sha256: "346492f65891fb27cac5c74a8c07626cbfeb4211cd391ec4de37dbbe3109a93b"
+  - name: gpt-oss-120b-3
+    source: https://huggingface.co/ggml-org/gpt-oss-120b-GGUF/resolve/main/gpt-oss-120b-mxfp4-00003-of-00003.gguf
+    sha256: "66dca81040933f5a49177e82c479c51319cefb83bd22dad9f06dad45e25f1463"
+config: |
+  - name: gpt-oss-120b
+    backend: llama-cpp
+    parameters:
+      model: gpt-oss-120b-mxfp4-00001-of-00003.gguf
+    context_size: 8192
+    f16: true
+    mmap: true
+    template:
+      chat_message: |-
+        <|start|>{{ if .FunctionCall -}}functions.{{ .FunctionCall.Name }} to=assistant{{ else if eq .RoleName \"assistant\"}}assistant<|channel|>final<|message|>{{else}}{{ .RoleName }}{{end}}<|message|>
+        {{- if .Content -}}
+        {{- .Content -}}
+        {{- end -}}
+        {{- if .FunctionCall -}}
+        {{- toJson .FunctionCall -}}
+        {{- end -}}<|end|>
+
+      function: |-
+        <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+        Knowledge cutoff: 2024-06
+        Current date: {{ now | date \"Mon Jan 2 15:04:05 MST 2006\" }}
+
+        Reasoning: {{if eq .ReasoningEffort \"\"}}medium{{else}}{{.ReasoningEffort}}{{end}}
+
+        # {{with .Metadata}}{{ if ne .system_prompt \"\" }}{{ .system_prompt }}{{ end }}{{else}}You are a friendly and helpful assistant.{{ end }}<|end|>{{- .Input -}}<|start|>assistant
+
+        # Tools
+
+        ## functions
+
+        namespace functions {
+        {{-range .Functions}}
+        {{if .Description }}
+        // {{ .Description }}
+        {{- end }}
+        {{- if and .Parameters.Properties (gt (len .Parameters.Properties) 0) }}
+        type {{ .Name }} = (_: {
+        {{- range $name, $prop := .Parameters.Properties }}
+        {{- if $prop.Description }}
+          // {{ $prop.Description }}
+        {{- end }}
+          {{ $name }}: {{ if gt (len $prop.Type) 1 }}{{ range $i, $t := $prop.Type }}{{ if $i }} | {{ end }}{{ $t }}{{ end }}{{ else }}{{ index $prop.Type 0 }}{{ end }},
+        {{- end }}
+        }) => any;
+        {{- else }}
+        type {{ .Function.Name }} = () => any;
+        {{- end }}
+        {{- end }}{{/* end of range .Functions */}}
+        } // namespace functions
+
+        # Instructions
+
+        <|end|>{{.Input -}}<|start|>assistant
+
+      chat: |-
+        <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+        Knowledge cutoff: 2024-06
+        Current date: {{ now | date \"Mon Jan 2 15:04:05 MST 2006\" }}
+
+        Reasoning: {{if eq .ReasoningEffort \"\"}}medium{{else}}{{.ReasoningEffort}}{{end}}
+
+        # {{with .Metadata}}{{ if ne .system_prompt \"\" }}{{ .system_prompt }}{{ end }}{{else}}You are a friendly and helpful assistant.{{ end }}<|end|>{{- .Input -}}<|start|>assistant
+
+      completion: |-
+        {{.Input}}
+    stopwords:
+      - '<|im_end|>'
+      - '<dummy32000>'
+      - '</s>'
+      - '<|endoftext|>'
+      - '<|end|>s'

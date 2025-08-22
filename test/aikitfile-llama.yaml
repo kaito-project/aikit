@@ -1,6 +1,8 @@
 #syntax=sozercan/aikit:test
 apiVersion: v1alpha1
 debug: true
+backends:
+  - llama-cpp
 models:
   - name: llama-3.2-1b-instruct
     source: https://huggingface.co/MaziyarPanahi/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct.Q4_K_M.gguf
@@ -51,6 +53,7 @@ models:
           {{.Input }}
           <|start_header_id|>assistant<|end_header_id|>
       - name: completion
+        template: |
           {{.Input}}
 config: |
   - name: llama-3.2-1b-instruct

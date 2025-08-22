@@ -1,6 +1,7 @@
-VERSION := v0.18.0
+VERSION := v0.19.0
 
 REGISTRY ?= ghcr.io/kaito-project
+REPOSITORY ?= /aikit
 KIND_VERSION ?= 0.29.0
 KUBERNETES_VERSION ?= 1.33.2
 HELM_VERSION ?= 3.18.3
@@ -21,8 +22,10 @@ lint:
 
 .PHONY: build-aikit
 build-aikit:
-	docker buildx build . -t ${REGISTRY}/aikit:${TAG} --output=${OUTPUT_TYPE} \
+	docker buildx build . -t ${REGISTRY}${REPOSITORY}/aikit:${TAG} \
+		--output=${OUTPUT_TYPE} \
 		--build-arg LDFLAGS=${LDFLAGS} \
+		--platform ${PLATFORMS} \
 		--progress=plain
 
 .PHONY: build-aikit-leader-binary
@@ -31,29 +34,30 @@ build-aikit-leader-binary:
 
 .PHONY: build-test-model
 build-test-model:
-	docker buildx build . -t ${REGISTRY}/${TEST_IMAGE_NAME}:${TAG} -f ${TEST_FILE} \
+	docker buildx build . -t ${REGISTRY}${REPOSITORY}/${TEST_IMAGE_NAME}:${TAG} -f ${TEST_FILE} \
 		--progress=plain --provenance=false \
 		--output=${OUTPUT_TYPE} \
 		--build-arg runtime=${RUNTIME} \
 		--platform ${PLATFORMS}
 
-.PHONY: build-distroless-base
-push-distroless-base:
-	docker buildx build . -t kaito-project/aikit/base:latest -f Dockerfile.base \
-		--platform linux/amd64,linux/arm64 \
+.PHONY: build-base
+build-base:
+	docker buildx build . -t ${REGISTRY}${REPOSITORY}/base:latest -f Dockerfile.base \
+		--platform ${PLATFORMS} \
+		--output=${OUTPUT_TYPE} \
 		--sbom=true --push
 
 .PHONY: run-test-model
 run-test-model:
-	docker run --rm -p 8080:8080 ${REGISTRY}/aikit/${TEST_IMAGE_NAME}:${TAG}
+	docker run --rm -p 8080:8080 ${REGISTRY}${REPOSITORY}/${TEST_IMAGE_NAME}:${TAG}
 
 .PHONY: run-test-model-gpu
 run-test-model-gpu:
-	docker run --rm -p 8080:8080 --gpus all ${REGISTRY}/aikit/${TEST_IMAGE_NAME}:${TAG}
+	docker run --rm -p 8080:8080 --gpus all ${REGISTRY}${REPOSITORY}/${TEST_IMAGE_NAME}:${TAG}
 
 .PHONY: run-test-model-applesilicon
 run-test-model-applesilicon:
-	podman run --rm -p 8080:8080 --device /dev/dri ${REGISTRY}/aikit/${TEST_IMAGE_NAME}:${TAG}
+	podman run --rm -p 8080:8080 --device /dev/dri ${REGISTRY}${REPOSITORY}/${TEST_IMAGE_NAME}:${TAG}
 
 .PHONY: test
 test:

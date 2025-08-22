@@ -14,9 +14,9 @@ https://www.youtube.com/watch?v=yFh_Zfk34PE
 
 https://www.youtube.com/watch?v=O0AOnxXp-o4
 
-### Using Stable Diffusion to generate images
+### Using Flux-1 Dev to generate images
 
-https://www.youtube.com/watch?v=gh7b-rt70Ug
+https://www.youtube.com/watch?v=m38h4afJlBE
 
 ## Building a model image
 

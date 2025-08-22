@@ -11,7 +11,7 @@ on:
       models:
         description: "models to update"
         required: true
-        default: '["llama-3.2-1b-instruct", "llama-3.2-3b-instruct", "llama-3.1-8b-instruct", "phi-3.5-3.8b-instruct", "gemma-2-2b-instruct", "flux-1-dev"]'
+        default: '["llama-3.2-1b-instruct", "llama-3.2-3b-instruct", "llama-3.1-8b-instruct", "phi-4-14b-instruct", "gemma-2-2b-instruct", "flux-1-dev"]'
         type: string
       runtime:
         description: "runtime to build"
@@ -52,7 +52,7 @@ jobs:
       - name: Harden Runner
         uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
         with:
-          egress-policy: block
+          egress-policy: audit
           allowed-endpoints: >
             auth.docker.io:443
             huggingface.co:443
@@ -68,14 +68,14 @@ jobs:
             rekor.sigstore.dev:443
             storage.googleapis.com:443
             tuf-repo-cdn.sigstore.dev:443
-            sertaccdnvs.azureedge.net:443
-            sertacstoragevs.blob.core.windows.net:443
+            *.azureedge.net:443
+            *.blob.core.windows.net:443
             developer.download.nvidia.com:443
             *.ubuntu.com:80
             pypi.org:443
             files.pythonhosted.org:443
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
@@ -85,7 +85,7 @@ jobs:
       - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3.1.0
 
       - name: Login to GHCR
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -93,9 +93,9 @@ jobs:
 
       - name: parse matrix
         run: |
-          echo "MODEL_NAME=$(echo ${{ matrix.model }} | sed -E 's/^llama-(3\.[1-9])-([0-9]+\.?[0-9]*b)-.*/llama\1/;t; s/^flux-([0-9]+)-dev$/flux\1/;t; s/^phi-(3\.5)-([0-9]+\.?[0-9]*b)-.*/phi\1/;t; s/^([a-z]+)-([0-9]+x[0-9]+b|[0-9]+\.?[0-9]*b)-.*/\1/; s/^([a-z]+)-([0-9]+)-.*/\1\2/; s/^([a-z]+)-([0-9]+\.?[0-9]*b)$/\1/')" >> $GITHUB_ENV
+          echo "MODEL_NAME=$(echo ${{ matrix.model }} | sed -E 's/^llama-(3\.[1-9])-([0-9]+\.?[0-9]*b)-.*/llama\1/;t; s/^flux-([0-9]+)-dev$/flux\1/;t; s/^phi-(3\.5)-([0-9]+\.?[0-9]*b)-.*/phi\1/;t; s/^([a-z]+-[a-z]+)-([0-9]+\.?[0-9]*b)$/\1/;t; s/^([a-z]+)-([0-9]+x[0-9]+b|[0-9]+\.?[0-9]*b)-.*/\1/; s/^([a-z]+)-([0-9]+)-.*/\1\2/; s/^([a-z]+)-([0-9]+\.?[0-9]*b)$/\1/')" >> $GITHUB_ENV
 
-          echo "MODEL_SIZE=$(echo ${{ matrix.model }} | sed -E 's/^llama-(3\.[1-9])-([0-9]+\.?[0-9]*b)-.*/\2/;t; s/^flux-[0-9]+-dev$/dev/;t; s/^[a-z]+-([0-9]+x[0-9]+b|[0-9]+\.?[0-9]*b)-.*/\1/; s/^[a-z]+-[0-9]+(\.[0-9]+)?-([0-9]+\.?[0-9]*b).*/\2/; s/^[a-z]+-([0-9]+\.?[0-9]*b)$/\1/')" >> $GITHUB_ENV
+          echo "MODEL_SIZE=$(echo ${{ matrix.model }} | sed -E 's/^llama-(3\.[1-9])-([0-9]+\.?[0-9]*b)-.*/\2/;t; s/^flux-[0-9]+-dev$/dev/;t; s/^[a-z]+-[a-z]+-([0-9]+\.?[0-9]*b)$/\1/;t; s/^[a-z]+-([0-9]+x[0-9]+b|[0-9]+\.?[0-9]*b)-.*/\1/; s/^[a-z]+-[0-9]+(\.[0-9]+)?-([0-9]+\.?[0-9]*b).*/\2/; s/^[a-z]+-([0-9]+\.?[0-9]*b)$/\1/')" >> $GITHUB_ENV
 
           echo "MODEL_TYPE=-$(echo ${{ matrix.model }} | sed -n -e 's/^flux-[0-9]+-\(dev\)$/\1/p' -e 's/.*\(chat\).*/\1/p' -e 's/.*\(instruct\).*/\1/p')" >> $GITHUB_ENV
 

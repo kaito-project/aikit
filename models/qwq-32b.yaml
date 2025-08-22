@@ -1,0 +1,61 @@
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
+apiVersion: v1alpha1
+debug: true
+runtime: cuda
+models:
+  - name: qwq-32b
+    source: https://huggingface.co/unsloth/QwQ-32B-GGUF/resolve/main/QwQ-32B-Q4_K_M.gguf
+    sha256: 39dc40d34d44d66406e9ad94416585839daa5edc35425f6f6925c35e149aa5f5
+config: |
+  - name: qwq-32b
+    backend: llama-cpp
+    parameters:
+      model: QwQ-32B-Q4_K_M.gguf
+      top_k: 40
+      temperature: 0.6
+      top_p: 0.95
+    context_size: 8192
+    repeat_penalty: 1
+    template:
+      chat_message: |
+        <|im_start|>{{ .RoleName }}
+        {{ if .FunctionCall -}}
+        Function call:
+        {{ else if eq .RoleName \"tool\" -}}
+        Function response:
+        {{ end -}}
+        {{ if .Content -}}
+        {{.Content }}
+        {{ end -}}
+        {{ if .FunctionCall -}}
+        {{toJson .FunctionCall}}
+        {{ end -}}<|im_end|>
+      function: |
+        <|im_start|>system
+        # Tools
+
+        You may call one or more functions to assist with the user query.
+
+        You are provided with function signatures within <tools></tools> XML tags:
+        <tools>
+        {{range .Functions}}
+        {'type': 'function', 'function': {'name': '{{.Name}}', 'description': '{{.Description}}', 'parameters': {{toJson .Parameters}} }}
+        {{end}}
+        </tools>
+        For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+        <tool_call>
+        {\"name\": <function-name>, \"arguments\": <args-json-object>}
+        </tool_call>
+        <|im_end|>
+        {{.Input -}}
+        <|im_start|>assistant
+      chat: |
+        {{.Input -}}
+        <|im_start|>assistant
+      completion: |
+        {{.Input}}
+    f16: true
+    mmap: true
+    stopwords:
+      - \"<|im_start|>\"
+      - \"<|im_end|>\"
