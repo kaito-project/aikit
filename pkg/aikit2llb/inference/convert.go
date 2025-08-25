@@ -94,9 +94,13 @@ func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, platform
 		}
 	}
 
-	// create config file if defined
-	if c.Config != "" {
-		s = s.Run(utils.Shf("mkdir -p /configuration && echo -n \"%s\" > /config.yaml", c.Config),
+	// create config file if defined or if preload is enabled
+	configContent := c.Config
+	if c.PreloadModels {
+		configContent = generateLocalAIConfig(c, configContent)
+	}
+	if configContent != "" {
+		s = s.Run(utils.Shf("mkdir -p /configuration && echo -n \"%s\" > /config.yaml", configContent),
 			llb.WithCustomName(fmt.Sprintf("Creating config for platform %s/%s", platform.OS, platform.Architecture))).Root()
 	}
 
@@ -164,4 +168,32 @@ func addLocalAI(s llb.State, merge llb.State, platform specs.Platform) (llb.Stat
 
 	diff := llb.Diff(savedState, s)
 	return s, llb.Merge([]llb.State{merge, diff}), nil
+}
+
+// generateLocalAIConfig generates LocalAI configuration with preload settings.
+func generateLocalAIConfig(c *config.InferenceConfig, existingConfig string) string {
+	if !c.PreloadModels {
+		return existingConfig
+	}
+
+	preloadConfig := "preload_models:\n"
+	for _, model := range c.Models {
+		var modelFileName string
+		if _, err := url.ParseRequestURI(model.Source); err == nil {
+			// For URLs, extract the filename from the URL
+			modelFileName = utils.FileNameFromURL(model.Source)
+		} else {
+			// For local paths, use the basename
+			parts := strings.Split(model.Source, "/")
+			modelFileName = parts[len(parts)-1]
+		}
+		preloadConfig += fmt.Sprintf("  - id: %s\n", model.Name)
+		preloadConfig += fmt.Sprintf("    name: %s\n", modelFileName)
+		preloadConfig += "    preload: true\n"
+	}
+
+	if existingConfig != "" {
+		return existingConfig + "\n" + preloadConfig
+	}
+	return preloadConfig
 }
