@@ -25,7 +25,7 @@ extract_model_type() {
     echo "$1" | sed -n -e 's/^flux-[0-9]+-\(dev\)$/\1/p' -e 's/.*\(chat\).*/\1/p' -e 's/.*\(instruct\).*/\1/p'
 }
 
-for MODEL in "llama-2-7b-chat" "llama-2-13b-chat" "llama-3-8b-instruct" "llama-3.1-8b-instruct" "llama-3.2-1b-instruct" "llama-3.2-3b-instruct" "phi-3-3.8b" "phi-3.5-3.8b-instruct" "gemma-2b-instruct" "gemma-2-2b-instruct" "codestral-22b" "llama-3-70b-instruct" "llama-3.3-70b-instruct" "mixtral-8x7b-instruct" "flux-1-dev" "qwq-32b" "phi-4-14b-instruct" "gpt-oss-20b" "gpt-oss-120b"; do
+for MODEL in "llama-2-7b-chat" "llama-2-13b-chat" "llama-3-8b-instruct" "llama-3.1-8b-instruct" "llama-3.2-1b-instruct" "llama-3.2-3b-instruct" "phi-3-3.8b" "phi-3.5-3.8b-instruct" "gemma-2b-instruct" "gemma-3-4b-instruct" "codestral-22b" "llama-3-70b-instruct" "llama-3.3-70b-instruct" "mixtral-8x7b-instruct" "flux-1-dev" "qwq-32b" "phi-4-14b-instruct" "gpt-oss-20b" "gpt-oss-120b"; do
     echo "Model: $MODEL"
     echo " Name: $(extract_model_name "$MODEL")"
     echo " Size: $(extract_model_size "$MODEL")"
