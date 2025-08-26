@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.arch == 'arm64' && 'github-arm64-2c-8gb' || 'ubuntu-latest' }}
     timeout-minutes: 240
     strategy:
       fail-fast: false
