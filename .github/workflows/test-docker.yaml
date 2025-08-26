@@ -25,9 +25,13 @@ jobs:
       matrix:
         backend:
           - llama
+          - llama-cuda
         arch:
           - amd64
           - arm64
+        exclude:
+          - backend: llama-cuda
+            arch: arm64
     steps:
       - uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
         with:
@@ -98,7 +102,8 @@ jobs:
             --load --provenance=false --progress plain \
             --cache-from=type=gha,scope=testmodel-${{ matrix.arch }} \
             --cache-to=type=gha,scope=testmodel-${{ matrix.arch }},mode=max \
-            --platform linux/${{ matrix.arch }}
+            --platform linux/${{ matrix.arch }} \
+            ${{ matrix.backend == 'llama-cuda' && '--build-arg=runtime=cuda' || '' }}
 
       - name: list images
         run: docker images
