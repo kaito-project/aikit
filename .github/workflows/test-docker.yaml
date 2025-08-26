@@ -127,7 +127,7 @@ jobs:
 
       - name: save logs
         if: always()
-        run: docker logs testmodel > /tmp/docker-${{ matrix.backend }}.log
+        run: docker logs testmodel > /tmp/docker-${{ matrix.backend }}-${{ matrix.arch }}.log
 
       - name: publish test artifacts
         if: always()
