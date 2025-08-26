@@ -184,6 +184,14 @@ func installBackends(c *config.InferenceConfig, platform specs.Platform, s llb.S
 
 	for _, backend := range backends {
 		merge = installBackend(backend, c, platform, s, merge)
+
+		// For llama-cpp backend with CUDA runtime, also install the CPU version for fallback
+		if backend == utils.BackendLlamaCpp && c.Runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
+			// Create a modified config with CPU runtime to install the CPU version
+			cpuConfig := *c
+			cpuConfig.Runtime = "cpu" // Use CPU runtime to force CPU backend installation
+			merge = installBackend(backend, &cpuConfig, platform, s, merge)
+		}
 	}
 
 	return merge
