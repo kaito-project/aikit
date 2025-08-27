@@ -25,7 +25,7 @@ jobs:
       matrix:
         backend:
           - llama
-          - llama-cuda
+          - llama-cuda # this tests cpu inference with cuda libraries present in the image
         arch:
           - amd64
           - arm64
