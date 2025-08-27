@@ -16,8 +16,8 @@ AIKit offers two main capabilities:
 ## Features
 
 - 💡 No GPU, or Internet access is required for inference!
-- 🐳 No additional tools are needed except for [Docker](https://docs.docker.com/desktop/install/linux-install/)!
-- 🤏 Minimal image size, resulting in less vulnerabilities and smaller attack surface with a custom [distroless](https://github.com/GoogleContainerTools/distroless)-based image
+- 🐳 No additional tools are needed except for [Docker](https://docs.docker.com/desktop/install/linux-install/) or [Podman](https://podman.io)!
+- 🤏 Minimal image size, resulting in less vulnerabilities and smaller attack surface with a custom [chiseled](https://ubuntu.com/containers/chiseled) image
 - 🎵 [Fine tune support](fine-tune.md)
 - 🚀 Easy to use declarative configuration for [inference](specs-inference.md) and [fine tuning](specs-finetune.md)
 - ✨ OpenAI API compatible to use with any OpenAI API compatible client

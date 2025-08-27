@@ -12,10 +12,13 @@ import (
 )
 
 const (
-	distrolessBase = "ghcr.io/kaito-project/aikit/base:latest"
-	localAIRepo    = "https://github.com/mudler/LocalAI"
-	localAIVersion = "v3.4.0"
-	cudaVersion    = "12-5"
+	distrolessBase = "sozercan/base:test"
+	// temporary fix for https://github.com/mudler/LocalAI/pull/6149
+	// this is on top of e35ad56 but there's no cpu-llama-cpp backend for e35ad56.
+	localAIVersion = "sha-1a0d06f"
+	// localAIDownloadURL = "https://github.com/mudler/LocalAI/releases/download/"
+	localAIDownloadURL = "https://sertaccdnvs-enbgbkgfh5febygb.z02.azurefd.net/localai/"
+	cudaVersion        = "12-5"
 )
 
 // Aikit2LLB converts an InferenceConfig to an LLB state.
@@ -143,14 +146,14 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 func addLocalAI(s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State, error) {
 	var localAIURL string
 	binaryNames := map[string]string{
-		utils.PlatformAMD64: "local-ai-v3.4.0-linux-amd64",
-		utils.PlatformARM64: "local-ai-v3.4.0-linux-arm64",
+		utils.PlatformAMD64: "local-ai-" + localAIVersion + "-linux-" + utils.PlatformAMD64,
+		utils.PlatformARM64: "local-ai-" + localAIVersion + "-linux-" + utils.PlatformARM64,
 	}
 	binaryName, exists := binaryNames[platform.Architecture]
 	if !exists {
 		return s, merge, fmt.Errorf("unsupported architecture %s", platform.Architecture)
 	}
-	localAIURL = fmt.Sprintf("https://github.com/mudler/LocalAI/releases/download/%[1]s/%[2]s", localAIVersion, binaryName)
+	localAIURL = fmt.Sprintf(localAIDownloadURL+"%[1]s/%[2]s", localAIVersion, binaryName)
 
 	savedState := s
 

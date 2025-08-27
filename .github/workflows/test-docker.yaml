@@ -18,27 +18,21 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.arch == 'arm64' && 'github-arm64-2c-8gb' || 'ubuntu-latest-16-cores' }}
     timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
         backend:
           - llama
+          - llama-cuda
         arch:
           - amd64
           - arm64
+        exclude:
+          - backend: llama-cuda
+            arch: arm64
     steps:
-      - uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
       - name: Harden Runner
         uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
         with:
@@ -98,7 +92,8 @@ jobs:
             --load --provenance=false --progress plain \
             --cache-from=type=gha,scope=testmodel-${{ matrix.arch }} \
             --cache-to=type=gha,scope=testmodel-${{ matrix.arch }},mode=max \
-            --platform linux/${{ matrix.arch }}
+            --platform linux/${{ matrix.arch }} \
+            ${{ matrix.backend == 'llama-cuda' && '--build-arg=runtime=cuda' || '' }}
 
       - name: list images
         run: docker images
@@ -107,7 +102,6 @@ jobs:
         run: docker run --name testmodel -d -p 8080:8080 --platform "linux/${{ matrix.arch }}" testmodel:test
 
       - name: run llama test
-        if: matrix.backend == 'llama'
         run: |
           result=$(curl --fail --retry 10 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
             "model": "llama-3.2-1b-instruct",
@@ -122,7 +116,7 @@ jobs:
 
       - name: save logs
         if: always()
-        run: docker logs testmodel > /tmp/docker-${{ matrix.backend }}.log
+        run: docker logs testmodel > /tmp/docker-${{ matrix.backend }}-${{ matrix.arch }}.log
 
       - name: publish test artifacts
         if: always()
@@ -134,7 +128,7 @@ jobs:
             /tmp/images/*.png
 
   test-protocol:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-16-cores
     timeout-minutes: 240
     strategy:
       fail-fast: false
@@ -143,16 +137,6 @@ jobs:
           - oci
           - hf
     steps:
-      - uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
       - name: Harden Runner
         uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
         with:

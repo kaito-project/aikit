@@ -14,7 +14,8 @@ RUN mkdir -p /rootfs && chisel cut --release ubuntu-$UBUNTU_RELEASE --root /root
     libgcc-s1_libs \
     libc6_libs \
     bash_bins \
-    coreutils_bins
+    coreutils_bins \
+    grep_bins
 
 FROM scratch
 COPY --from=builder /rootfs /
