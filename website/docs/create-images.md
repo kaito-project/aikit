@@ -3,7 +3,7 @@ title: Creating Model Images
 ---
 
 :::note
-This section shows how to create a custom image with models of your choosing. If you want to use one of the pre-made models, skip to [running models](#running-models).
+This section shows how to create a custom image with models of your choosing. If you want to use one of the models from the model gallery, skip to [running models](#running-models).
 :::
 
 First, create a buildx buildkit instance.
@@ -97,7 +97,7 @@ docker buildx build -t my-model --load \
     "https://raw.githubusercontent.com/kaito-project/aikit/main/models/aikitfile.yaml"
 ```
 
-[Pre-made models](https://kaito-project.github.io/aikit/docs/premade-models) are offered with multi-platform support. Docker runtime will automatically choose the correct platform to run the image. For more information, please see [multi-platform images documentation](https://docs.docker.com/build/building/multi-platform/).
+[Model Gallery](https://kaito-project.github.io/aikit/docs/premade-models) is offered with multi-platform support. Docker runtime will automatically choose the correct platform to run the image. For more information, please see [multi-platform images documentation](https://docs.docker.com/build/building/multi-platform/).
 
 :::note
 Please note that ARM64 support only applies to the `llama.cpp` backend with CPU inference. NVIDIA CUDA is not supported on ARM64 at this time.
@@ -140,7 +140,7 @@ my-model      latest    e7b7c5a4a2cb   About an hour ago   5.51GB
 You can start the inferencing server for your models with:
 
 ```bash
-# for pre-made models, replace "my-model" with the image name
+# for model gallery, replace "my-model" with the image name
 docker run -d --rm -p 8080:8080 my-model
 ```
 

@@ -51,7 +51,7 @@ https://www.youtube.com/watch?v=O0AOnxXp-o4
 
 ## What's next?
 
-👉 If you are interested in other pre-made models (such as Gemma, Mixtral or Phi), please refer to [Pre-made models](./premade-models.md).
+👉 If you are interested in other pre-made models (such as Gemma, Mixtral or Phi), please refer to [Model Gallery](./premade-models.md).
 
 👉  If you are interested in learning more about how to create your own custom model images, please refer to [Creating Model Images](./create-images.md).
 
