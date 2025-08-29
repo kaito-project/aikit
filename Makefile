@@ -1,4 +1,4 @@
-VERSION := v0.19.1
+VERSION := v0.19.2
 
 REGISTRY ?= ghcr.io/kaito-project
 REPOSITORY ?= /aikit
