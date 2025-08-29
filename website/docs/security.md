@@ -12,7 +12,7 @@ To access the SBOM for a specific AIKit image, use the following command:
 
 ```bash
 # update this with the image you want to inspect
-IMAGE=ghcr.io/kaito-project/aikit/llama3:8b
+IMAGE=ghcr.io/kaito-project/aikit/llama3.1:8b
 docker buildx imagetools inspect $IMAGE --format "{{ json .SBOM.SPDX }}"
 ```
 
@@ -26,7 +26,7 @@ To inspect the provenance attestation for an AIKit image, you can use the follow
 
 ```bash
 # update this with the image you want to inspect
-IMAGE=ghcr.io/kaito-project/aikit/llama3:8b
+IMAGE=ghcr.io/kaito-project/aikit/llama3.1:8b
 docker buildx imagetools inspect $IMAGE --format "{{ json .Provenance.SLSA }}"
 ```
 
