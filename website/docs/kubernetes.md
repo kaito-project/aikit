@@ -26,7 +26,7 @@ helm install aikit/aikit --name-template=aikit --namespace=aikit --create-namesp
 ```
 
 :::tip
-By default, the chart will deploy the `llama-3-8b-instruct` model. You can customize the deployment by providing a [pre-built image](premade-models.md) or your own model image or other options. You can find the available options in the [values](#values) section.
+By default, the chart will deploy the `llama-3.1-8b-instruct` model. You can customize the deployment by providing a [pre-built image](premade-models.md) or your own model image or other options. You can find the available options in the [values](#values) section.
 
 Chart will enforce [`restricted`](https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted) [pod security admission](https://kubernetes.io/docs/concepts/security/pod-security-admission/) for enhanced security and hardening best practices on the namespace level.
 :::
@@ -52,7 +52,7 @@ Access AIKit WebUI or API by running the following commands:
 - Access the OpenAI API compatible endpoint with:
 
   # replace this with the model name you want to use
-  export MODEL_NAME="llama-3-8b-instruct"
+  export MODEL_NAME="llama-3.1-8b-instruct"
   curl http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\": \"${MODEL_NAME}\", \"messages\": [{\"role\": \"user\", \"content\": \"what is the meaning of life?\"}]}"
 ```
 
@@ -64,10 +64,10 @@ kubectl port-forward -n aikit service/aikit 8080:8080 &
 
  # send requests to your model
 curl http://localhost:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
-    "model": "llama-3-8b-instruct",
+    "model": "llama-3.1-8b-instruct",
     "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
   }'
-{"created":1716695271,"object":"chat.completion","id":"809d031e-d78a-4e3a-9719-04683d9e29f9","model":"llama-3-8b-instruct","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Kubernetes is an open-source container orchestration system that automates the deployment, scaling, and management of applications and services in a cloud-native environment."}}],"usage":{"prompt_tokens":11,"completion_tokens":31,"total_tokens":42}}
+{"created":1716695271,"object":"chat.completion","id":"809d031e-d78a-4e3a-9719-04683d9e29f9","model":"llama-3.1-8b-instruct","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Kubernetes is an open-source container orchestration system that automates the deployment, scaling, and management of applications and services in a cloud-native environment."}}],"usage":{"prompt_tokens":11,"completion_tokens":31,"total_tokens":42}}
 ```
 
 ### Values
@@ -123,8 +123,8 @@ kubectl port-forward service/aikit 8080:8080 &
 
 # send requests to your model
 curl http://localhost:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
-     "model": "llama-3-8b-instruct",
+     "model": "llama-3.1-8b-instruct",
      "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
    }'
-{"created":1701236489,"object":"chat.completion","id":"dd1ff40b-31a7-4418-9e32-42151ab6875a","model":"llama-3-8b-instruct","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"\nKubernetes is a container orchestration system that automates the deployment, scaling, and management of containerized applications in a microservices architecture."}}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+{"created":1701236489,"object":"chat.completion","id":"dd1ff40b-31a7-4418-9e32-42151ab6875a","model":"llama-3.1-8b-instruct","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"\nKubernetes is a container orchestration system that automates the deployment, scaling, and management of containerized applications in a microservices architecture."}}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
 ```
