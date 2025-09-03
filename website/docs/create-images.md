@@ -16,16 +16,65 @@ docker buildx create --use --name aikit-builder
 
 You can easily build an image using the following ways:
 
+### Packager (no aikitfile)
+
+If you just want to package files from a source (Hugging Face, HTTP(S), or your local context) directly into an image without writing an `aikitfile.yaml`, use the Packager target. Create a minimal Dockerfile that only sets the AIKit frontend syntax and build with `--target=packager`:
+
+```Dockerfile
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
+```
+
+Then build using one of the following examples:
+
+- Hugging Face:
+
+    ```bash
+    docker buildx build --target packager --load \
+        --build-arg source="huggingface://TheBloke/Llama-2-7B-Chat-GGUF/llama-2-7b-chat.Q4_K_M.gguf" \
+        -t my-packaged-model .
+    ```
+
+- HTTP(S):
+
+    ```bash
+    docker buildx build --target packager --load \
+        --build-arg source="https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGUF/resolve/main/llama-2-7b-chat.Q4_K_M.gguf" \
+        -t my-packaged-model .
+    ```
+
+- Local context (copy files or a directory from your build context):
+
+    ```bash
+    # Copy a single file from the context root
+    docker buildx build --target packager --load \
+        --build-arg source="./path/to/model.gguf" \
+        -t my-packaged-model .
+
+    # Or copy an entire folder (the contents are copied into the image root)
+    docker buildx build --target packager --load \
+        --build-arg source="./models/" \
+        -t my-packaged-model .
+    ```
+
+Notes:
+
+- The `source` build-arg accepts:
+    - `huggingface://{org}/{repo}/{[branch/]file}` (branch is optional; defaults to `main`).
+    - `https://` or `http://` URLs pointing to a file.
+    - A path within your local build context (file or directory).
+- The Packager target bypasses `aikitfile.yaml` parsing entirely.
+- Use `--output type=image,name=<repo>/<name>:<tag>,push=true` to push the image to a registry instead of `--load`.
+
 ### Hugging Face
 
-🎬 Demo: https://www.youtube.com/watch?v=DI5NbdEFLC8
+🎬 Demo: [YouTube](https://www.youtube.com/watch?v=DI5NbdEFLC8)
 
 You can use [Hugging Face](https://huggingface.co) models directly by providing the model URL. For example:
 
 ```bash
 docker buildx build -t my-model --load \
-	--build-arg="model=huggingface://TheBloke/Llama-2-7B-Chat-GGUF/llama-2-7b-chat.Q4_K_M.gguf" \
-	"https://raw.githubusercontent.com/kaito-project/aikit/main/models/aikitfile.yaml"
+    --build-arg="model=huggingface://TheBloke/Llama-2-7B-Chat-GGUF/llama-2-7b-chat.Q4_K_M.gguf" \
+    "https://raw.githubusercontent.com/kaito-project/aikit/main/models/aikitfile.yaml"
 ```
 
 Resulting model name will be the file name. In this case, `llama-2-7b-chat.Q4_K_M.gguf`.
@@ -50,7 +99,7 @@ Resulting model name will be the file name. In this case, `llama-2-7b-chat.Q4_K_
 
 ### OCI Artifacts
 
-🎬 Demo: https://www.youtube.com/watch?v=G6PrzhEe_p8
+🎬 Demo: [YouTube](https://www.youtube.com/watch?v=G6PrzhEe_p8)
 
 You can use OCI artifacts to download models. For example:
 
@@ -105,7 +154,7 @@ Please note that ARM64 support only applies to the `llama.cpp` backend with CPU 
 
 ## Advanced Usage
 
-🎬 Demo: https://www.youtube.com/watch?v=5AQfG5VwN2c&list=PLx4Tje2rS923Bkw83GkobOyjIFLfxNrvs&index=2
+🎬 Demo: [YouTube](https://www.youtube.com/watch?v=5AQfG5VwN2c&list=PLx4Tje2rS923Bkw83GkobOyjIFLfxNrvs&index=2)
 
 Create an `aikitfile.yaml` with the following structure:
 
