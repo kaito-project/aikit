@@ -15,5 +15,10 @@ RUN CGO_ENABLED=0 \
     go build -o /aikit -ldflags "${LDFLAGS} -w -s -extldflags '-static'" ./cmd/frontend
 
 FROM scratch
+LABEL org.opencontainers.image.source="https://github.com/kaito-project/aikit"
+# Mark this image as a BuildKit gateway frontend so it can be used via #syntax or --syntax
+LABEL moby.buildkit.frontend="gateway.v0"
+# Back-compat with older tooling that looks for the legacy label key
+LABEL org.mobyproject.buildkit.frontend="gateway.v0"
 COPY --from=builder /aikit /bin/aikit
 ENTRYPOINT ["/bin/aikit"]
