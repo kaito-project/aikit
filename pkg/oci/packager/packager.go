@@ -31,7 +31,7 @@ const (
 	// SpecModelPack builds an artifact following ModelPack media types.
 	SpecModelPack SpecType = "modelpack"
 	// SpecGeneric builds a generic OCI artifact with a single tar layer.
-	SpecGeneric SpecType = "generic-oci"
+	SpecGeneric SpecType = "generic"
 )
 
 // Options configures the pack operation.

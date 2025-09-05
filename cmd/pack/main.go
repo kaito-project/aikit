@@ -14,7 +14,7 @@ func main() {
 	var (
 		source       = flag.String("source", "", "source to package (file:///abs/path or hf://org/repo)")
 		outDir       = flag.String("out", "", "output directory for OCI layout")
-		specStr      = flag.String("spec", string(packager.SpecModelPack), "spec to use: modelpack|generic-oci")
+		specStr      = flag.String("spec", string(packager.SpecModelPack), "spec to use: modelpack|generic")
 		name         = flag.String("name", "", "human-friendly name (index annotations)")
 		artifactType = flag.String("artifact-type", "", "override manifest artifactType (optional)")
 
@@ -26,7 +26,7 @@ func main() {
 	flag.Parse()
 
 	if *source == "" || *outDir == "" {
-		fmt.Fprintf(os.Stderr, "usage: %s --source <uri> --out <dir> [--spec modelpack|generic-oci] [--name <name>] [--artifact-type <type>] [--mt-... overrides]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %s --source <uri> --out <dir> [--spec modelpack|generic] [--name <name>] [--artifact-type <type>] [--mt-... overrides]\n", os.Args[0])
 		os.Exit(2)
 	}
 

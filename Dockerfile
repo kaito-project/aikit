@@ -20,5 +20,7 @@ LABEL org.opencontainers.image.source="https://github.com/kaito-project/aikit"
 LABEL moby.buildkit.frontend="gateway.v0"
 # Back-compat with older tooling that looks for the legacy label key
 LABEL org.mobyproject.buildkit.frontend="gateway.v0"
+# Provide system CA certificates so HTTPS (Hugging Face, etc.) works inside the frontend
+COPY --from=builder /etc/ssl/certs /etc/ssl/certs
 COPY --from=builder /aikit /bin/aikit
 ENTRYPOINT ["/bin/aikit"]

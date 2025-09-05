@@ -16,12 +16,12 @@ import (
 	"github.com/containerd/platforms"
 	"github.com/kaito-project/aikit/pkg/aikit2llb/inference"
 	"github.com/kaito-project/aikit/pkg/oci/packager"
-	v1 "github.com/modelpack/model-spec/specs-go/v1"
 	"github.com/moby/buildkit/client/llb"
-	"github.com/moby/buildkit/frontend/gateway/client"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/moby/buildkit/exporter/containerimage/exptypes"
+	"github.com/moby/buildkit/frontend/gateway/client"
+	v1 "github.com/modelpack/model-spec/specs-go/v1"
 	digest "github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 const (
@@ -36,18 +36,21 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	sessionID := c.BuildOpts().SessionID
 
 	source := getBuildArg(opts, "source")
-	emit := getBuildArg(opts, "emit")
+	format := getBuildArg(opts, "format")
+	if format == "" { // allow emit alias for backward compatibility
+		format = getBuildArg(opts, "emit")
+	}
+	hfCA := getBuildArg(opts, "hf-ca-cert") // optional PEM bundle
 
 	// Scalable LLB-based modelpack packaging (shell implementation; no extra binary build)
-	if emit == "modelpack-llb" {
-		if source == "" { return nil, fmt.Errorf("source is required for emit=modelpack-llb") }
+	if format == "modelpack" {
+		if source == "" { return nil, fmt.Errorf("source is required for format=modelpack") }
+		packMode := getBuildArg(opts, "layer_packaging") // raw|tar|tar+gzip|tar+zstd
+		if packMode == "" { packMode = "tar" }
 		// Only modelpack spec
 		name := getBuildArg(opts, "name")
 		artifactType := v1.ArtifactTypeModelManifest
 		mtManifest := v1.MediaTypeModelConfig
-		mtWeights := v1.MediaTypeModelWeight
-		mtConfig := v1.MediaTypeModelWeightConfig
-		mtDocs := v1.MediaTypeModelDoc
 
 		// Build model source state
 		var modelState llb.State
@@ -59,9 +62,18 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 			base := path.Base(source)
 			modelState = llb.HTTP(source, llb.Filename(base))
 		case strings.HasPrefix(source, "huggingface://"):
-			hfURL, modelFile, err := inference.ParseHuggingFaceURL(source)
+			spec, err := inference.ParseHuggingFaceSpec(source)
 			if err != nil { return nil, fmt.Errorf("invalid huggingface source: %w", err) }
-			modelState = llb.HTTP(hfURL, llb.Filename(modelFile))
+			files, err := inference.ListHuggingFaceFilesWithCA(spec, hfCA)
+			if err != nil { return nil, fmt.Errorf("huggingface list: %w", err) }
+			if len(files) == 0 { return nil, fmt.Errorf("huggingface list returned no files for %s/%s@%s", spec.Namespace, spec.Model, spec.Revision) }
+			stHF := llb.Scratch()
+			for _, f := range files {
+				url := fmt.Sprintf("https://huggingface.co/%s/%s/resolve/%s/%s?download=1", spec.Namespace, spec.Model, spec.Revision, f)
+				m := llb.HTTP(url, llb.Filename(path.Base(f)))
+				stHF = stHF.File(llb.Copy(m, path.Base(f), "/"+filepath.ToSlash(f)))
+			}
+			modelState = stHF
 		default:
 			include := source
 			if strings.HasSuffix(include, "/") { include += "**" }
@@ -72,8 +84,9 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 			)
 		}
 
-		// Shell script (bash) to classify files and build OCI layout deterministically.
-		script := fmt.Sprintf(`set -e
+		// Shell script (bash) to classify files and build OCI layout deterministically with selectable packaging modes.
+		script := fmt.Sprintf(`set -euo pipefail
+PACK_MODE=%s
 mkdir -p /layout/blobs/sha256
 src=/src
 if [ -f /src ]; then mkdir -p /worksrc && cp /src /worksrc/; src=/worksrc; fi
@@ -82,46 +95,124 @@ cd "$src"
 > /tmp/weights.list
 > /tmp/config.list
 > /tmp/docs.list
+> /tmp/code.list
+> /tmp/dataset.list
 
 while IFS= read -r f; do
 	base=$(basename "$f" | tr A-Z a-z)
+	ext="${base##*.}"
 	case "$base" in
-		*.safetensors|*.bin|*.gguf|*.pt|*.ckpt)
-			echo "$f" >> /tmp/weights.list ;;
-		config.json|tokenizer.json|*.json|*.txt)
-			echo "$f" >> /tmp/config.list ;;
-		readme*|license*|*.md)
-			echo "$f" >> /tmp/docs.list ;;
+		*.safetensors|*.bin|*.gguf|*.pt|*.ckpt) echo "$f" >> /tmp/weights.list ;;
+		readme*|license*|license|*.md) echo "$f" >> /tmp/docs.list ;;
+		config.json|tokenizer.json|*tokenizer*.json|generation_config.json|*.json|*.txt) echo "$f" >> /tmp/config.list ;;
+		*.py|*.sh|*.ipynb|*.go|*.js|*.ts) echo "$f" >> /tmp/code.list ;;
+		*.csv|*.tsv|*.jsonl|*.parquet|*.arrow|*.h5|*.npz) echo "$f" >> /tmp/dataset.list ;;
 		*)
+			# Heuristic: large unknown files -> weights, small -> config
 			sz=$(stat -c%%s "$f")
-			if [ "$sz" -lt 10485760 ]; then echo "$f" >> /tmp/config.list; else echo "$f" >> /tmp/weights.list; fi ;;
+			if [ "$sz" -gt 10485760 ]; then echo "$f" >> /tmp/weights.list; else echo "$f" >> /tmp/config.list; fi ;;
 	esac
 done < <(find . -type f -print | sed 's|^./||' | LC_ALL=C sort)
 
-make_tar() {
-	listfile="$1"; out="$2"
-	[ ! -s "$listfile" ] && return 0
-	tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf "$out" -T "$listfile"
-}
-
 layers_json=""
-add_layer() {
-	file="$1"; mt="$2"
-	[ ! -f "$file" ] && return 0
+append_layer() { # file mt filepath metaJSON untestedFlag
+	file="$1"; mt="$2"; fpath="$3"; metaJson="$4"; untested="$5"; [ ! -f "$file" ] && return 0
 	dgst=$(sha256sum "$file" | cut -d' ' -f1)
 	size=$(stat -c%%s "$file")
 	mv "$file" /layout/blobs/sha256/$dgst
-	if [ -n "$layers_json" ]; then layers_json="$layers_json , "; fi
-	layers_json="${layers_json}{ \"mediaType\": \"$mt\", \"digest\": \"sha256:$dgst\", \"size\": $size }"
+	[ -n "$layers_json" ] && layers_json="$layers_json , "
+	# Escape quotes in embedded metadata JSON for string value
+	metaEsc=$(printf '%s' "$metaJson" | sed 's/"/\\\\"/g')
+	ann="{ \"org.cncf.model.filepath\": \"$fpath\", \"org.cncf.model.file.metadata+json\": \"$metaEsc\", \"org.cncf.model.file.mediatype.untested\": \"$untested\" }"
+	layers_json="${layers_json}{ \"mediaType\": \"$mt\", \"digest\": \"sha256:$dgst\", \"size\": $size, \"annotations\": $ann }"
 }
 
-make_tar /tmp/weights.list /tmp/weights.tar || true
-make_tar /tmp/config.list /tmp/config.tar || true
-make_tar /tmp/docs.list /tmp/docs.tar || true
+det_tar() { # list outname
+	list="$1"; out="$2"; [ ! -s "$list" ] && return 1
+	tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf "$out" -T "$list"
+}
 
-add_layer /tmp/weights.tar %s
-add_layer /tmp/config.tar %s
-add_layer /tmp/docs.tar %s
+compress_if() { # mode infile
+	mode="$1"; f="$2"
+	case "$mode" in
+		tar+gzip) gzip -n -f "$f" ;; # produces f.gz
+		tar+zstd) zstd -q -f --no-progress "$f" ;; # produces f.zst
+	esac
+}
+
+add_category() { # list category baseMediaRaw baseMediaTar
+	list="$1"; cat="$2"; mtRaw="$3"; mtTar="$4"; mtTarGz="$5"; mtTarZst="$6"
+	[ ! -s "$list" ] && return 0
+	case "$PACK_MODE" in
+		raw)
+			while IFS= read -r f; do
+				size=$(stat -c%%s "$f")
+				meta=$(printf '{"name":"%s","mode":420,"uid":0,"gid":0,"size":%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0}' "$f" "$size")
+				tmpCp=/tmp/raw-$(basename "$f")
+				cp "$f" "$tmpCp"
+				append_layer "$tmpCp" "$mtRaw" "$f" "$meta" "true"
+			done < "$list"
+			;;
+		tar|tar+gzip|tar+zstd)
+			# weights: per-file tar; others: single tar
+			if [ "$cat" = "weights" ]; then
+				while IFS= read -r f; do
+					b=$(basename "$f")
+					tmpTar=/tmp/${cat}-$b.tar
+					tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf "$tmpTar" -C "$(dirname "$f")" "$b"
+					case "$PACK_MODE" in
+						tar) mt=$mtTar ;;
+						tar+gzip) gzip -n "$tmpTar"; tmpTar="$tmpTar.gz"; mt=$mtTarGz ;;
+						tar+zstd) zstd -q --no-progress "$tmpTar"; tmpTar="$tmpTar.zst"; mt=$mtTarZst ;;
+					esac
+					size=$(stat -c%%s "$f")
+					meta=$(printf '{"name":"%s","mode":420,"uid":0,"gid":0,"size":%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0}' "$f" "$size")
+					append_layer "$tmpTar" "$mt" "$f" "$meta" "true"
+				done < "$list"
+			else
+				tmpTar=/tmp/${cat}.tar
+				det_tar "$list" "$tmpTar" || return 0
+				case "$PACK_MODE" in
+					tar) outFile="$tmpTar"; mt=$mtTar ;;
+					tar+gzip) gzip -n "$tmpTar"; outFile="$tmpTar.gz"; mt=$mtTarGz ;;
+					tar+zstd) zstd -q --no-progress "$tmpTar"; outFile="$tmpTar.zst"; mt=$mtTarZst ;;
+				esac
+				# Aggregate metadata: just represent the category pseudo-file
+				count=$(wc -l < "$list" | tr -d ' ')
+				totalSize=0; while IFS= read -r f2; do sz=$(stat -c%%s "$f2"); totalSize=$((totalSize + sz)); done < "$list"
+				meta=$(printf '{"name":"%s","mode":420,"uid":0,"gid":0,"size":%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0,"files":%d}' "$cat" "$totalSize" "$count")
+				append_layer "$outFile" "$mt" "$cat" "$meta" "true"
+			fi
+			;;
+		*) echo "unknown PACK_MODE $PACK_MODE" >&2; exit 1 ;;
+	esac
+}
+
+add_category /tmp/weights.list weights \
+	application/vnd.cncf.model.weight.v1.raw \
+	application/vnd.cncf.model.weight.v1.tar \
+	application/vnd.cncf.model.weight.v1.tar+gzip \
+	application/vnd.cncf.model.weight.v1.tar+zstd
+add_category /tmp/config.list config \
+	application/vnd.cncf.model.weight.config.v1.raw \
+	application/vnd.cncf.model.weight.config.v1.tar \
+	application/vnd.cncf.model.weight.config.v1.tar+gzip \
+	application/vnd.cncf.model.weight.config.v1.tar+zstd
+add_category /tmp/docs.list docs \
+	application/vnd.cncf.model.doc.v1.raw \
+	application/vnd.cncf.model.doc.v1.tar \
+	application/vnd.cncf.model.doc.v1.tar+gzip \
+	application/vnd.cncf.model.doc.v1.tar+zstd
+add_category /tmp/code.list code \
+	application/vnd.cncf.model.code.v1.raw \
+	application/vnd.cncf.model.code.v1.tar \
+	application/vnd.cncf.model.code.v1.tar+gzip \
+	application/vnd.cncf.model.code.v1.tar+zstd
+add_category /tmp/dataset.list dataset \
+	application/vnd.cncf.model.dataset.v1.raw \
+	application/vnd.cncf.model.dataset.v1.tar \
+	application/vnd.cncf.model.dataset.v1.tar+gzip \
+	application/vnd.cncf.model.dataset.v1.tar+zstd
 
 printf '{}' > /tmp/manifest-config.json
 mc_dgst=$(sha256sum /tmp/manifest-config.json | cut -d' ' -f1)
@@ -138,28 +229,28 @@ cat > /layout/index.json <<IDX
 { "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [ { "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:$m_dgst", "size": $m_size, "annotations": { "org.opencontainers.image.title": "%s" } } ] }
 IDX
 printf '{ "imageLayoutVersion": "1.0.0" }' > /layout/oci-layout
-`, mtWeights, mtConfig, mtDocs, artifactType, mtManifest, name)
+`, packMode, artifactType, mtManifest, name)
 
-		run := llb.Image("golang:1.23").
+		run := llb.Image("golang:1.25-bookworm").
 			Run(llb.Args([]string{"bash", "-c", script}),
 				llb.AddMount("/src", modelState, llb.Readonly),
 			)
 		// Copy contents of /layout into root (no nested layout directory)
 		final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
-		def, err := final.Marshal(ctx, llb.WithCustomName("packager:modelpack-llb"))
+		def, err := final.Marshal(ctx, llb.WithCustomName("packager:modelpack"))
 		if err != nil { return nil, err }
 		resSolve, err := c.Solve(ctx, client.SolveRequest{Definition: def.ToPB()})
 		if err != nil { return nil, err }
 		ref, err := resSolve.SingleRef(); if err != nil { return nil, err }
 		cfg := ocispec.Image{}; cfg.OS = "linux"; cfg.Architecture = "amd64"; cfg.RootFS = ocispec.RootFS{Type: "layers", DiffIDs: []digest.Digest{}}
 		bCfg, _ := json.Marshal(cfg)
-		out := client.NewResult(); out.AddMeta(exptypes.ExporterImageConfigKey, bCfg); out.SetRef(ref); out.AddMeta("aikit.emit", []byte("modelpack-llb"))
+		out := client.NewResult(); out.AddMeta(exptypes.ExporterImageConfigKey, bCfg); out.SetRef(ref); out.AddMeta("aikit.format", []byte("modelpack"))
 		return out, nil
 	}
 
 	// Generic OCI artifact mode (single tar layer) using LLB shell without overrides
-	if emit == "generic-llb" {
-		if source == "" { return nil, fmt.Errorf("source is required for emit=generic-llb") }
+	if format == "generic" {
+		if source == "" { return nil, fmt.Errorf("source is required for format=generic") }
 		name := getBuildArg(opts, "name")
 		artifactType := "application/vnd.oci.artifact" // simple generic artifact type
 
@@ -170,9 +261,18 @@ printf '{ "imageLayoutVersion": "1.0.0" }' > /layout/oci-layout
 		case strings.HasPrefix(source, "https://") || strings.HasPrefix(source, "http://"):
 			srcState = llb.HTTP(source)
 		case strings.HasPrefix(source, "huggingface://"):
-			hfURL, modelFile, err := inference.ParseHuggingFaceURL(source)
+			spec, err := inference.ParseHuggingFaceSpec(source)
 			if err != nil { return nil, fmt.Errorf("invalid huggingface source: %w", err) }
-			srcState = llb.HTTP(hfURL, llb.Filename(modelFile))
+			files, err := inference.ListHuggingFaceFilesWithCA(spec, hfCA)
+			if err != nil { return nil, fmt.Errorf("huggingface list: %w", err) }
+			if len(files) == 0 { return nil, fmt.Errorf("huggingface list returned no files for %s/%s@%s", spec.Namespace, spec.Model, spec.Revision) }
+			stHF := llb.Scratch()
+			for _, f := range files {
+				url := fmt.Sprintf("https://huggingface.co/%s/%s/resolve/%s/%s?download=1", spec.Namespace, spec.Model, spec.Revision, f)
+				m := llb.HTTP(url, llb.Filename(path.Base(f)))
+				stHF = stHF.File(llb.Copy(m, path.Base(f), "/"+filepath.ToSlash(f)))
+			}
+			srcState = stHF
 		default:
 			include := source
 			if strings.HasSuffix(include, "/") { include += "**" }
@@ -218,26 +318,26 @@ cat > /layout/oci-layout <<EOF
 EOF
 `, ocispec.MediaTypeImageLayer, artifactType, name)
 
-		run := llb.Image("golang:1.23").
+		run := llb.Image("golang:1.25-bookworm").
 			Run(llb.Shlex("sh -c '"+genericScript+"'"),
 				llb.AddMount("/src", srcState, llb.Readonly),
 			)
 		final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
-		def, err := final.Marshal(ctx, llb.WithCustomName("packager:generic-llb"))
+		def, err := final.Marshal(ctx, llb.WithCustomName("packager:generic"))
 		if err != nil { return nil, err }
 		resSolve, err := c.Solve(ctx, client.SolveRequest{Definition: def.ToPB()})
 		if err != nil { return nil, err }
 		ref, err := resSolve.SingleRef(); if err != nil { return nil, err }
 		cfg := ocispec.Image{}; cfg.OS = "linux"; cfg.Architecture = "amd64"; cfg.RootFS = ocispec.RootFS{Type: "layers", DiffIDs: []digest.Digest{}}
 		bCfg, _ := json.Marshal(cfg)
-		out := client.NewResult(); out.AddMeta(exptypes.ExporterImageConfigKey, bCfg); out.SetRef(ref); out.AddMeta("aikit.emit", []byte("generic-llb"))
+		out := client.NewResult(); out.AddMeta(exptypes.ExporterImageConfigKey, bCfg); out.SetRef(ref); out.AddMeta("aikit.format", []byte("generic"))
 		return out, nil
 	}
 
-	// Special emit path: modelpack layout embedded directly into rootfs (MVP)
-	if emit == "modelpack" || emit == "modelpack-layout" {
+	// Special format path: modelpack layout embedded directly into rootfs (MVP)
+	if format == "modelpack" {
 		if source == "" {
-			return nil, fmt.Errorf("source is required for emit=modelpack")
+			return nil, fmt.Errorf("source is required for format=modelpack")
 		}
 		// Only default modelpack behavior (no overrides)
 		specStr := string(packager.SpecModelPack)
@@ -285,7 +385,7 @@ EOF
 		out.AddMeta(exptypes.ExporterImageConfigKey, bCfg)
 		out.SetRef(ref)
 		// Annotation to signal this rootfs is an OCI layout, not a runtime filesystem
-		out.AddMeta("aikit.emit", []byte("modelpack-layout"))
+		out.AddMeta("aikit.format", []byte("modelpack-layout"))
 		return out, nil
 	}
 
@@ -305,14 +405,18 @@ EOF
 		st = llb.Scratch().File(llb.Copy(http, "/", "/"))
 
 	case strings.HasPrefix(source, "huggingface://"):
-		// Reuse shared parser to support optional branch: huggingface://{namespace}/{repo}/{[branch/]file}
-		hfURL, modelFile, err := inference.ParseHuggingFaceURL(source)
-		if err != nil {
-			return nil, fmt.Errorf("invalid huggingface source: %w", err)
+		spec, err := inference.ParseHuggingFaceSpec(source)
+		if err != nil { return nil, fmt.Errorf("invalid huggingface source: %w", err) }
+			files, err := inference.ListHuggingFaceFilesWithCA(spec, hfCA)
+		if err != nil { return nil, fmt.Errorf("huggingface list: %w", err) }
+		if len(files) == 0 { return nil, fmt.Errorf("huggingface list returned no files for %s/%s@%s", spec.Namespace, spec.Model, spec.Revision) }
+		stHF := llb.Scratch()
+		for _, f := range files {
+			url := fmt.Sprintf("https://huggingface.co/%s/%s/resolve/%s/%s?download=1", spec.Namespace, spec.Model, spec.Revision, f)
+		m := llb.HTTP(url, llb.Filename(path.Base(f)))
+			stHF = stHF.File(llb.Copy(m, path.Base(f), "/"+filepath.ToSlash(f)))
 		}
-		// Download with a fixed filename and copy into image root preserving the name.
-		m := llb.HTTP(hfURL, llb.Filename(modelFile))
-		st = llb.Scratch().File(llb.Copy(m, modelFile, "/"+filepath.ToSlash(path.Base(modelFile))))
+		st = stHF
 
 	default:
 		// Treat as a path inside local build context (relative glob)
