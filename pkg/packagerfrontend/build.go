@@ -37,17 +37,13 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 
 	source := getBuildArg(opts, "source")
 	format := getBuildArg(opts, "format")
-	if format == "" { // allow emit alias for backward compatibility
-		format = getBuildArg(opts, "emit")
-	}
-	hfCA := getBuildArg(opts, "hf-ca-cert") // optional PEM bundle
+	hfToken := getBuildArg(opts, "hf-token") // optional Hugging Face token
 
 	// Scalable LLB-based modelpack packaging (shell implementation; no extra binary build)
 	if format == "modelpack" {
 		if source == "" { return nil, fmt.Errorf("source is required for format=modelpack") }
 		packMode := getBuildArg(opts, "layer_packaging") // raw|tar|tar+gzip|tar+zstd
 		if packMode == "" { packMode = "tar" }
-		// Only modelpack spec
 		name := getBuildArg(opts, "name")
 		artifactType := v1.ArtifactTypeModelManifest
 		mtManifest := v1.MediaTypeModelConfig
@@ -64,16 +60,19 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 		case strings.HasPrefix(source, "huggingface://"):
 			spec, err := inference.ParseHuggingFaceSpec(source)
 			if err != nil { return nil, fmt.Errorf("invalid huggingface source: %w", err) }
-			files, err := inference.ListHuggingFaceFilesWithCA(spec, hfCA)
-			if err != nil { return nil, fmt.Errorf("huggingface list: %w", err) }
-			if len(files) == 0 { return nil, fmt.Errorf("huggingface list returned no files for %s/%s@%s", spec.Namespace, spec.Model, spec.Revision) }
-			stHF := llb.Scratch()
-			for _, f := range files {
-				url := fmt.Sprintf("https://huggingface.co/%s/%s/resolve/%s/%s?download=1", spec.Namespace, spec.Model, spec.Revision, f)
-				m := llb.HTTP(url, llb.Filename(path.Base(f)))
-				stHF = stHF.File(llb.Copy(m, path.Base(f), "/"+filepath.ToSlash(f)))
-			}
-			modelState = stHF
+			// Use huggingface-cli to download entire repo snapshot deterministically
+			var tokenExport string
+			if hfToken != "" { tokenExport = "export HUGGING_FACE_HUB_TOKEN=\"" + hfToken + "\"\n" }
+			dlScript := fmt.Sprintf(`set -euo pipefail
+			%s
+			mkdir -p /out
+			huggingface-cli download %s/%s --revision %s --local-dir /out --local-dir-use-symlinks False
+			# remove transient cache / lock artifacts
+			rm -rf /out/.cache || true
+			find /out -type f -name '*.lock' -delete || true
+			`, tokenExport, spec.Namespace, spec.Model, spec.Revision)
+			run := llb.Image("docker.io/sozercan/hf-cli:latest").Run(llb.Args([]string{"bash", "-c", dlScript}))
+			modelState = llb.Scratch().File(llb.Copy(run.Root(), "/out/", "/"))
 		default:
 			include := source
 			if strings.HasSuffix(include, "/") { include += "**" }
@@ -107,7 +106,7 @@ while IFS= read -r f; do
 		*.csv|*.tsv|*.jsonl|*.parquet|*.arrow|*.h5|*.npz) echo "$f" >> /tmp/dataset.list ;;
 		*) sz=$(stat -c%%s "$f"); if [ "$sz" -gt 10485760 ]; then echo "$f" >> /tmp/weights.list; else echo "$f" >> /tmp/config.list; fi ;;
 	esac
-done < <(find . -type f -print | sed 's|^./||' | LC_ALL=C sort)
+done < <(find . -type f ! -name '*.lock' ! -path './.cache/*' -print | sed 's|^./||' | LC_ALL=C sort)
 
 layers_json=""
 append_layer() { file="$1"; mt="$2"; fpath="$3"; metaJson="$4"; untested="$5"; [ ! -f "$file" ] && return 0; dgst=$(sha256sum "$file" | cut -d' ' -f1); size=$(stat -c%%s "$file"); mv "$file" /layout/blobs/sha256/$dgst; [ -n "$layers_json" ] && layers_json="$layers_json , "; metaEsc=$(printf '%%s' "$metaJson" | sed 's/"/\\\"/g'); ann="{ \"org.cncf.model.filepath\": \"$fpath\", \"org.cncf.model.file.metadata+json\": \"$metaEsc\", \"org.cncf.model.file.mediatype.untested\": \"$untested\" }"; layers_json="${layers_json}{ \"mediaType\": \"$mt\", \"digest\": \"sha256:$dgst\", \"size\": $size, \"annotations\": $ann }"; }
@@ -174,13 +173,13 @@ m_size=$(stat -c%%s /tmp/manifest.json)
 cp /tmp/manifest.json /layout/blobs/sha256/$m_dgst
 
 cat > /layout/index.json <<IDX
-{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [ { "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:$m_dgst", "size": $m_size, "annotations": { "org.opencontainers.image.title": "%[4]s" } } ] }
+{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [ { "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:$m_dgst", "size": $m_size, "annotations": { "org.opencontainers.image.title": "%[4]s", "org.opencontainers.image.ref.name": "latest" } } ] }
 IDX
 printf '{ "imageLayoutVersion": "1.0.0" }' > /layout/oci-layout
 `
 		script := fmt.Sprintf(scriptTemplate, packMode, artifactType, mtManifest, name)
 
-		run := llb.Image("golang:1.25-bookworm").
+		run := llb.Image("cgr.dev/chainguard/bash:latest").
 			Run(llb.Args([]string{"bash", "-c", script}),
 				llb.AddMount("/src", modelState, llb.Readonly),
 			)
@@ -212,16 +211,18 @@ printf '{ "imageLayoutVersion": "1.0.0" }' > /layout/oci-layout
 		case strings.HasPrefix(source, "huggingface://"):
 			spec, err := inference.ParseHuggingFaceSpec(source)
 			if err != nil { return nil, fmt.Errorf("invalid huggingface source: %w", err) }
-			files, err := inference.ListHuggingFaceFilesWithCA(spec, hfCA)
-			if err != nil { return nil, fmt.Errorf("huggingface list: %w", err) }
-			if len(files) == 0 { return nil, fmt.Errorf("huggingface list returned no files for %s/%s@%s", spec.Namespace, spec.Model, spec.Revision) }
-			stHF := llb.Scratch()
-			for _, f := range files {
-				url := fmt.Sprintf("https://huggingface.co/%s/%s/resolve/%s/%s?download=1", spec.Namespace, spec.Model, spec.Revision, f)
-				m := llb.HTTP(url, llb.Filename(path.Base(f)))
-				stHF = stHF.File(llb.Copy(m, path.Base(f), "/"+filepath.ToSlash(f)))
-			}
-			srcState = stHF
+			var tokenExport string
+			if hfToken != "" { tokenExport = "export HUGGING_FACE_HUB_TOKEN=\"" + hfToken + "\"\n" }
+			dlScript := fmt.Sprintf(`set -euo pipefail
+			%s
+			mkdir -p /out
+			huggingface-cli download %s/%s --revision %s --local-dir /out --local-dir-use-symlinks False
+			# remove transient cache / lock artifacts
+			rm -rf /out/.cache || true
+			find /out -type f -name '*.lock' -delete || true
+			`, tokenExport, spec.Namespace, spec.Model, spec.Revision)
+			run := llb.Image("docker.io/sozercan/hf-cli:latest").Run(llb.Args([]string{"bash", "-c", dlScript}))
+			srcState = llb.Scratch().File(llb.Copy(run.Root(), "/out/", "/"))
 		default:
 			include := source
 			if strings.HasSuffix(include, "/") { include += "**" }
@@ -237,7 +238,7 @@ mkdir -p /layout/blobs/sha256
 work=/src
 if [ -f /src ]; then mkdir -p /worksrc && cp /src /worksrc/; work=/worksrc; fi
 cd "$work"
-find . -type f -print | sed 's|^./||' | LC_ALL=C sort > /tmp/files.list
+find . -type f ! -name '*.lock' ! -path './.cache/*' -print | sed 's|^./||' | LC_ALL=C sort > /tmp/files.list
 tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf /tmp/layer.tar -T /tmp/files.list || true
 if [ -f /tmp/layer.tar ]; then
   dgst=$(sha256sum /tmp/layer.tar | awk '{print $1}')
@@ -260,14 +261,14 @@ m_dgst=$(sha256sum /tmp/manifest.json | awk '{print $1}')
 m_size=$(stat -c%%s /tmp/manifest.json)
 cp /tmp/manifest.json /layout/blobs/sha256/$m_dgst
 cat > /layout/index.json <<EOF
-{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [ { "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:$m_dgst", "size": $m_size, "annotations": { "org.opencontainers.image.title": "%s" } } ] }
+{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [ { "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:$m_dgst", "size": $m_size, "annotations": { "org.opencontainers.image.title": "%s", "org.opencontainers.image.ref.name": "latest" } } ] }
 EOF
 cat > /layout/oci-layout <<EOF
 { "imageLayoutVersion": "1.0.0" }
 EOF
 `, ocispec.MediaTypeImageLayer, artifactType, name)
 
-		run := llb.Image("golang:1.25-bookworm").
+		run := llb.Image("cgr.dev/chainguard/bash:latest").
 			Run(llb.Shlex("sh -c '"+genericScript+"'"),
 				llb.AddMount("/src", srcState, llb.Readonly),
 			)
@@ -356,16 +357,18 @@ EOF
 	case strings.HasPrefix(source, "huggingface://"):
 		spec, err := inference.ParseHuggingFaceSpec(source)
 		if err != nil { return nil, fmt.Errorf("invalid huggingface source: %w", err) }
-			files, err := inference.ListHuggingFaceFilesWithCA(spec, hfCA)
-		if err != nil { return nil, fmt.Errorf("huggingface list: %w", err) }
-		if len(files) == 0 { return nil, fmt.Errorf("huggingface list returned no files for %s/%s@%s", spec.Namespace, spec.Model, spec.Revision) }
-		stHF := llb.Scratch()
-		for _, f := range files {
-			url := fmt.Sprintf("https://huggingface.co/%s/%s/resolve/%s/%s?download=1", spec.Namespace, spec.Model, spec.Revision, f)
-		m := llb.HTTP(url, llb.Filename(path.Base(f)))
-			stHF = stHF.File(llb.Copy(m, path.Base(f), "/"+filepath.ToSlash(f)))
-		}
-		st = stHF
+		var tokenExport string
+		if hfToken != "" { tokenExport = "export HUGGING_FACE_HUB_TOKEN=\"" + hfToken + "\"\n" }
+		dlScript := fmt.Sprintf(`set -euo pipefail
+	%s
+	mkdir -p /out
+	huggingface-cli download %s/%s --revision %s --local-dir /out --local-dir-use-symlinks False
+	# remove transient cache / lock artifacts
+	rm -rf /out/.cache || true
+	find /out -type f -name '*.lock' -delete || true
+	`, tokenExport, spec.Namespace, spec.Model, spec.Revision)
+		run := llb.Image("docker.io/sozercan/hf-cli:latest").Run(llb.Args([]string{"bash", "-c", dlScript}))
+		st = llb.Scratch().File(llb.Copy(run.Root(), "/out/", "/"))
 
 	default:
 		// Treat as a path inside local build context (relative glob)

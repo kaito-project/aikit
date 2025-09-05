@@ -1,103 +1,60 @@
 package inference
 
 import (
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path"
+	"regexp"
 	"strings"
-	"time"
 
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
-	digest "github.com/opencontainers/go-digest"
+	"github.com/opencontainers/go-digest"
+	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-// HFSpec captures a parsed huggingface:// reference.
-type HFSpec struct {
-	Namespace string
-	Model     string
-	Revision  string
-	File      string // empty if whole repo
-	WholeRepo bool
-}
+const (
+	orasImage         = "ghcr.io/oras-project/oras:v1.2.0"
+	ollamaRegistryURL = "registry.ollama.ai"
+)
 
-func ParseHuggingFaceSpec(source string) (HFSpec, error) {
-	var spec HFSpec
-	modelPath := strings.TrimPrefix(source, "huggingface://")
-	parts := strings.Split(modelPath, "/")
-	if len(parts) < 2 { return spec, errors.New("invalid Hugging Face URL format") }
-	spec.Namespace = parts[0]
-	spec.Model = parts[1]
-	remain := parts[2:]
-	if len(remain) == 0 { spec.Revision = "main"; spec.WholeRepo = true; return spec, nil }
-	if len(remain) == 1 { seg := remain[0]; if strings.Contains(seg, ".") { spec.Revision = "main"; spec.File = seg; return spec, nil }; spec.Revision = seg; spec.WholeRepo = true; return spec, nil }
-	spec.Revision = remain[0]
-	spec.File = strings.Join(remain[1:], "/")
-	return spec, nil
-}
+// handleOCI handles OCI artifact downloading and processing.
+func handleOCI(source string, s llb.State, platform specs.Platform) llb.State {
+	toolingImage := llb.Image(orasImage, llb.Platform(platform))
 
-func ListHuggingFaceFiles(spec HFSpec) ([]string, error) { return ListHuggingFaceFilesWithCA(spec, "") }
+	artifactURL := strings.TrimPrefix(source, "oci://")
+	var orasCmd, modelName string
 
-// ListHuggingFaceFilesWithCA allows supplying additional PEM encoded CA certificates (concatenated) to validate TLS.
-// If caPEM is empty, system roots are used. This replaces prior insecure skip mode.
-func ListHuggingFaceFilesWithCA(spec HFSpec, caPEM string) ([]string, error) {
-	if !spec.WholeRepo { return []string{spec.File}, nil }
-	apiURL := fmt.Sprintf("https://huggingface.co/api/models/%s/%s/tree/%s?recursive=1", spec.Namespace, spec.Model, spec.Revision)
-	req, err := http.NewRequest(http.MethodGet, apiURL, nil)
-	if err != nil { return nil, err }
-	req.Header.Set("User-Agent", "aikit-buildkit")
-	req.Header.Set("Accept", "application/json")
-	// Build transport with optional extra CAs.
-	var tlsConfig *tls.Config
-	if caPEM != "" {
-		pool, err := x509.SystemCertPool()
-		if err != nil || pool == nil { pool = x509.NewCertPool() }
-		if ok := pool.AppendCertsFromPEM([]byte(caPEM)); !ok {
-			return nil, errors.New("failed to append provided CA certificate(s)")
-		}
-		tlsConfig = &tls.Config{RootCAs: pool}
+	if strings.HasPrefix(artifactURL, ollamaRegistryURL) {
+		// Handle specific registry case
+		modelName, orasCmd = handleOllamaRegistry(artifactURL)
+	} else {
+		// Handle generic OCI artifact
+		modelName = extractModelName(artifactURL)
+		orasCmd = fmt.Sprintf("oras blob fetch %[1]s --output /models/%[2]s", artifactURL, modelName)
 	}
-	tr := &http.Transport{TLSClientConfig: tlsConfig}
-	client := &http.Client{Timeout: 30 * time.Second, Transport: tr}
-	resp, err := client.Do(req)
-	if err != nil { return nil, err }
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 { return nil, fmt.Errorf("huggingface api status %d", resp.StatusCode) }
-	b, err := io.ReadAll(resp.Body); if err != nil { return nil, err }
-	var entries []struct { Path string `json:"path"`; Type string `json:"type"` }
-	if err := json.Unmarshal(b, &entries); err != nil { return nil, err }
-	out := []string{}
-	for _, e := range entries {
-		// Some responses may omit Type; treat missing as file if path looks like a leaf.
-		if e.Type == "file" || e.Type == "" {
-			if e.Path != "" && !strings.HasSuffix(e.Path, "/") {
-				out = append(out, e.Path)
-			}
-		}
-	}
-	if len(out) == 0 {
-		return nil, errors.New("huggingface list returned zero files (possible API shape change or permission issue)")
-	}
-	return out, nil
-}
 
-// Legacy helper retained for prior callers that only support single file.
-// Legacy single-file helper retained for old callers elsewhere.
-func ParseHuggingFaceURL(source string) (string, string, error) { //nolint:revive
-	spec, err := ParseHuggingFaceSpec(source); if err != nil { return "", "", err }
-	if spec.WholeRepo { return "", "", errors.New("whole-repo reference not supported in this code path") }
-	fullURL := fmt.Sprintf("https://huggingface.co/%s/%s/resolve/%s/%s?download=1", spec.Namespace, spec.Model, spec.Revision, spec.File)
-	return fullURL, path.Base(spec.File), nil
+	// Install jq and execute the oras command
+	toolingImage = toolingImage.Run(utils.Shf("apk add jq curl && %s", orasCmd)).Root()
+
+	modelPath := fmt.Sprintf("/models/%s", modelName)
+
+	s = s.File(
+		llb.Copy(toolingImage, modelName, modelPath, createCopyOptions()...),
+		llb.WithCustomName("Copying "+artifactURL+" to "+modelPath),
+	)
+	return s
 }
 
 // handleOllamaRegistry handles the Ollama registry specific download.
-// handleOllamaRegistry removed (unused after refactor)
+func handleOllamaRegistry(artifactURL string) (string, string) {
+	artifactURLWithoutTag := strings.Split(artifactURL, ":")[0]
+	tag := strings.Split(artifactURL, ":")[1]
+	modelName := strings.Split(artifactURLWithoutTag, "/")[2]
+	orasCmd := fmt.Sprintf("oras blob fetch %[1]s@$(curl https://%[2]s/v2/library/%[3]s/manifests/%[4]s | jq -r '.layers[] | select(.mediaType == \"application/vnd.ollama.image.model\").digest') --output %[3]s", artifactURLWithoutTag, ollamaRegistryURL, modelName, tag)
+	return modelName, orasCmd
+}
 
 // handleHTTP handles HTTP(S) downloads.
 func handleHTTP(source, name, sha256 string, s llb.State) llb.State {
@@ -120,23 +77,57 @@ func handleHTTP(source, name, sha256 string, s llb.State) llb.State {
 	return s
 }
 
-// parseHuggingFaceURL converts a huggingface:// URL to https:// URL with optional branch support.
-// (Removed duplicate legacy ParseHuggingFaceURL definition)
+// ParseHuggingFaceURL converts a huggingface:// URL to https:// URL with optional branch support.
+func ParseHuggingFaceURL(source string) (string, string, error) {
+	baseURL := "https://huggingface.co/"
+	modelPath := strings.TrimPrefix(source, "huggingface://")
+
+	// Split the model path to check for branch specification
+	parts := strings.Split(modelPath, "/")
+
+	if len(parts) < 3 {
+		return "", "", errors.New("invalid Hugging Face URL format")
+	}
+
+	namespace := parts[0]
+	model := parts[1]
+	var branch, modelFile string
+
+	if len(parts) == 4 {
+		// URL includes branch: "huggingface://{namespace}/{model}/{branch}/{file}"
+		branch = parts[2]
+		modelFile = parts[3]
+	} else {
+		// URL does not include branch, default to main: "huggingface://{namespace}/{model}/{file}"
+		branch = "main"
+		modelFile = parts[2]
+	}
+
+	// Construct the full URL
+	fullURL := fmt.Sprintf("%s%s/%s/resolve/%s/%s", baseURL, namespace, model, branch, modelFile)
+	return fullURL, modelFile, nil
+}
 
 // handleHuggingFace handles Hugging Face model downloads with branch support.
 func handleHuggingFace(source string, s llb.State) (llb.State, error) {
-	spec, err := ParseHuggingFaceSpec(source); if err != nil { return llb.State{}, err }
-	files, err := ListHuggingFaceFiles(spec); if err != nil { return llb.State{}, err }
-	for _, f := range files {
-		url := fmt.Sprintf("https://huggingface.co/%s/%s/resolve/%s/%s?download=1", spec.Namespace, spec.Model, spec.Revision, f)
-		opts := []llb.HTTPOption{ llb.Filename(path.Base(f)) }
-		m := llb.HTTP(url, opts...)
-		target := "/models/" + f
-		s = s.File(
-			llb.Copy(m, path.Base(f), target, createCopyOptions()...),
-			llb.WithCustomName("Copying "+f+" from Hugging Face"),
-		)
+	// Translate the Hugging Face URL, extracting the branch if provided
+	hfURL, modelName, err := ParseHuggingFaceURL(source)
+	if err != nil {
+		return llb.State{}, err
 	}
+
+	// Perform the HTTP download
+	opts := []llb.HTTPOption{llb.Filename(modelName)}
+	m := llb.HTTP(hfURL, opts...)
+
+	// Determine the model path in the /models directory
+	modelPath := fmt.Sprintf("/models/%s", modelName)
+
+	// Copy the downloaded file to the desired location
+	s = s.File(
+		llb.Copy(m, modelName, modelPath, createCopyOptions()...),
+		llb.WithCustomName("Copying "+modelName+" from Hugging Face to "+modelPath),
+	)
 	return s, nil
 }
 
@@ -146,12 +137,6 @@ func handleLocal(source string, s llb.State) llb.State {
 		llb.Copy(llb.Local("context"), source, "/models/", createCopyOptions()...),
 		llb.WithCustomName("Copying "+utils.FileNameFromURL(source)+" to /models"),
 	)
-	return s
-}
-
-// handleOCI placeholder: previously implemented elsewhere; minimal no-op copy until restored.
-func handleOCI(source string, s llb.State, platform interface{}) llb.State { //nolint:revive
-	// TODO: Re-implement OCI artifact fetching if needed.
 	return s
 }
 
@@ -174,4 +159,39 @@ func createCopyOptions() []llb.CopyOption {
 			Mode:           &mode,
 		},
 	}
+}
+
+// HuggingFaceSpec represents a parsed huggingface:// reference.
+// Supported forms:
+//   huggingface://namespace/model                -> revision: main
+//   huggingface://namespace/model@rev            -> explicit revision
+//   huggingface://namespace/model:rev            -> (legacy separator) explicit revision
+//   huggingface://namespace/model@rev/path/to    -> with subpath (ignored by current callers)
+//   huggingface://namespace/model/path/to        -> implicit main revision with subpath
+// For current usage we only need Namespace, Model, Revision; subpath is ignored.
+type HuggingFaceSpec struct {
+	Namespace string
+	Model     string
+	Revision  string
+	SubPath   string // optional; empty means whole repo
+}
+
+var hfSpecPattern = regexp.MustCompile(`^huggingface://([^/]+)/([^/@:]+)(?:[@: ]([^/]+))?(?:/(.*))?$`)
+
+// ParseHuggingFaceSpec parses a huggingface:// reference into its components.
+// Defaults revision to "main" when omitted.
+func ParseHuggingFaceSpec(src string) (*HuggingFaceSpec, error) {
+	if !strings.HasPrefix(src, "huggingface://") {
+		return nil, fmt.Errorf("not a huggingface source: %s", src)
+	}
+	m := hfSpecPattern.FindStringSubmatch(src)
+	if m == nil {
+		return nil, fmt.Errorf("invalid huggingface spec: %s", src)
+	}
+	spec := &HuggingFaceSpec{Namespace: m[1], Model: m[2], Revision: "main"}
+	if m[3] != "" { spec.Revision = m[3] }
+	if m[4] != "" { spec.SubPath = m[4] }
+	// Basic validation: no empty pieces
+	if spec.Namespace == "" || spec.Model == "" { return nil, errors.New("namespace and model required") }
+	return spec, nil
 }
