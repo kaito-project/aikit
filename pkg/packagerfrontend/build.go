@@ -84,14 +84,13 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 			)
 		}
 
-		// Shell script (bash) to classify files and build OCI layout deterministically with selectable packaging modes.
-		script := fmt.Sprintf(`set -euo pipefail
-PACK_MODE=%s
+		// Shell script (bash) rewritten with numbered fmt verbs & escaped %% to prevent Go formatting of shell printf/stat.
+		scriptTemplate := `set -euo pipefail
+PACK_MODE=%[1]s
 mkdir -p /layout/blobs/sha256
 src=/src
 if [ -f /src ]; then mkdir -p /worksrc && cp /src /worksrc/; src=/worksrc; fi
 cd "$src"
-# Prepare list files
 > /tmp/weights.list
 > /tmp/config.list
 > /tmp/docs.list
@@ -100,90 +99,32 @@ cd "$src"
 
 while IFS= read -r f; do
 	base=$(basename "$f" | tr A-Z a-z)
-	ext="${base##*.}"
 	case "$base" in
 		*.safetensors|*.bin|*.gguf|*.pt|*.ckpt) echo "$f" >> /tmp/weights.list ;;
 		readme*|license*|license|*.md) echo "$f" >> /tmp/docs.list ;;
 		config.json|tokenizer.json|*tokenizer*.json|generation_config.json|*.json|*.txt) echo "$f" >> /tmp/config.list ;;
 		*.py|*.sh|*.ipynb|*.go|*.js|*.ts) echo "$f" >> /tmp/code.list ;;
 		*.csv|*.tsv|*.jsonl|*.parquet|*.arrow|*.h5|*.npz) echo "$f" >> /tmp/dataset.list ;;
-		*)
-			# Heuristic: large unknown files -> weights, small -> config
-			sz=$(stat -c%%s "$f")
-			if [ "$sz" -gt 10485760 ]; then echo "$f" >> /tmp/weights.list; else echo "$f" >> /tmp/config.list; fi ;;
+		*) sz=$(stat -c%%s "$f"); if [ "$sz" -gt 10485760 ]; then echo "$f" >> /tmp/weights.list; else echo "$f" >> /tmp/config.list; fi ;;
 	esac
 done < <(find . -type f -print | sed 's|^./||' | LC_ALL=C sort)
 
 layers_json=""
-append_layer() { # file mt filepath metaJSON untestedFlag
-	file="$1"; mt="$2"; fpath="$3"; metaJson="$4"; untested="$5"; [ ! -f "$file" ] && return 0
-	dgst=$(sha256sum "$file" | cut -d' ' -f1)
-	size=$(stat -c%%s "$file")
-	mv "$file" /layout/blobs/sha256/$dgst
-	[ -n "$layers_json" ] && layers_json="$layers_json , "
-	# Escape quotes in embedded metadata JSON for string value
-	metaEsc=$(printf '%s' "$metaJson" | sed 's/"/\\\\"/g')
-	ann="{ \"org.cncf.model.filepath\": \"$fpath\", \"org.cncf.model.file.metadata+json\": \"$metaEsc\", \"org.cncf.model.file.mediatype.untested\": \"$untested\" }"
-	layers_json="${layers_json}{ \"mediaType\": \"$mt\", \"digest\": \"sha256:$dgst\", \"size\": $size, \"annotations\": $ann }"
-}
+append_layer() { file="$1"; mt="$2"; fpath="$3"; metaJson="$4"; untested="$5"; [ ! -f "$file" ] && return 0; dgst=$(sha256sum "$file" | cut -d' ' -f1); size=$(stat -c%%s "$file"); mv "$file" /layout/blobs/sha256/$dgst; [ -n "$layers_json" ] && layers_json="$layers_json , "; metaEsc=$(printf '%%s' "$metaJson" | sed 's/"/\\\"/g'); ann="{ \"org.cncf.model.filepath\": \"$fpath\", \"org.cncf.model.file.metadata+json\": \"$metaEsc\", \"org.cncf.model.file.mediatype.untested\": \"$untested\" }"; layers_json="${layers_json}{ \"mediaType\": \"$mt\", \"digest\": \"sha256:$dgst\", \"size\": $size, \"annotations\": $ann }"; }
 
-det_tar() { # list outname
-	list="$1"; out="$2"; [ ! -s "$list" ] && return 1
-	tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf "$out" -T "$list"
-}
+det_tar() { list="$1"; out="$2"; [ ! -s "$list" ] && return 1; tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf "$out" -T "$list"; }
 
-compress_if() { # mode infile
-	mode="$1"; f="$2"
-	case "$mode" in
-		tar+gzip) gzip -n -f "$f" ;; # produces f.gz
-		tar+zstd) zstd -q -f --no-progress "$f" ;; # produces f.zst
-	esac
-}
-
-add_category() { # list category baseMediaRaw baseMediaTar
-	list="$1"; cat="$2"; mtRaw="$3"; mtTar="$4"; mtTarGz="$5"; mtTarZst="$6"
-	[ ! -s "$list" ] && return 0
+add_category() {
+	list="$1"; cat="$2"; mtRaw="$3"; mtTar="$4"; mtTarGz="$5"; mtTarZst="$6"; [ ! -s "$list" ] && return 0
 	case "$PACK_MODE" in
 		raw)
-			while IFS= read -r f; do
-				size=$(stat -c%%s "$f")
-				meta=$(printf '{"name":"%s","mode":420,"uid":0,"gid":0,"size":%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0}' "$f" "$size")
-				tmpCp=/tmp/raw-$(basename "$f")
-				cp "$f" "$tmpCp"
-				append_layer "$tmpCp" "$mtRaw" "$f" "$meta" "true"
-			done < "$list"
-			;;
+			while IFS= read -r f; do fsize=$(stat -c%%s "$f"); meta=$(printf '{"name":"%%s","mode":420,"uid":0,"gid":0,"size":%%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0}' "$f" "$fsize"); tmpCp=/tmp/raw-$(basename "$f"); cp "$f" "$tmpCp"; append_layer "$tmpCp" "$mtRaw" "$f" "$meta" "true"; done < "$list" ;;
 		tar|tar+gzip|tar+zstd)
-			# weights: per-file tar; others: single tar
 			if [ "$cat" = "weights" ]; then
-				while IFS= read -r f; do
-					b=$(basename "$f")
-					tmpTar=/tmp/${cat}-$b.tar
-					tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf "$tmpTar" -C "$(dirname "$f")" "$b"
-					case "$PACK_MODE" in
-						tar) mt=$mtTar ;;
-						tar+gzip) gzip -n "$tmpTar"; tmpTar="$tmpTar.gz"; mt=$mtTarGz ;;
-						tar+zstd) zstd -q --no-progress "$tmpTar"; tmpTar="$tmpTar.zst"; mt=$mtTarZst ;;
-					esac
-					size=$(stat -c%%s "$f")
-					meta=$(printf '{"name":"%s","mode":420,"uid":0,"gid":0,"size":%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0}' "$f" "$size")
-					append_layer "$tmpTar" "$mt" "$f" "$meta" "true"
-				done < "$list"
+				while IFS= read -r f; do b=$(basename "$f"); tmpTar=/tmp/${cat}-$b.tar; tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf "$tmpTar" -C "$(dirname "$f")" "$b"; case "$PACK_MODE" in tar) mt=$mtTar ;; tar+gzip) gzip -n "$tmpTar"; tmpTar="$tmpTar.gz"; mt=$mtTarGz ;; tar+zstd) zstd -q --no-progress "$tmpTar"; tmpTar="$tmpTar.zst"; mt=$mtTarZst ;; esac; fsize=$(stat -c%%s "$f"); meta=$(printf '{"name":"%%s","mode":420,"uid":0,"gid":0,"size":%%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0}' "$f" "$fsize"); append_layer "$tmpTar" "$mt" "$f" "$meta" "true"; done < "$list"
 			else
-				tmpTar=/tmp/${cat}.tar
-				det_tar "$list" "$tmpTar" || return 0
-				case "$PACK_MODE" in
-					tar) outFile="$tmpTar"; mt=$mtTar ;;
-					tar+gzip) gzip -n "$tmpTar"; outFile="$tmpTar.gz"; mt=$mtTarGz ;;
-					tar+zstd) zstd -q --no-progress "$tmpTar"; outFile="$tmpTar.zst"; mt=$mtTarZst ;;
-				esac
-				# Aggregate metadata: just represent the category pseudo-file
-				count=$(wc -l < "$list" | tr -d ' ')
-				totalSize=0; while IFS= read -r f2; do sz=$(stat -c%%s "$f2"); totalSize=$((totalSize + sz)); done < "$list"
-				meta=$(printf '{"name":"%s","mode":420,"uid":0,"gid":0,"size":%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0,"files":%d}' "$cat" "$totalSize" "$count")
-				append_layer "$outFile" "$mt" "$cat" "$meta" "true"
-			fi
-			;;
+				tmpTar=/tmp/${cat}.tar; det_tar "$list" "$tmpTar" || return 0; case "$PACK_MODE" in tar) outFile="$tmpTar"; mt=$mtTar ;; tar+gzip) gzip -n "$tmpTar"; outFile="$tmpTar.gz"; mt=$mtTarGz ;; tar+zstd) zstd -q --no-progress "$tmpTar"; outFile="$tmpTar.zst"; mt=$mtTarZst ;; esac; count=$(wc -l < "$list" | tr -d ' '); totalSize=0; while IFS= read -r f2; do sz=$(stat -c%%s "$f2"); totalSize=$((totalSize + sz)); done < "$list"; meta=$(printf '{"name":"%%s","mode":420,"uid":0,"gid":0,"size":%%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0,"files":%%d}' "$cat" "$totalSize" "$count"); append_layer "$outFile" "$mt" "$cat" "$meta" "true"
+			fi ;;
 		*) echo "unknown PACK_MODE $PACK_MODE" >&2; exit 1 ;;
 	esac
 }
@@ -219,17 +160,25 @@ mc_dgst=$(sha256sum /tmp/manifest-config.json | cut -d' ' -f1)
 mc_size=$(stat -c%%s /tmp/manifest-config.json)
 cp /tmp/manifest-config.json /layout/blobs/sha256/$mc_dgst
 
-manifest="{ \"schemaVersion\": 2, \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\", \"artifactType\": \"%s\", \"config\": {\"mediaType\": \"%s\", \"digest\": \"sha256:$mc_dgst\", \"size\": $mc_size}, \"layers\": [ $layers_json ] }"
-printf %%s "$manifest" > /tmp/manifest.json
+cat > /tmp/manifest.json <<EOF_MANIFEST
+{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "%[2]s", "config": {"mediaType": "%[3]s", "digest": "sha256:$mc_dgst", "size": $mc_size}, "layers": [ $layers_json ] }
+EOF_MANIFEST
+# Basic validation to catch accidental plain-text or unexpanded vars
+if [ "$(head -c1 /tmp/manifest.json)" != "{" ] || \
+	 ! grep -q '"schemaVersion": 2' /tmp/manifest.json || \
+	 ! grep -q '"mediaType": "application/vnd.oci.image.manifest.v1+json"' /tmp/manifest.json; then
+	echo "manifest validation failed" >&2; echo "---- manifest contents ----" >&2; cat /tmp/manifest.json >&2; exit 1
+fi
 m_dgst=$(sha256sum /tmp/manifest.json | cut -d' ' -f1)
 m_size=$(stat -c%%s /tmp/manifest.json)
 cp /tmp/manifest.json /layout/blobs/sha256/$m_dgst
 
 cat > /layout/index.json <<IDX
-{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [ { "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:$m_dgst", "size": $m_size, "annotations": { "org.opencontainers.image.title": "%s" } } ] }
+{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [ { "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:$m_dgst", "size": $m_size, "annotations": { "org.opencontainers.image.title": "%[4]s" } } ] }
 IDX
 printf '{ "imageLayoutVersion": "1.0.0" }' > /layout/oci-layout
-`, packMode, artifactType, mtManifest, name)
+`
+		script := fmt.Sprintf(scriptTemplate, packMode, artifactType, mtManifest, name)
 
 		run := llb.Image("golang:1.25-bookworm").
 			Run(llb.Args([]string{"bash", "-c", script}),

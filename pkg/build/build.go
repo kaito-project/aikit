@@ -297,18 +297,16 @@ func getAikitfileConfig(ctx context.Context, c client.Client) (*config.Inference
 	context := opts[localNameContext]
 
 	var st *llb.State
-	var ok bool
 	switch {
 	case strings.HasPrefix(context, "git"):
-		st, ok = dockerui.DetectGitContext(context, true)
-		if !ok {
-			return nil, nil, errors.Errorf("invalid git context %s", context)
-		}
+		keep := true
+		st2, ok, errGit := dockerui.DetectGitContext(context, &keep)
+		if errGit != nil || !ok { return nil, nil, errors.Errorf("invalid git context %s", context) }
+		st = st2
 	case strings.HasPrefix(context, "http") || strings.HasPrefix(context, "https"):
-		st, ok = dockerui.DetectGitContext(context, true)
-		if !ok {
-			st, filename, _ = dockerui.DetectHTTPContext(context)
-		}
+		keep := true
+		st2, ok, errGit := dockerui.DetectGitContext(context, &keep)
+		if errGit == nil && ok { st = st2 } else { st, filename, _ = dockerui.DetectHTTPContext(context) }
 	default:
 		localSt := llb.Local(localNameDockerfile,
 			llb.IncludePatterns([]string{filename}),
