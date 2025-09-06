@@ -35,6 +35,9 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	opts := c.BuildOpts().Opts
 	sessionID := c.BuildOpts().SessionID
 
+	// Determine reference name (annotation) using only build-arg name, else fallback to "latest".
+	refName := determineRefName(opts)
+
 	source := getBuildArg(opts, "source")
 	format := getBuildArg(opts, "format")
 	hfToken := getBuildArg(opts, "hf-token") // optional Hugging Face token
@@ -48,7 +51,7 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 		if packMode == "" {
 			packMode = "raw"
 		}
-		name := getBuildArg(opts, "name")
+		name := determineName(opts)
 		artifactType := v1.ArtifactTypeModelManifest
 		mtManifest := v1.MediaTypeModelConfig
 
@@ -186,11 +189,11 @@ m_size=$(stat -c%%s /tmp/manifest.json)
 cp /tmp/manifest.json /layout/blobs/sha256/$m_dgst
 
 cat > /layout/index.json <<IDX
-{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [ { "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:$m_dgst", "size": $m_size, "annotations": { "org.opencontainers.image.title": "%[4]s", "org.opencontainers.image.ref.name": "latest" } } ] }
+{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [ { "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:$m_dgst", "size": $m_size, "annotations": { "org.opencontainers.image.title": "%[4]s", "org.opencontainers.image.ref.name": "%[5]s" } } ] }
 IDX
 printf '{ "imageLayoutVersion": "1.0.0" }' > /layout/oci-layout
 `
-		script := fmt.Sprintf(scriptTemplate, packMode, artifactType, mtManifest, name)
+		script := fmt.Sprintf(scriptTemplate, packMode, artifactType, mtManifest, name, refName)
 
 		run := llb.Image("cgr.dev/chainguard/bash:latest").
 			Run(llb.Args([]string{"bash", "-c", script}),
@@ -227,7 +230,7 @@ printf '{ "imageLayoutVersion": "1.0.0" }' > /layout/oci-layout
 		if source == "" {
 			return nil, fmt.Errorf("source is required for format=generic")
 		}
-		name := getBuildArg(opts, "name")
+		name := determineName(opts)
 		artifactType := "application/vnd.unknown.artifact.v1"
 		debugFlag := getBuildArg(opts, "debug")
 		packMode := getBuildArg(opts, "layer_packaging") // raw|tar|tar+gzip|tar+zstd
@@ -345,7 +348,7 @@ m_dgst=$(sha256sum /tmp/manifest.json | awk '{print $1}')
 m_size=$(stat -c%%s /tmp/manifest.json)
 cp /tmp/manifest.json /layout/blobs/sha256/$m_dgst
 cat > /layout/index.json <<EOF
-{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [ { "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:$m_dgst", "size": $m_size, "annotations": { "org.opencontainers.image.title": "%s", "org.opencontainers.image.ref.name": "latest" } } ] }
+{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [ { "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:$m_dgst", "size": $m_size, "annotations": { "org.opencontainers.image.title": "%s", "org.opencontainers.image.ref.name": "%s" } } ] }
 EOF
 cat > /layout/oci-layout <<EOF
 { "imageLayoutVersion": "1.0.0" }
@@ -355,7 +358,7 @@ EOF
 				return "set -x"
 			}
 			return ""
-		}(), packMode, ocispec.MediaTypeImageLayer, ocispec.MediaTypeImageLayer, artifactType, name)
+		}(), packMode, ocispec.MediaTypeImageLayer, ocispec.MediaTypeImageLayer, artifactType, name, refName)
 
 		run := llb.Image(bashImage).
 			Run(llb.Args([]string{"bash", "-c", genericScript}),
@@ -393,7 +396,7 @@ EOF
 		}
 		// Only default modelpack behavior (no overrides)
 		specStr := string(SpecModelPack)
-		name := getBuildArg(opts, "name")
+		name := determineName(opts)
 		artifactType := "" // let packager default
 
 		// Run packager (writes an OCI layout to temp dir)
@@ -564,4 +567,23 @@ func getBuildArg(opts map[string]string, k string) string {
 		}
 	}
 	return ""
+}
+
+// determineRefName returns the reference name to use for index annotations.
+// Only uses build-arg:name if present; otherwise returns "latest".
+func determineRefName(opts map[string]string) string {
+	if n := getBuildArg(opts, "name"); n != "" {
+		return n
+	}
+	// If name not supplied, ref name still "latest" (different semantic than title fallback)
+	return "latest"
+}
+
+// determineName returns the provided model name (build-arg name) or a fallback.
+// Fallback is "aikitmodel" to ensure title annotation isn't empty.
+func determineName(opts map[string]string) string {
+	if n := getBuildArg(opts, "name"); n != "" {
+		return n
+	}
+	return "aikitmodel"
 }
