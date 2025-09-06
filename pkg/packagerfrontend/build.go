@@ -26,6 +26,7 @@ import (
 
 const (
 	localNameContext = "context"
+	bashImage        = "cgr.dev/chainguard/bash:latest"
 )
 
 // Build is the BuildKit frontend entrypoint for the packager syntax.
@@ -43,7 +44,7 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	if format == "modelpack" {
 		if source == "" { return nil, fmt.Errorf("source is required for format=modelpack") }
 		packMode := getBuildArg(opts, "layer_packaging") // raw|tar|tar+gzip|tar+zstd
-		if packMode == "" { packMode = "tar" }
+		if packMode == "" { packMode = "raw" }
 		name := getBuildArg(opts, "name")
 		artifactType := v1.ArtifactTypeModelManifest
 		mtManifest := v1.MediaTypeModelConfig
@@ -66,7 +67,7 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 			dlScript := fmt.Sprintf(`set -euo pipefail
 			%s
 			mkdir -p /out
-			huggingface-cli download %s/%s --revision %s --local-dir /out --local-dir-use-symlinks False
+			hf download %s/%s --revision %s --local-dir /out
 			# remove transient cache / lock artifacts
 			rm -rf /out/.cache || true
 			find /out -type f -name '*.lock' -delete || true
@@ -111,7 +112,9 @@ done < <(find . -type f ! -name '*.lock' ! -path './.cache/*' -print | sed 's|^.
 layers_json=""
 append_layer() { file="$1"; mt="$2"; fpath="$3"; metaJson="$4"; untested="$5"; [ ! -f "$file" ] && return 0; dgst=$(sha256sum "$file" | cut -d' ' -f1); size=$(stat -c%%s "$file"); mv "$file" /layout/blobs/sha256/$dgst; [ -n "$layers_json" ] && layers_json="$layers_json , "; metaEsc=$(printf '%%s' "$metaJson" | sed 's/"/\\\"/g'); ann="{ \"org.cncf.model.filepath\": \"$fpath\", \"org.cncf.model.file.metadata+json\": \"$metaEsc\", \"org.cncf.model.file.mediatype.untested\": \"$untested\" }"; layers_json="${layers_json}{ \"mediaType\": \"$mt\", \"digest\": \"sha256:$dgst\", \"size\": $size, \"annotations\": $ann }"; }
 
-det_tar() { list="$1"; out="$2"; [ ! -s "$list" ] && return 1; tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf "$out" -T "$list"; }
+det_tar() { list="$1"; out="$2"; [ ! -s "$list" ] && return 1; # BusyBox tar (no GNU deterministic flags available)
+	tar -cf "$out" -T "$list";
+}
 
 add_category() {
 	list="$1"; cat="$2"; mtRaw="$3"; mtTar="$4"; mtTarGz="$5"; mtTarZst="$6"; [ ! -s "$list" ] && return 0
@@ -120,7 +123,8 @@ add_category() {
 			while IFS= read -r f; do fsize=$(stat -c%%s "$f"); meta=$(printf '{"name":"%%s","mode":420,"uid":0,"gid":0,"size":%%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0}' "$f" "$fsize"); tmpCp=/tmp/raw-$(basename "$f"); cp "$f" "$tmpCp"; append_layer "$tmpCp" "$mtRaw" "$f" "$meta" "true"; done < "$list" ;;
 		tar|tar+gzip|tar+zstd)
 			if [ "$cat" = "weights" ]; then
-				while IFS= read -r f; do b=$(basename "$f"); tmpTar=/tmp/${cat}-$b.tar; tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf "$tmpTar" -C "$(dirname "$f")" "$b"; case "$PACK_MODE" in tar) mt=$mtTar ;; tar+gzip) gzip -n "$tmpTar"; tmpTar="$tmpTar.gz"; mt=$mtTarGz ;; tar+zstd) zstd -q --no-progress "$tmpTar"; tmpTar="$tmpTar.zst"; mt=$mtTarZst ;; esac; fsize=$(stat -c%%s "$f"); meta=$(printf '{"name":"%%s","mode":420,"uid":0,"gid":0,"size":%%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0}' "$f" "$fsize"); append_layer "$tmpTar" "$mt" "$f" "$meta" "true"; done < "$list"
+				while IFS= read -r f; do b=$(basename "$f"); tmpTar=/tmp/${cat}-$b.tar; # BusyBox tar (no deterministic flags)
+					tar -cf "$tmpTar" -C "$(dirname "$f")" "$b"; case "$PACK_MODE" in tar) mt=$mtTar ;; tar+gzip) gzip -n "$tmpTar"; tmpTar="$tmpTar.gz"; mt=$mtTarGz ;; tar+zstd) zstd -q --no-progress "$tmpTar"; tmpTar="$tmpTar.zst"; mt=$mtTarZst ;; esac; fsize=$(stat -c%%s "$f"); meta=$(printf '{"name":"%%s","mode":420,"uid":0,"gid":0,"size":%%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0}' "$f" "$fsize"); append_layer "$tmpTar" "$mt" "$f" "$meta" "true"; done < "$list"
 			else
 				tmpTar=/tmp/${cat}.tar; det_tar "$list" "$tmpTar" || return 0; case "$PACK_MODE" in tar) outFile="$tmpTar"; mt=$mtTar ;; tar+gzip) gzip -n "$tmpTar"; outFile="$tmpTar.gz"; mt=$mtTarGz ;; tar+zstd) zstd -q --no-progress "$tmpTar"; outFile="$tmpTar.zst"; mt=$mtTarZst ;; esac; count=$(wc -l < "$list" | tr -d ' '); totalSize=0; while IFS= read -r f2; do sz=$(stat -c%%s "$f2"); totalSize=$((totalSize + sz)); done < "$list"; meta=$(printf '{"name":"%%s","mode":420,"uid":0,"gid":0,"size":%%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0,"files":%%d}' "$cat" "$totalSize" "$count"); append_layer "$outFile" "$mt" "$cat" "$meta" "true"
 			fi ;;
@@ -200,7 +204,11 @@ printf '{ "imageLayoutVersion": "1.0.0" }' > /layout/oci-layout
 	if format == "generic" {
 		if source == "" { return nil, fmt.Errorf("source is required for format=generic") }
 		name := getBuildArg(opts, "name")
-		artifactType := "application/vnd.oci.artifact" // simple generic artifact type
+		artifactType := "application/vnd.unknown.artifact.v1"
+		debugFlag := getBuildArg(opts, "debug")
+		packMode := getBuildArg(opts, "layer_packaging") // raw|tar|tar+gzip|tar+zstd
+		if packMode == "" { packMode = "raw" }
+		genericOutputMode := getBuildArg(opts, "generic_output_mode") // "layout" (default) or "files"
 
 		var srcState llb.State
 		switch {
@@ -216,7 +224,7 @@ printf '{ "imageLayoutVersion": "1.0.0" }' > /layout/oci-layout
 			dlScript := fmt.Sprintf(`set -euo pipefail
 			%s
 			mkdir -p /out
-			huggingface-cli download %s/%s --revision %s --local-dir /out --local-dir-use-symlinks False
+			hf download %s/%s --revision %s --local-dir /out
 			# remove transient cache / lock artifacts
 			rm -rf /out/.cache || true
 			find /out -type f -name '*.lock' -delete || true
@@ -233,29 +241,56 @@ printf '{ "imageLayoutVersion": "1.0.0" }' > /layout/oci-layout
 			)
 		}
 
+		// If user requests raw files instead of OCI layout, just copy the downloaded src into rootfs
+		if genericOutputMode == "files" {
+			// Provide debug listing if requested
+			var listScript string
+			if debugFlag == "1" { listScript = "set -euxo pipefail; echo '--- listing downloaded files ---'; find /src -maxdepth 3 -type f -print;" } else { listScript = "true" }
+			run := llb.Image(bashImage).Run(
+				llb.Args([]string{"bash", "-c", listScript}),
+				llb.AddMount("/src", srcState, llb.Readonly),
+			)
+			final := llb.Scratch().File(llb.Copy(run.Root(), "/src/", "/"))
+			def, err := final.Marshal(ctx, llb.WithCustomName("packager:generic-files"))
+			if err != nil { return nil, err }
+			resSolve, err := c.Solve(ctx, client.SolveRequest{Definition: def.ToPB()})
+			if err != nil { return nil, err }
+			ref, err := resSolve.SingleRef(); if err != nil { return nil, err }
+			cfg := ocispec.Image{}; cfg.OS = "linux"; cfg.Architecture = "amd64"; cfg.RootFS = ocispec.RootFS{Type: "layers", DiffIDs: []digest.Digest{}}
+			bCfg, _ := json.Marshal(cfg)
+			out := client.NewResult(); out.AddMeta(exptypes.ExporterImageConfigKey, bCfg); out.SetRef(ref); out.AddMeta("aikit.format", []byte("generic-files"))
+			return out, nil
+		}
+
 		genericScript := fmt.Sprintf(`set -euo pipefail
+%s
+PACK_MODE=%s
 mkdir -p /layout/blobs/sha256
 work=/src
 if [ -f /src ]; then mkdir -p /worksrc && cp /src /worksrc/; work=/worksrc; fi
 cd "$work"
 find . -type f ! -name '*.lock' ! -path './.cache/*' -print | sed 's|^./||' | LC_ALL=C sort > /tmp/files.list
-tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf /tmp/layer.tar -T /tmp/files.list || true
-if [ -f /tmp/layer.tar ]; then
-  dgst=$(sha256sum /tmp/layer.tar | awk '{print $1}')
-  size=$(stat -c%%s /tmp/layer.tar)
-  mv /tmp/layer.tar /layout/blobs/sha256/$dgst
-  layerDesc="{ \"mediaType\": \"%s\", \"digest\": \"sha256:$dgst\", \"size\": $size }"
-else
-  layerDesc=""
-fi
+layers_json=""
+append_layer() { file="$1"; mt="$2"; [ ! -f "$file" ] && return 0; dgst=$(sha256sum "$file" | cut -d' ' -f1); size=$(stat -c%%s "$file"); mv "$file" /layout/blobs/sha256/$dgst; [ -n "$layers_json" ] && layers_json="$layers_json , "; layers_json="${layers_json}{ \"mediaType\": \"$mt\", \"digest\": \"sha256:$dgst\", \"size\": $size }"; }
+case "$PACK_MODE" in
+	raw)
+		while IFS= read -r f; do cp "$f" "/tmp/$(basename "$f")"; append_layer "/tmp/$(basename "$f")" "%s"; done < /tmp/files.list ;;
+	tar|tar+gzip|tar+zstd)
+		tarFile=/tmp/allfiles.tar; tar -cf "$tarFile" -T /tmp/files.list || true
+		mt="%s"
+		case "$PACK_MODE" in
+			tar) outFile="$tarFile" ;;
+			tar+gzip) gzip -n "$tarFile"; outFile="$tarFile.gz" ;;
+			tar+zstd) zstd -q --no-progress "$tarFile"; outFile="$tarFile.zst" ;;
+		esac
+		append_layer "$outFile" "$mt" ;;
+	*) echo "unknown PACK_MODE $PACK_MODE" >&2; exit 1 ;;
+esac
 printf '{}' > /tmp/config.json
 cfg_dgst=$(sha256sum /tmp/config.json | awk '{print $1}')
 cfg_size=$(stat -c%%s /tmp/config.json)
 cp /tmp/config.json /layout/blobs/sha256/$cfg_dgst
-manifest=$(cat <<JSON
-{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "%s", "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:$cfg_dgst", "size": $cfg_size}, "layers": [ $layerDesc ] }
-JSON
-)
+manifest="{ \"schemaVersion\": 2, \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\", \"artifactType\": \"%s\", \"config\": {\"mediaType\": \"application/vnd.oci.empty.v1+json\", \"digest\": \"sha256:$cfg_dgst\", \"size\": $cfg_size}, \"layers\": [ $layers_json ] }"
 printf '%%s' "$manifest" > /tmp/manifest.json
 m_dgst=$(sha256sum /tmp/manifest.json | awk '{print $1}')
 m_size=$(stat -c%%s /tmp/manifest.json)
@@ -266,10 +301,10 @@ EOF
 cat > /layout/oci-layout <<EOF
 { "imageLayoutVersion": "1.0.0" }
 EOF
-`, ocispec.MediaTypeImageLayer, artifactType, name)
+`, func() string { if debugFlag == "1" { return "set -x" } ; return "" }(), packMode, ocispec.MediaTypeImageLayer, ocispec.MediaTypeImageLayer, artifactType, name)
 
-		run := llb.Image("cgr.dev/chainguard/bash:latest").
-			Run(llb.Shlex("sh -c '"+genericScript+"'"),
+		run := llb.Image(bashImage).
+			Run(llb.Args([]string{"bash", "-c", genericScript}),
 				llb.AddMount("/src", srcState, llb.Readonly),
 			)
 		final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
@@ -362,7 +397,7 @@ EOF
 		dlScript := fmt.Sprintf(`set -euo pipefail
 	%s
 	mkdir -p /out
-	huggingface-cli download %s/%s --revision %s --local-dir /out --local-dir-use-symlinks False
+	hf download %s/%s --revision %s --local-dir /out
 	# remove transient cache / lock artifacts
 	rm -rf /out/.cache || true
 	find /out -type f -name '*.lock' -delete || true
