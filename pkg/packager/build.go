@@ -1,7 +1,7 @@
-// Package packagerfrontend implements the BuildKit gateway frontend used to
+// Package packager implements the BuildKit gateway frontend used to
 // fetch model sources (local, HTTP, Hugging Face) and produce a minimal image
 // containing those artifacts for further export (image/oci layout).
-package packagerfrontend
+package packager
 
 import (
 	"context"
@@ -15,7 +15,6 @@ import (
 
 	"github.com/containerd/platforms"
 	"github.com/kaito-project/aikit/pkg/aikit2llb/inference"
-	"github.com/kaito-project/aikit/pkg/oci/packager"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/exporter/containerimage/exptypes"
 	"github.com/moby/buildkit/frontend/gateway/client"
@@ -42,9 +41,13 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 
 	// Scalable LLB-based modelpack packaging (shell implementation; no extra binary build)
 	if format == "modelpack" {
-		if source == "" { return nil, fmt.Errorf("source is required for format=modelpack") }
+		if source == "" {
+			return nil, fmt.Errorf("source is required for format=modelpack")
+		}
 		packMode := getBuildArg(opts, "layer_packaging") // raw|tar|tar+gzip|tar+zstd
-		if packMode == "" { packMode = "raw" }
+		if packMode == "" {
+			packMode = "raw"
+		}
 		name := getBuildArg(opts, "name")
 		artifactType := v1.ArtifactTypeModelManifest
 		mtManifest := v1.MediaTypeModelConfig
@@ -60,10 +63,14 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 			modelState = llb.HTTP(source, llb.Filename(base))
 		case strings.HasPrefix(source, "huggingface://"):
 			spec, err := inference.ParseHuggingFaceSpec(source)
-			if err != nil { return nil, fmt.Errorf("invalid huggingface source: %w", err) }
+			if err != nil {
+				return nil, fmt.Errorf("invalid huggingface source: %w", err)
+			}
 			// Use huggingface-cli to download entire repo snapshot deterministically
 			var tokenExport string
-			if hfToken != "" { tokenExport = "export HUGGING_FACE_HUB_TOKEN=\"" + hfToken + "\"\n" }
+			if hfToken != "" {
+				tokenExport = "export HUGGING_FACE_HUB_TOKEN=\"" + hfToken + "\"\n"
+			}
 			dlScript := fmt.Sprintf(`set -euo pipefail
 			%s
 			mkdir -p /out
@@ -76,7 +83,9 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 			modelState = llb.Scratch().File(llb.Copy(run.Root(), "/out/", "/"))
 		default:
 			include := source
-			if strings.HasSuffix(include, "/") { include += "**" }
+			if strings.HasSuffix(include, "/") {
+				include += "**"
+			}
 			modelState = llb.Local(localNameContext,
 				llb.IncludePatterns([]string{include}),
 				llb.SessionID(sessionID),
@@ -190,24 +199,41 @@ printf '{ "imageLayoutVersion": "1.0.0" }' > /layout/oci-layout
 		// Copy contents of /layout into root (no nested layout directory)
 		final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
 		def, err := final.Marshal(ctx, llb.WithCustomName("packager:modelpack"))
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		resSolve, err := c.Solve(ctx, client.SolveRequest{Definition: def.ToPB()})
-		if err != nil { return nil, err }
-		ref, err := resSolve.SingleRef(); if err != nil { return nil, err }
-		cfg := ocispec.Image{}; cfg.OS = "linux"; cfg.Architecture = "amd64"; cfg.RootFS = ocispec.RootFS{Type: "layers", DiffIDs: []digest.Digest{}}
+		if err != nil {
+			return nil, err
+		}
+		ref, err := resSolve.SingleRef()
+		if err != nil {
+			return nil, err
+		}
+		cfg := ocispec.Image{}
+		cfg.OS = "linux"
+		cfg.Architecture = "amd64"
+		cfg.RootFS = ocispec.RootFS{Type: "layers", DiffIDs: []digest.Digest{}}
 		bCfg, _ := json.Marshal(cfg)
-		out := client.NewResult(); out.AddMeta(exptypes.ExporterImageConfigKey, bCfg); out.SetRef(ref); out.AddMeta("aikit.format", []byte("modelpack"))
+		out := client.NewResult()
+		out.AddMeta(exptypes.ExporterImageConfigKey, bCfg)
+		out.SetRef(ref)
+		out.AddMeta("aikit.format", []byte("modelpack"))
 		return out, nil
 	}
 
 	// Generic OCI artifact mode (single tar layer) using LLB shell without overrides
 	if format == "generic" {
-		if source == "" { return nil, fmt.Errorf("source is required for format=generic") }
+		if source == "" {
+			return nil, fmt.Errorf("source is required for format=generic")
+		}
 		name := getBuildArg(opts, "name")
 		artifactType := "application/vnd.unknown.artifact.v1"
 		debugFlag := getBuildArg(opts, "debug")
 		packMode := getBuildArg(opts, "layer_packaging") // raw|tar|tar+gzip|tar+zstd
-		if packMode == "" { packMode = "raw" }
+		if packMode == "" {
+			packMode = "raw"
+		}
 		genericOutputMode := getBuildArg(opts, "generic_output_mode") // "layout" (default) or "files"
 
 		var srcState llb.State
@@ -218,9 +244,13 @@ printf '{ "imageLayoutVersion": "1.0.0" }' > /layout/oci-layout
 			srcState = llb.HTTP(source)
 		case strings.HasPrefix(source, "huggingface://"):
 			spec, err := inference.ParseHuggingFaceSpec(source)
-			if err != nil { return nil, fmt.Errorf("invalid huggingface source: %w", err) }
+			if err != nil {
+				return nil, fmt.Errorf("invalid huggingface source: %w", err)
+			}
 			var tokenExport string
-			if hfToken != "" { tokenExport = "export HUGGING_FACE_HUB_TOKEN=\"" + hfToken + "\"\n" }
+			if hfToken != "" {
+				tokenExport = "export HUGGING_FACE_HUB_TOKEN=\"" + hfToken + "\"\n"
+			}
 			dlScript := fmt.Sprintf(`set -euo pipefail
 			%s
 			mkdir -p /out
@@ -233,7 +263,9 @@ printf '{ "imageLayoutVersion": "1.0.0" }' > /layout/oci-layout
 			srcState = llb.Scratch().File(llb.Copy(run.Root(), "/out/", "/"))
 		default:
 			include := source
-			if strings.HasSuffix(include, "/") { include += "**" }
+			if strings.HasSuffix(include, "/") {
+				include += "**"
+			}
 			srcState = llb.Local(localNameContext,
 				llb.IncludePatterns([]string{include}),
 				llb.SessionID(sessionID),
@@ -245,20 +277,37 @@ printf '{ "imageLayoutVersion": "1.0.0" }' > /layout/oci-layout
 		if genericOutputMode == "files" {
 			// Provide debug listing if requested
 			var listScript string
-			if debugFlag == "1" { listScript = "set -euxo pipefail; echo '--- listing downloaded files ---'; find /src -maxdepth 3 -type f -print;" } else { listScript = "true" }
+			if debugFlag == "1" {
+				listScript = "set -euxo pipefail; echo '--- listing downloaded files ---'; find /src -maxdepth 3 -type f -print;"
+			} else {
+				listScript = "true"
+			}
 			run := llb.Image(bashImage).Run(
 				llb.Args([]string{"bash", "-c", listScript}),
 				llb.AddMount("/src", srcState, llb.Readonly),
 			)
 			final := llb.Scratch().File(llb.Copy(run.Root(), "/src/", "/"))
 			def, err := final.Marshal(ctx, llb.WithCustomName("packager:generic-files"))
-			if err != nil { return nil, err }
+			if err != nil {
+				return nil, err
+			}
 			resSolve, err := c.Solve(ctx, client.SolveRequest{Definition: def.ToPB()})
-			if err != nil { return nil, err }
-			ref, err := resSolve.SingleRef(); if err != nil { return nil, err }
-			cfg := ocispec.Image{}; cfg.OS = "linux"; cfg.Architecture = "amd64"; cfg.RootFS = ocispec.RootFS{Type: "layers", DiffIDs: []digest.Digest{}}
+			if err != nil {
+				return nil, err
+			}
+			ref, err := resSolve.SingleRef()
+			if err != nil {
+				return nil, err
+			}
+			cfg := ocispec.Image{}
+			cfg.OS = "linux"
+			cfg.Architecture = "amd64"
+			cfg.RootFS = ocispec.RootFS{Type: "layers", DiffIDs: []digest.Digest{}}
 			bCfg, _ := json.Marshal(cfg)
-			out := client.NewResult(); out.AddMeta(exptypes.ExporterImageConfigKey, bCfg); out.SetRef(ref); out.AddMeta("aikit.format", []byte("generic-files"))
+			out := client.NewResult()
+			out.AddMeta(exptypes.ExporterImageConfigKey, bCfg)
+			out.SetRef(ref)
+			out.AddMeta("aikit.format", []byte("generic-files"))
 			return out, nil
 		}
 
@@ -301,7 +350,12 @@ EOF
 cat > /layout/oci-layout <<EOF
 { "imageLayoutVersion": "1.0.0" }
 EOF
-`, func() string { if debugFlag == "1" { return "set -x" } ; return "" }(), packMode, ocispec.MediaTypeImageLayer, ocispec.MediaTypeImageLayer, artifactType, name)
+`, func() string {
+			if debugFlag == "1" {
+				return "set -x"
+			}
+			return ""
+		}(), packMode, ocispec.MediaTypeImageLayer, ocispec.MediaTypeImageLayer, artifactType, name)
 
 		run := llb.Image(bashImage).
 			Run(llb.Args([]string{"bash", "-c", genericScript}),
@@ -309,13 +363,26 @@ EOF
 			)
 		final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
 		def, err := final.Marshal(ctx, llb.WithCustomName("packager:generic"))
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		resSolve, err := c.Solve(ctx, client.SolveRequest{Definition: def.ToPB()})
-		if err != nil { return nil, err }
-		ref, err := resSolve.SingleRef(); if err != nil { return nil, err }
-		cfg := ocispec.Image{}; cfg.OS = "linux"; cfg.Architecture = "amd64"; cfg.RootFS = ocispec.RootFS{Type: "layers", DiffIDs: []digest.Digest{}}
+		if err != nil {
+			return nil, err
+		}
+		ref, err := resSolve.SingleRef()
+		if err != nil {
+			return nil, err
+		}
+		cfg := ocispec.Image{}
+		cfg.OS = "linux"
+		cfg.Architecture = "amd64"
+		cfg.RootFS = ocispec.RootFS{Type: "layers", DiffIDs: []digest.Digest{}}
 		bCfg, _ := json.Marshal(cfg)
-		out := client.NewResult(); out.AddMeta(exptypes.ExporterImageConfigKey, bCfg); out.SetRef(ref); out.AddMeta("aikit.format", []byte("generic"))
+		out := client.NewResult()
+		out.AddMeta(exptypes.ExporterImageConfigKey, bCfg)
+		out.SetRef(ref)
+		out.AddMeta("aikit.format", []byte("generic"))
 		return out, nil
 	}
 
@@ -325,40 +392,62 @@ EOF
 			return nil, fmt.Errorf("source is required for format=modelpack")
 		}
 		// Only default modelpack behavior (no overrides)
-		specStr := string(packager.SpecModelPack)
+		specStr := string(SpecModelPack)
 		name := getBuildArg(opts, "name")
 		artifactType := "" // let packager default
 
 		// Run packager (writes an OCI layout to temp dir)
 		layoutDir, err := os.MkdirTemp("", "aikit-front-pack-*")
-		if err != nil { return nil, err }
-		resPack, err := packager.Pack(ctx, packager.Options{Source: source, OutputDir: layoutDir, Spec: packager.SpecType(specStr), Name: name, ArtifactType: artifactType})
-		if err != nil { return nil, fmt.Errorf("packager: %w", err) }
+		if err != nil {
+			return nil, err
+		}
+		resPack, err := pack(ctx, Options{Source: source, OutputDir: layoutDir, Spec: SpecType(specStr), Name: name, ArtifactType: artifactType})
+		if err != nil {
+			return nil, fmt.Errorf("packager: %w", err)
+		}
 
 		// Embed layout files into rootfs via Mkfile (size guard to avoid huge inline blobs)
 		const maxInline = 25 * 1024 * 1024 // 25MB per file safeguard
 		st := llb.Scratch()
 		err = filepath.WalkDir(resPack.LayoutPath, func(p string, d fs.DirEntry, err error) error {
-			if err != nil { return err }
-			if d.IsDir() { return nil }
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
 			rel, _ := filepath.Rel(resPack.LayoutPath, p)
-			info, err := d.Info(); if err != nil { return err }
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
 			if info.Size() > maxInline {
 				return fmt.Errorf("file %s larger than inline limit (%d bytes > %d); use CLI pack instead", rel, info.Size(), maxInline)
 			}
 			b, err := os.ReadFile(p)
-			if err != nil { return err }
+			if err != nil {
+				return err
+			}
 			st = st.File(llb.Mkfile(filepath.ToSlash(rel), 0o644, b))
 			return nil
 		})
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 
 		// Build result definition
 		def, err := st.Marshal(ctx, llb.WithCustomName("packager:modelpack"))
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		res, err := c.Solve(ctx, client.SolveRequest{Definition: def.ToPB()})
-		if err != nil { return nil, err }
-		ref, err := res.SingleRef(); if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
+		ref, err := res.SingleRef()
+		if err != nil {
+			return nil, err
+		}
 
 		// Minimal image config
 		cfg := ocispec.Image{}
@@ -391,9 +480,13 @@ EOF
 
 	case strings.HasPrefix(source, "huggingface://"):
 		spec, err := inference.ParseHuggingFaceSpec(source)
-		if err != nil { return nil, fmt.Errorf("invalid huggingface source: %w", err) }
+		if err != nil {
+			return nil, fmt.Errorf("invalid huggingface source: %w", err)
+		}
 		var tokenExport string
-		if hfToken != "" { tokenExport = "export HUGGING_FACE_HUB_TOKEN=\"" + hfToken + "\"\n" }
+		if hfToken != "" {
+			tokenExport = "export HUGGING_FACE_HUB_TOKEN=\"" + hfToken + "\"\n"
+		}
 		dlScript := fmt.Sprintf(`set -euo pipefail
 	%s
 	mkdir -p /out

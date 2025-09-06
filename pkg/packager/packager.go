@@ -70,7 +70,7 @@ type ModelPackMediaTypes struct {
 }
 
 // Pack builds an OCI artifact from the given source according to the spec.
-func Pack(ctx context.Context, opts Options) (*Result, error) {
+func pack(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Source == "" {
 		return nil, fmt.Errorf("source is required")
 	}

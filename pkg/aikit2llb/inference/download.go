@@ -163,11 +163,13 @@ func createCopyOptions() []llb.CopyOption {
 
 // HuggingFaceSpec represents a parsed huggingface:// reference.
 // Supported forms:
-//   huggingface://namespace/model                -> revision: main
-//   huggingface://namespace/model@rev            -> explicit revision
-//   huggingface://namespace/model:rev            -> (legacy separator) explicit revision
-//   huggingface://namespace/model@rev/path/to    -> with subpath (ignored by current callers)
-//   huggingface://namespace/model/path/to        -> implicit main revision with subpath
+//
+//	huggingface://namespace/model                -> revision: main
+//	huggingface://namespace/model@rev            -> explicit revision
+//	huggingface://namespace/model:rev            -> (legacy separator) explicit revision
+//	huggingface://namespace/model@rev/path/to    -> with subpath (ignored by current callers)
+//	huggingface://namespace/model/path/to        -> implicit main revision with subpath
+//
 // For current usage we only need Namespace, Model, Revision; subpath is ignored.
 type HuggingFaceSpec struct {
 	Namespace string
@@ -189,9 +191,15 @@ func ParseHuggingFaceSpec(src string) (*HuggingFaceSpec, error) {
 		return nil, fmt.Errorf("invalid huggingface spec: %s", src)
 	}
 	spec := &HuggingFaceSpec{Namespace: m[1], Model: m[2], Revision: "main"}
-	if m[3] != "" { spec.Revision = m[3] }
-	if m[4] != "" { spec.SubPath = m[4] }
+	if m[3] != "" {
+		spec.Revision = m[3]
+	}
+	if m[4] != "" {
+		spec.SubPath = m[4]
+	}
 	// Basic validation: no empty pieces
-	if spec.Namespace == "" || spec.Model == "" { return nil, errors.New("namespace and model required") }
+	if spec.Namespace == "" || spec.Model == "" {
+		return nil, errors.New("namespace and model required")
+	}
 	return spec, nil
 }

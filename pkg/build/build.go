@@ -11,7 +11,7 @@ import (
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	"github.com/kaito-project/aikit/pkg/aikit2llb/finetune"
 	"github.com/kaito-project/aikit/pkg/aikit2llb/inference"
-	"github.com/kaito-project/aikit/pkg/packagerfrontend"
+	"github.com/kaito-project/aikit/pkg/packager"
 	"github.com/kaito-project/aikit/pkg/utils"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"github.com/moby/buildkit/client/llb"
@@ -41,15 +41,15 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	opts := c.BuildOpts().Opts
 	// Prefer explicit target selection
 	if t, ok := opts[keyTarget]; ok && t == "packager" {
-		return packagerfrontend.Build(ctx, c)
+		return packager.Build(ctx, c)
 	}
-	// Back-compat: if packager mode is requested via build-arg:source, delegate to packagerfrontend.
+	// Back-compat: if packager mode is requested via build-arg:source, delegate to packager.
 	if s := getBuildArg(opts, "source"); s != "" {
-		return packagerfrontend.Build(ctx, c)
+		return packager.Build(ctx, c)
 	}
 	// Some builders may pass 'source' without the build-arg prefix
 	if s, ok := opts["source"]; ok && s != "" {
-		return packagerfrontend.Build(ctx, c)
+		return packager.Build(ctx, c)
 	}
 
 	inferenceCfg, finetuneCfg, err := getAikitfileConfig(ctx, c)
@@ -301,12 +301,18 @@ func getAikitfileConfig(ctx context.Context, c client.Client) (*config.Inference
 	case strings.HasPrefix(context, "git"):
 		keep := true
 		st2, ok, errGit := dockerui.DetectGitContext(context, &keep)
-		if errGit != nil || !ok { return nil, nil, errors.Errorf("invalid git context %s", context) }
+		if errGit != nil || !ok {
+			return nil, nil, errors.Errorf("invalid git context %s", context)
+		}
 		st = st2
 	case strings.HasPrefix(context, "http") || strings.HasPrefix(context, "https"):
 		keep := true
 		st2, ok, errGit := dockerui.DetectGitContext(context, &keep)
-		if errGit == nil && ok { st = st2 } else { st, filename, _ = dockerui.DetectHTTPContext(context) }
+		if errGit == nil && ok {
+			st = st2
+		} else {
+			st, filename, _ = dockerui.DetectHTTPContext(context)
+		}
 	default:
 		localSt := llb.Local(localNameDockerfile,
 			llb.IncludePatterns([]string{filename}),
