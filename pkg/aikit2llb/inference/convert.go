@@ -16,9 +16,8 @@ const (
 	// temporary fix for https://github.com/mudler/LocalAI/pull/6149
 	// this is on top of e35ad56 but there's no cpu-llama-cpp backend for e35ad56.
 	localAIVersion = "sha-1a0d06f"
-	// localAIDownloadURL = "https://github.com/mudler/LocalAI/releases/download/"
-	localAIDownloadURL = "https://sertaccdnvs-enbgbkgfh5febygb.z02.azurefd.net/localai/"
-	cudaVersion        = "12-5"
+	localAIRepo    = "ghcr.io/kaito-project/aikit/localai:"
+	cudaVersion    = "12-5"
 )
 
 // Aikit2LLB converts an InferenceConfig to an LLB state.
@@ -144,25 +143,32 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 
 // addLocalAI adds the LocalAI binary to the image.
 func addLocalAI(s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State, error) {
-	var localAIURL string
-	binaryNames := map[string]string{
-		utils.PlatformAMD64: "local-ai-" + localAIVersion + "-linux-" + utils.PlatformAMD64,
-		utils.PlatformARM64: "local-ai-" + localAIVersion + "-linux-" + utils.PlatformARM64,
+	// Map architectures to OCI artifact references & internal artifact filenames
+	artifactRefs := map[string]struct {
+		Ref      string
+		FileName string
+	}{
+		utils.PlatformAMD64: {Ref: localAIRepo + localAIVersion + "-amd64", FileName: "local-ai-" + localAIVersion + "-linux-" + utils.PlatformAMD64},
+		utils.PlatformARM64: {Ref: localAIRepo + localAIVersion + "-arm64", FileName: "local-ai-" + localAIVersion + "-linux-" + utils.PlatformARM64},
 	}
-	binaryName, exists := binaryNames[platform.Architecture]
-	if !exists {
+
+	art, ok := artifactRefs[platform.Architecture]
+	if !ok {
 		return s, merge, fmt.Errorf("unsupported architecture %s", platform.Architecture)
 	}
-	localAIURL = fmt.Sprintf(localAIDownloadURL+"%[1]s/%[2]s", localAIVersion, binaryName)
 
 	savedState := s
 
-	var opts []llb.HTTPOption
-	opts = append(opts, llb.Filename("local-ai"), llb.Chmod(0o755))
-	localAI := llb.HTTP(localAIURL, opts...)
+	// Use the oras CLI image to pull the artifact containing the LocalAI binary, then rename to local-ai and chmod.
+	tooling := llb.Image(orasImage, llb.Platform(platform)).Run(
+		utils.Shf("set -e\noras pull %[1]s\nchmod +x %[2]s\nmv %[2]s local-ai\nchmod 755 local-ai\nls -l local-ai", art.Ref, art.FileName),
+		llb.WithCustomName("Pulling LocalAI from OCI artifact "+art.Ref),
+	).Root()
+
+	// Copy the prepared binary into /usr/bin/local-ai
 	s = s.File(
-		llb.Copy(localAI, "local-ai", "/usr/bin/local-ai"),
-		llb.WithCustomName("Copying "+utils.FileNameFromURL(localAIURL)+" to /usr/bin"), //nolint: goconst
+		llb.Copy(tooling, "local-ai", "/usr/bin/local-ai"),
+		llb.WithCustomName("Copying local-ai from OCI artifact to /usr/bin"),
 	)
 
 	diff := llb.Diff(savedState, s)
