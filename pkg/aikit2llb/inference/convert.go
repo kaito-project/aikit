@@ -15,7 +15,7 @@ const (
 	distrolessBase = "ghcr.io/kaito-project/aikit/base:latest"
 	// temporary fix for https://github.com/mudler/LocalAI/pull/6149
 	// this is on top of e35ad56 but there's no cpu-llama-cpp backend for e35ad56.
-	localAIVersion = "sha-1a0d06f"
+	localAIVersion = "sha-ga258ea"
 	localAIRepo    = "ghcr.io/kaito-project/aikit/localai:"
 	cudaVersion    = "12-5"
 )
