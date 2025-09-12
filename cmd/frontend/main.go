@@ -17,6 +17,7 @@ func main() {
 
 	ctx := appcontext.Context()
 
+	// Always run through the primary build router
 	if err := grpcclient.RunFromEnvironment(ctx, build.Build); err != nil {
 		bklog.L.WithError(err).Fatal("error running frontend")
 		os.Exit(1)

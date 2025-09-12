@@ -1,3 +1,4 @@
+// Package inference provides logic to fetch and prepare model artifacts for inference images.
 package inference
 
 import (
@@ -5,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/kaito-project/aikit/pkg/utils"
@@ -23,25 +25,29 @@ func handleOCI(source string, s llb.State, platform specs.Platform) llb.State {
 	toolingImage := llb.Image(orasImage, llb.Platform(platform))
 
 	artifactURL := strings.TrimPrefix(source, "oci://")
-	var orasCmd, modelName string
+	var script string
 
 	if strings.HasPrefix(artifactURL, ollamaRegistryURL) {
-		// Handle specific registry case
-		modelName, orasCmd = handleOllamaRegistry(artifactURL)
-	} else {
-		// Handle generic OCI artifact
-		modelName = extractModelName(artifactURL)
-		orasCmd = fmt.Sprintf("oras blob fetch %[1]s --output /models/%[2]s", artifactURL, modelName)
+		// Reuse existing specialized logic
+		modelName, orasCmd := handleOllamaRegistry(artifactURL)
+		script = fmt.Sprintf("apk add --no-cache jq curl && %s", orasCmd)
+		toolingImage = toolingImage.Run(utils.Sh(script)).Root()
+		modelPath := fmt.Sprintf("/models/%s", modelName)
+		s = s.File(
+			llb.Copy(toolingImage, modelName, modelPath, createCopyOptions()...),
+			llb.WithCustomName("Copying "+artifactURL+" to "+modelPath),
+		)
+		return s
 	}
 
-	// Install jq and execute the oras command
-	toolingImage = toolingImage.Run(utils.Shf("apk add jq curl && %s", orasCmd)).Root()
-
+	// Generic (ModelPack) selects the first application/vnd.cncf.model.weight.* layer.
+	modelName, orasCmd := handleGenericModelPack(artifactURL)
+	script = fmt.Sprintf("apk add --no-cache jq curl && %s", orasCmd)
+	toolingImage = toolingImage.Run(utils.Sh(script)).Root()
 	modelPath := fmt.Sprintf("/models/%s", modelName)
-
 	s = s.File(
 		llb.Copy(toolingImage, modelName, modelPath, createCopyOptions()...),
-		llb.WithCustomName("Copying "+artifactURL+" to "+modelPath),
+		llb.WithCustomName("Copying weight layer from "+artifactURL+" to "+modelPath),
 	)
 	return s
 }
@@ -53,6 +59,33 @@ func handleOllamaRegistry(artifactURL string) (string, string) {
 	modelName := strings.Split(artifactURLWithoutTag, "/")[2]
 	orasCmd := fmt.Sprintf("oras blob fetch %[1]s@$(curl https://%[2]s/v2/library/%[3]s/manifests/%[4]s | jq -r '.layers[] | select(.mediaType == \"application/vnd.ollama.image.model\").digest') --output %[3]s", artifactURLWithoutTag, ollamaRegistryURL, modelName, tag)
 	return modelName, orasCmd
+}
+
+// handleGenericModelPack builds an oras command that:
+// 1. Fetches the manifest (tries insecure first for localhost-style registries)
+// 2. Extracts the first layer whose mediaType starts with application/vnd.cncf.model.weight.
+// 3. Downloads that blob to a file named after the model (base ref name) OR annotation title if present.
+func handleGenericModelPack(artifactURL string) (string, string) {
+	modelName := extractModelName(artifactURL)
+	cmd := fmt.Sprintf(`set -e
+ref=%[1]s
+tmp=/tmp/manifest.json
+# Fetch manifest (insecure first to support localhost:5000 style registries)
+if ! oras manifest fetch "$ref" -o "$tmp" --insecure 2>/dev/null; then
+	oras manifest fetch "$ref" -o "$tmp"
+fi
+layerDigest=$(jq -r '.layers[] | select(.mediaType | startswith("application/vnd.cncf.model.weight.")) | .digest' "$tmp" | head -n1)
+if [ -z "$layerDigest" ]; then echo "No application/vnd.cncf.model.weight.* layer found"; cat "$tmp"; exit 1; fi
+title=$(jq -r '.layers[] | select(.digest=="'$layerDigest'") | .annotations["org.opencontainers.image.title"] // empty' "$tmp")
+outName=%[2]s
+if [ -n "$title" ]; then outName="$title"; fi
+# Fetch blob (again try insecure first)
+if ! oras blob fetch "$ref@$layerDigest" --output "$outName" --insecure 2>/dev/null; then
+	oras blob fetch "$ref@$layerDigest" --output "$outName"
+fi
+ls -l "$outName"
+`, artifactURL, modelName)
+	return modelName, cmd
 }
 
 // handleHTTP handles HTTP(S) downloads.
@@ -76,7 +109,7 @@ func handleHTTP(source, name, sha256 string, s llb.State) llb.State {
 	return s
 }
 
-// parseHuggingFaceURL converts a huggingface:// URL to https:// URL with optional branch support.
+// ParseHuggingFaceURL converts a huggingface:// URL to https:// URL with optional branch support.
 func ParseHuggingFaceURL(source string) (string, string, error) {
 	baseURL := "https://huggingface.co/"
 	modelPath := strings.TrimPrefix(source, "huggingface://")
@@ -158,4 +191,47 @@ func createCopyOptions() []llb.CopyOption {
 			Mode:           &mode,
 		},
 	}
+}
+
+// HuggingFaceSpec represents a parsed huggingface:// reference.
+// Supported forms:
+//
+//	huggingface://namespace/model                -> revision: main
+//	huggingface://namespace/model@rev            -> explicit revision
+//	huggingface://namespace/model:rev            -> (legacy separator) explicit revision
+//	huggingface://namespace/model@rev/path/to    -> with subpath (ignored by current callers)
+//	huggingface://namespace/model/path/to        -> implicit main revision with subpath
+//
+// For current usage we only need Namespace, Model, Revision; subpath is ignored.
+type HuggingFaceSpec struct {
+	Namespace string
+	Model     string
+	Revision  string
+	SubPath   string // optional; empty means whole repo
+}
+
+var hfSpecPattern = regexp.MustCompile(`^huggingface://([^/]+)/([^/@:]+)(?:[@: ]([^/]+))?(?:/(.*))?$`)
+
+// ParseHuggingFaceSpec parses a huggingface:// reference into its components.
+// Defaults revision to "main" when omitted.
+func ParseHuggingFaceSpec(src string) (*HuggingFaceSpec, error) {
+	if !strings.HasPrefix(src, "huggingface://") {
+		return nil, fmt.Errorf("not a huggingface source: %s", src)
+	}
+	m := hfSpecPattern.FindStringSubmatch(src)
+	if m == nil {
+		return nil, fmt.Errorf("invalid huggingface spec: %s", src)
+	}
+	spec := &HuggingFaceSpec{Namespace: m[1], Model: m[2], Revision: "main"}
+	if m[3] != "" {
+		spec.Revision = m[3]
+	}
+	if m[4] != "" {
+		spec.SubPath = m[4]
+	}
+	// Basic validation: no empty pieces
+	if spec.Namespace == "" || spec.Model == "" {
+		return nil, errors.New("namespace and model required")
+	}
+	return spec, nil
 }

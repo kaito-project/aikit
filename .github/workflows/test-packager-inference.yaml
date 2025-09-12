@@ -1,0 +1,126 @@
+name: test-packager-inference
+
+on:
+  workflow_dispatch:
+  push:
+    paths-ignore:
+      - '**.md'
+      - 'website/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'website/**'
+
+permissions: read-all
+
+jobs:
+  build-and-infer:
+    runs-on: ubuntu-latest-16-cores
+    timeout-minutes: 60
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+        with:
+          egress-policy: audit
+          allowed-endpoints: >
+            auth.docker.io:443
+            github.com:443
+            *.githubusercontent.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            sum.golang.org:443
+            *.ubuntu.com:80
+            security.ubuntu.com:80
+            ghcr.io:443
+            huggingface.co:443
+
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Setup Docker (containerd + insecure local registry)
+        uses: crazy-max/ghaction-setup-docker@b60f85385d03ac8acfca6d9996982511d8620a19 # v4.3.0
+        with:
+          daemon-config: |
+            {
+              "debug": true,
+              "insecure-registries": ["localhost:5000","127.0.0.1:5000"],
+              "features": {"containerd-snapshotter": true}
+            }
+
+      - name: Start local registry
+        run: docker run -d -p 5000:5000 --name registry registry:2
+
+      - name: Build & push frontend syntax image to local registry
+        run: |
+          set -euo pipefail
+          docker buildx build . -t localhost:5000/aikit:local --push --provenance=false --progress plain
+
+      - name: Build raw modelpack OCI layout (huggingface source)
+        run: |
+          set -euo pipefail
+          mkdir -p modelpack-out
+          docker buildx build . \
+            --build-arg BUILDKIT_SYNTAX=localhost:5000/aikit:local \
+            --target packager/modelpack \
+            --build-arg source=huggingface://MaziyarPanahi/Llama-3.2-1B-Instruct-GGUF/Llama-3.2-1B-Instruct.Q4_K_M.gguf \
+            --build-arg name=llama-3.2-1b-instruct \
+            --build-arg layer_packaging=raw \
+            --output type=local,dest=modelpack-out
+          test -f modelpack-out/layout/index.json
+          echo 'Modelpack layout:'
+          find modelpack-out -maxdepth 2 -type f | head -50
+
+      - name: Push modelpack to local registry
+        run: |
+          set -euo pipefail
+          skopeo copy --dest-tls-verify=false oci:modelpack-out/layout docker://localhost:5000/aikit/llama-3.2-1b-instruct:modelpack
+          skopeo inspect --tls-verify=false --raw docker://localhost:5000/aikit/llama-3.2-1b-instruct:modelpack > pushed-manifest.json
+          sha=sha256:$(sha256sum pushed-manifest.json | awk '{print $1}')
+          echo "Pushed manifest digest: $sha"
+
+      - name: Generate aikit inference spec referencing OCI artifact (based on test/aikitfile-llama.yaml)
+        run: |
+          set -euo pipefail
+          # Start from existing test spec and adjust:
+          sed '1s|.*|#syntax=localhost:5000/aikit:local|' test/aikitfile-llama.yaml > inference-aikitfile.yaml
+          # Replace the source line with oci reference; keep rest of templates/config
+          sed -i "s|^\( *source: \).*|    source: oci://docker.io/sozercan/llama-3.2-1b-instruct:modelpack|" inference-aikitfile.yaml
+          # Optionally shrink context size for faster test (reduce to 512)
+          sed -i 's/context_size: 8192/context_size: 512/' inference-aikitfile.yaml
+          # Ensure parameters.model is set explicitly (some specs may vary)
+          sed -i 's|^\( *model: \).*|      model: llama-3.2-1b-instruct|' inference-aikitfile.yaml
+          grep -n 'oci://docker.io/sozercan/llama-3.2-1b-instruct:modelpack' inference-aikitfile.yaml
+          sed -n '1,120p' inference-aikitfile.yaml
+
+      - name: Build inference image from aikit spec
+        run: |
+          set -euo pipefail
+          docker buildx build . \
+            -f inference-aikitfile.yaml \
+            --tag aikit-infer:latest \
+            --load
+          echo 'Inference container image built and loaded into local Docker daemon.'
+
+      - name: Run container (local server) and perform inference
+        run: |
+          set -euo pipefail
+          docker run -d --name aikit-infer -p 8080:8080 aikit-infer:latest
+          result=$(curl --fail --retry 15 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{"model":"llama-3.2-1b-instruct","messages":[{"role":"user","content":"explain kubernetes in a sentence"}]}')
+          echo "$result"
+          choices=$(echo "$result" | jq '.choices')
+          if [ -z "$choices" ] || [ "$choices" = "null" ]; then
+            echo 'No choices in response'; docker logs aikit-infer; docker kill aikit-infer; exit 1; fi
+
+      - name: save logs
+        if: always()
+        run: docker logs aikit-infer > /tmp/aikit-infer.log || true
+
+      - name: cleanup container
+        if: always()
+        run: docker rm -f aikit-infer || true
+
+      - name: publish inference artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: inference-logs
+          path: /tmp/aikit-infer.log

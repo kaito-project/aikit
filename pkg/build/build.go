@@ -11,6 +11,7 @@ import (
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	"github.com/kaito-project/aikit/pkg/aikit2llb/finetune"
 	"github.com/kaito-project/aikit/pkg/aikit2llb/inference"
+	"github.com/kaito-project/aikit/pkg/packager"
 	"github.com/kaito-project/aikit/pkg/utils"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"github.com/moby/buildkit/client/llb"
@@ -26,7 +27,6 @@ import (
 const (
 	localNameContext     = "context"
 	localNameDockerfile  = "dockerfile"
-	localNameAikitfile   = "aikitfile.yaml"
 	defaultAikitfileName = "aikitfile.yaml"
 
 	keyFilename       = "filename"
@@ -37,6 +37,18 @@ const (
 )
 
 func Build(ctx context.Context, c client.Client) (*client.Result, error) {
+	opts := c.BuildOpts().Opts
+	// Prefer explicit target selection (including new split targets)
+	if t, ok := opts[keyTarget]; ok {
+		switch t {
+		case "packager/modelpack":
+			return packager.BuildModelpack(ctx, c)
+		case "packager/generic":
+			return packager.BuildGeneric(ctx, c)
+		}
+	}
+	// Packaging now requires explicit --target packager/modelpack or packager/generic.
+
 	inferenceCfg, finetuneCfg, err := getAikitfileConfig(ctx, c)
 	if err != nil {
 		return nil, errors.Wrap(err, "getting aikitfile")
@@ -282,16 +294,20 @@ func getAikitfileConfig(ctx context.Context, c client.Client) (*config.Inference
 	context := opts[localNameContext]
 
 	var st *llb.State
-	var ok bool
 	switch {
 	case strings.HasPrefix(context, "git"):
-		st, ok = dockerui.DetectGitContext(context, true)
-		if !ok {
+		keep := true
+		st2, ok, errGit := dockerui.DetectGitContext(context, &keep)
+		if errGit != nil || !ok {
 			return nil, nil, errors.Errorf("invalid git context %s", context)
 		}
+		st = st2
 	case strings.HasPrefix(context, "http") || strings.HasPrefix(context, "https"):
-		st, ok = dockerui.DetectGitContext(context, true)
-		if !ok {
+		keep := true
+		st2, ok, errGit := dockerui.DetectGitContext(context, &keep)
+		if errGit == nil && ok {
+			st = st2
+		} else {
 			st, filename, _ = dockerui.DetectHTTPContext(context)
 		}
 	default:
