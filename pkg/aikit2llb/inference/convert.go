@@ -13,9 +13,7 @@ import (
 
 const (
 	distrolessBase = "ghcr.io/kaito-project/aikit/base:latest"
-	// temporary fix for https://github.com/mudler/LocalAI/pull/6149
-	// this is on top of 37f5e4f but there's no cpu-llama-cpp backend for 37f5e4f.
-	localAIVersion = "sha-ffa934b"
+	localAIVersion = "v3.5.4"
 	localAIRepo    = "ghcr.io/kaito-project/aikit/localai:"
 	cudaVersion    = "12-5"
 )
