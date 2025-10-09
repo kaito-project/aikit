@@ -156,11 +156,6 @@ func addLocalAI(s llb.State, merge llb.State, platform specs.Platform, c *config
 
 	savedState := s
 
-	// temp pin local-ai version for apple silicon
-	if c.Runtime == utils.RuntimeAppleSilicon {
-		art.Ref = "ghcr.io/kaito-project/aikit/localai:v3.4.0-arm64"
-	}
-
 	// Use the oras CLI image to pull the artifact containing the LocalAI binary, then rename to local-ai and chmod.
 	tooling := llb.Image(orasImage, llb.Platform(platform)).Run(
 		utils.Shf("set -e\noras pull %[1]s\nchmod 755 local-ai\nls -l local-ai", art.Ref),
