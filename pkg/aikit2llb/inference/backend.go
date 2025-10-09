@@ -130,8 +130,8 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 	// Use Apple Silicon specific registry for arm64 platforms
 	var ociImage string
 	if runtime := c.Runtime; runtime == utils.RuntimeAppleSilicon && platform.Architecture == utils.PlatformARM64 {
-		localAIVersion := "v3.4.0" // temp pin for now
-		ociImage = fmt.Sprintf("sertacacr.azurecr.io/llama-cpp:%s-vulkan", localAIVersion)
+		// localAIVersion := "v3.4.0" // temp pin for now
+		ociImage = "docker.io/sozercan/test:apple" // fmt.Sprintf("sertacacr.azurecr.io/llama-cpp:%s-vulkan", localAIVersion)
 	} else {
 		ociImage = fmt.Sprintf("%s:%s", utils.BackendOCIRegistry, tag)
 	}
