@@ -74,17 +74,13 @@ jobs:
       - name: build aikit
         run: |
           docker buildx build . -t aikit:test \
-            --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=aikit-amd64 \
-            --cache-to=type=gha,scope=aikit-amd64,mode=max
+            --load --provenance=false --progress plain
 
       - name: build test model
         run: |
           docker buildx build . -t testmodel:test \
             -f test/aikitfile-llama.yaml \
-            --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=testmodel-amd64 \
-            --cache-to=type=gha,scope=testmodel-amd64,mode=max
+            --load --provenance=false --progress plain
 
       - name: list images
         run: docker images

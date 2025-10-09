@@ -82,8 +82,6 @@ jobs:
         run: |
           docker buildx build . -t aikit:test \
             --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=aikit-${{ matrix.arch }} \
-            --cache-to=type=gha,scope=aikit-${{ matrix.arch }},mode=max \
             --platform linux/${{ matrix.arch }}
 
       - name: build test model
@@ -91,8 +89,6 @@ jobs:
           docker buildx build . -t testmodel:test \
             -f test/aikitfile-${{ matrix.backend }}.yaml \
             --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=testmodel-${{ matrix.arch }} \
-            --cache-to=type=gha,scope=testmodel-${{ matrix.arch }},mode=max \
             --platform linux/${{ matrix.arch }} \
             ${{ matrix.backend == 'llama-cuda' && '--build-arg=runtime=cuda' || '' }}
 
@@ -186,17 +182,13 @@ jobs:
       - name: build aikit
         run: |
           docker buildx build . -t aikit:test \
-            --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=aikit-amd64 \
-            --cache-to=type=gha,scope=aikit-amd64,mode=max
+            --load --provenance=false --progress plain
 
       - name: build test model
         run: |
           docker buildx build . -t testmodel:test \
             -f test/aikitfile-${{ matrix.protocol }}.yaml \
-            --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=testmodel-${{ matrix.protocol }} \
-            --cache-to=type=gha,scope=testmodel-${{ matrix.protocol }},mode=max
+            --load --provenance=false --progress plain
 
       - name: list images
         run: docker images

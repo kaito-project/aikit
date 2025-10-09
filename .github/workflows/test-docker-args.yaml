@@ -70,9 +70,7 @@ jobs:
       - name: build aikit
         run: |
           docker buildx build . -t aikit:test \
-            --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=aikit-amd64 \
-            --cache-to=type=gha,scope=aikit-amd64,mode=max
+            --load --provenance=false --progress plain
 
       - name: set url
         run: |
@@ -92,8 +90,6 @@ jobs:
           docker buildx build -t testmodel:test \
             --build-arg="model=$MODEL_URL" \
             --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=testmodel-${{ matrix.protocol }} \
-            --cache-to=type=gha,scope=testmodel-${{ matrix.protocol }},mode=max \
             "https://raw.githubusercontent.com/${REPO}/${SOURCE_BRANCH}/test/aikitfile-args.yaml"
         env:
           REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
