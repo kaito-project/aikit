@@ -34,7 +34,7 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 		return state, nil, err
 	}
 
-	state, merge, err = addLocalAI(state, merge, *platform)
+	state, merge, err = addLocalAI(state, merge, *platform, c)
 	if err != nil {
 		return state, nil, err
 	}
@@ -140,7 +140,7 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 }
 
 // addLocalAI adds the LocalAI binary to the image.
-func addLocalAI(s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State, error) {
+func addLocalAI(s llb.State, merge llb.State, platform specs.Platform, c *config.InferenceConfig) (llb.State, llb.State, error) {
 	// Map architectures to OCI artifact references & internal artifact filenames
 	artifactRefs := map[string]struct {
 		Ref string
@@ -155,6 +155,11 @@ func addLocalAI(s llb.State, merge llb.State, platform specs.Platform) (llb.Stat
 	}
 
 	savedState := s
+
+	// temp pin local-ai version for apple silicon
+	if c.Runtime == utils.RuntimeAppleSilicon {
+		art.Ref = "ghcr.io/kaito-project/aikit/localai:v3.4.0-arm64"
+	}
 
 	// Use the oras CLI image to pull the artifact containing the LocalAI binary, then rename to local-ai and chmod.
 	tooling := llb.Image(orasImage, llb.Platform(platform)).Run(
