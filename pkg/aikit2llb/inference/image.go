@@ -17,7 +17,7 @@ func NewImageConfig(c *config.InferenceConfig, platform *specs.Platform) *specs.
 		cmd = append(cmd, "--config-file=/config.yaml")
 	}
 
-	img.Config.Entrypoint = []string{"/usr/bin/local-ai"}
+	img.Config.Entrypoint = []string{"local-ai"}
 	img.Config.Cmd = cmd
 	return img
 }
