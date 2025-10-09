@@ -143,7 +143,7 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 func addLocalAI(s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State, error) {
 	// Map architectures to OCI artifact references & internal artifact filenames
 	artifactRefs := map[string]struct {
-		Ref      string
+		Ref string
 	}{
 		utils.PlatformAMD64: {Ref: localAIRepo + localAIVersion + "-amd64"},
 		utils.PlatformARM64: {Ref: localAIRepo + localAIVersion + "-arm64"},
