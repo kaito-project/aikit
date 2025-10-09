@@ -158,7 +158,7 @@ func addLocalAI(s llb.State, merge llb.State, platform specs.Platform) (llb.Stat
 
 	// Use the oras CLI image to pull the artifact containing the LocalAI binary, then rename to local-ai and chmod.
 	tooling := llb.Image(orasImage, llb.Platform(platform)).Run(
-		utils.Shf("set -e\noras pull %[1]s\nchmod 755 local-ai\nls -l local-ai", art.Ref),
+		utils.Shf("set -e\noras pull %[1]s\nchmod +x local-ai\nchmod 755 local-ai\nls -l local-ai", art.Ref),
 		llb.WithCustomName("Pulling LocalAI from OCI artifact "+art.Ref),
 	).Root()
 
