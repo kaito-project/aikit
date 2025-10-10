@@ -9,6 +9,13 @@ on:
     paths-ignore:
       - '**.md'
       - 'website/**'
+  workflow_dispatch:
+    inputs:
+      enable_cache:
+        description: 'Enable build cache'
+        type: boolean
+        default: false
+        required: false
 
 permissions: read-all
 
@@ -69,10 +76,13 @@ jobs:
 
       - name: build aikit
         run: |
+          CACHE_FLAGS=""
+          if [ "${{ github.event.inputs.enable_cache }}" = "true" ]; then
+            CACHE_FLAGS="--cache-from=type=gha,scope=aikit-amd64 --cache-to=type=gha,scope=aikit-amd64,mode=max"
+          fi
           docker buildx build . -t aikit:test \
             --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=aikit-amd64 \
-            --cache-to=type=gha,scope=aikit-amd64,mode=max
+            $CACHE_FLAGS
 
       - name: set url
         run: |
@@ -89,11 +99,14 @@ jobs:
 
       - name: build test model
         run: |
+          CACHE_FLAGS=""
+          if [ "${{ github.event.inputs.enable_cache }}" = "true" ]; then
+            CACHE_FLAGS="--cache-from=type=gha,scope=testmodel-${{ matrix.protocol }} --cache-to=type=gha,scope=testmodel-${{ matrix.protocol }},mode=max"
+          fi
           docker buildx build -t testmodel:test \
             --build-arg="model=$MODEL_URL" \
             --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=testmodel-${{ matrix.protocol }} \
-            --cache-to=type=gha,scope=testmodel-${{ matrix.protocol }},mode=max \
+            $CACHE_FLAGS \
             "https://raw.githubusercontent.com/${REPO}/${SOURCE_BRANCH}/test/aikitfile-args.yaml"
         env:
           REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
