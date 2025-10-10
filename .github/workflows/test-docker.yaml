@@ -9,6 +9,14 @@ on:
     paths-ignore:
       - '**.md'
       - 'website/**'
+  workflow_dispatch:
+    inputs:
+      # there is an outage for gha cache - disabling for now
+      enable_cache:
+        description: 'Enable build cache'
+        type: boolean
+        default: false
+        required: false
 
 permissions: read-all
 
@@ -66,6 +74,7 @@ jobs:
       # need containerd image store for testing local images
       - uses: crazy-max/ghaction-setup-docker@b60f85385d03ac8acfca6d9996982511d8620a19 # v4.3.0
         with:
+          version: version=v27.5.1
           daemon-config: |
             {
               "debug": true,
@@ -79,19 +88,25 @@ jobs:
 
       - name: build aikit
         run: |
+          CACHE_FLAGS=""
+          if [ "${{ github.event.inputs.enable_cache }}" = "true" ]; then
+            CACHE_FLAGS="--cache-from=type=gha,scope=aikit-${{ matrix.arch }} --cache-to=type=gha,scope=aikit-${{ matrix.arch }},mode=max"
+          fi
           docker buildx build . -t aikit:test \
             --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=aikit-${{ matrix.arch }} \
-            --cache-to=type=gha,scope=aikit-${{ matrix.arch }},mode=max \
+            $CACHE_FLAGS \
             --platform linux/${{ matrix.arch }}
 
       - name: build test model
         run: |
+          CACHE_FLAGS=""
+          if [ "${{ github.event.inputs.enable_cache }}" = "true" ]; then
+            CACHE_FLAGS="--cache-from=type=gha,scope=testmodel-${{ matrix.arch }} --cache-to=type=gha,scope=testmodel-${{ matrix.arch }},mode=max"
+          fi
           docker buildx build . -t testmodel:test \
             -f test/aikitfile-${{ matrix.backend }}.yaml \
             --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=testmodel-${{ matrix.arch }} \
-            --cache-to=type=gha,scope=testmodel-${{ matrix.arch }},mode=max \
+            $CACHE_FLAGS \
             --platform linux/${{ matrix.arch }} \
             ${{ matrix.backend == 'llama-cuda' && '--build-arg=runtime=cuda' || '' }}
 
@@ -172,6 +187,7 @@ jobs:
       # need containerd image store for testing local images
       - uses: crazy-max/ghaction-setup-docker@b60f85385d03ac8acfca6d9996982511d8620a19 # v4.3.0
         with:
+          version: version=v27.5.1
           daemon-config: |
             {
               "debug": true,
@@ -183,18 +199,24 @@ jobs:
 
       - name: build aikit
         run: |
+          CACHE_FLAGS=""
+          if [ "${{ github.event.inputs.enable_cache }}" = "true" ]; then
+            CACHE_FLAGS="--cache-from=type=gha,scope=aikit-amd64 --cache-to=type=gha,scope=aikit-amd64,mode=max"
+          fi
           docker buildx build . -t aikit:test \
             --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=aikit-amd64 \
-            --cache-to=type=gha,scope=aikit-amd64,mode=max
+            $CACHE_FLAGS
 
       - name: build test model
         run: |
+          CACHE_FLAGS=""
+          if [ "${{ github.event.inputs.enable_cache }}" = "true" ]; then
+            CACHE_FLAGS="--cache-from=type=gha,scope=testmodel-${{ matrix.protocol }} --cache-to=type=gha,scope=testmodel-${{ matrix.protocol }},mode=max"
+          fi
           docker buildx build . -t testmodel:test \
             -f test/aikitfile-${{ matrix.protocol }}.yaml \
             --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=testmodel-${{ matrix.protocol }} \
-            --cache-to=type=gha,scope=testmodel-${{ matrix.protocol }},mode=max
+            $CACHE_FLAGS
 
       - name: list images
         run: docker images

@@ -283,14 +283,15 @@ func getAikitfileConfig(ctx context.Context, c client.Client) (*config.Inference
 
 	var st *llb.State
 	var ok bool
+	keepGit := true
 	switch {
 	case strings.HasPrefix(context, "git"):
-		st, ok = dockerui.DetectGitContext(context, true)
+		st, ok, _ = dockerui.DetectGitContext(context, &keepGit)
 		if !ok {
 			return nil, nil, errors.Errorf("invalid git context %s", context)
 		}
 	case strings.HasPrefix(context, "http") || strings.HasPrefix(context, "https"):
-		st, ok = dockerui.DetectGitContext(context, true)
+		st, ok, _ = dockerui.DetectGitContext(context, &keepGit)
 		if !ok {
 			st, filename, _ = dockerui.DetectHTTPContext(context)
 		}
