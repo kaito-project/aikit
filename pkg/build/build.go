@@ -38,7 +38,6 @@ const (
 
 func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	opts := c.BuildOpts().Opts
-	// Prefer explicit target selection (including new split targets)
 	if t, ok := opts[keyTarget]; ok {
 		switch t {
 		case "packager/modelpack":
@@ -47,7 +46,6 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 			return packager.BuildGeneric(ctx, c)
 		}
 	}
-	// Packaging now requires explicit --target packager/modelpack or packager/generic.
 
 	inferenceCfg, finetuneCfg, err := getAikitfileConfig(ctx, c)
 	if err != nil {
@@ -302,7 +300,6 @@ func getAikitfileConfig(ctx context.Context, c client.Client) (*config.Inference
 		if !ok {
 			return nil, nil, errors.Errorf("invalid git context %s", context)
 		}
-		st = st2
 	case strings.HasPrefix(context, "http") || strings.HasPrefix(context, "https"):
 		st, ok, _ = dockerui.DetectGitContext(context, &keepGit)
 		if !ok {
