@@ -41,7 +41,7 @@ docker buildx build \
   --output=qwen -<<<""
 ```
 
-then use a tool like [`skopeo`](https://github.com/containers/skopeo) or [`oras`](https://github.com/oras-project/oras) to copy the image to a remote registry.
+Due to current BuildKit limitations, we can not push directly to a remote registry at this time. You must first output to a local OCI layout, then use a tool like `skopeo`[https://github.com/containers/skopeo] or `oras`[https://github.com/oras-project/oras] to copy the image to a remote registry.
 
 ```shell
 export REGISTRY=docker.io/youruser/qwen3:0.6b
@@ -52,7 +52,7 @@ skopeo copy oci:qwen/layout docker://$REGISTRY
 
 Files are deterministically classified into lists:
 
-- weights: `*.safetensors`, `*.bin`, `*.gguf`, `*.pt`, `*.ckpt`, plus any other file >10MiB
+- weights: `*.safetensors`, `*.bin`, `*.gguf`, `*.pt`, `*.ckpt`, plus any other unknown file that's larger than 10MiB
 - config: tokenizer/config JSON & small text/json defaults
 - docs: readme/license/markdown
 - code: `*.py`, `*.sh`, `*.ipynb`, `*.go`, `*.js`, `*.ts`

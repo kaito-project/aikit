@@ -25,5 +25,5 @@ func buildHuggingFaceState(source string, exclude string) (llb.State, error) {
 		llb.AddSecret("/run/secrets/hf-token", llb.SecretID("hf-token"), llb.SecretOptional),
 	}
 	run := llb.Image(hfCLIImage).Run(runOpts...)
-	return llb.Scratch().File(llb.Copy(run.Root(), "/out/", "/")), nil
+	return llb.Scratch().File(llb.Copy(run.Root(), "/out/", "/", &llb.CopyInfo{CopyDirContentsOnly: true})), nil
 }
