@@ -27,7 +27,6 @@ import (
 const (
 	localNameContext     = "context"
 	localNameDockerfile  = "dockerfile"
-	defaultAikitfileName = "aikitfile.yaml"
 
 	keyFilename       = "filename"
 	keyTarget         = "target"

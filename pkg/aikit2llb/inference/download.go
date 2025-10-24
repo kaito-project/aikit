@@ -210,7 +210,7 @@ type HuggingFaceSpec struct {
 	SubPath   string // optional; empty means whole repo
 }
 
-var hfSpecPattern = regexp.MustCompile(`^huggingface://([^/]+)/([^/@:]+)(?:[@: ]([^/]+))?(?:/(.*))?$`)
+var hfSpecPattern = regexp.MustCompile(`^huggingface://([^/]+)/([^/@:]+)(?:[@:]([^/]+))?(?:/(.*))?$`)
 
 // ParseHuggingFaceSpec parses a huggingface:// reference into its components.
 // Defaults revision to "main" when omitted.
