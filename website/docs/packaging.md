@@ -41,7 +41,7 @@ docker buildx build \
   --output=qwen -<<<""
 ```
 
-Due to current BuildKit limitations, we can not push directly to a remote registry at this time. You must first output to a local OCI layout, then use a tool like `skopeo`[https://github.com/containers/skopeo] or `oras`[https://github.com/oras-project/oras] to copy the image to a remote registry.
+Due to current BuildKit limitations, we can not push directly to a remote registry at this time. You must first output to a local OCI layout, then use a tool like [`skopeo`](https://github.com/containers/skopeo) or [`oras`](https://github.com/oras-project/oras) to copy the image to a remote registry.
 
 ```shell
 export REGISTRY=docker.io/youruser/qwen3:0.6b
