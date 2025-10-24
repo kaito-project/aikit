@@ -14,7 +14,8 @@ import (
 // inside the local context. For HTTP(S) single files, preserveHTTPFilename controls
 // whether the original basename is explicitly enforced (useful to avoid anonymous temp names).
 // hfSecretFlag indicates optional HF token secret mount for huggingface sources.
-func resolveSourceState(source, sessionID, hfSecretFlag string, preserveHTTPFilename bool) (llb.State, error) {
+// exclude is an optional space-separated list of patterns to exclude from huggingface downloads.
+func resolveSourceState(source, sessionID, hfSecretFlag string, preserveHTTPFilename bool, exclude string) (llb.State, error) {
 	if source == "" || source == "." || source == "context" {
 		return llb.Local(localNameContext, llb.SessionID(sessionID), llb.SharedKeyHint(localNameContext)), nil
 	}
@@ -41,7 +42,7 @@ func resolveSourceState(source, sessionID, hfSecretFlag string, preserveHTTPFile
 			}
 		}
 		// Fallback: download full repository snapshot
-		st, err := buildHuggingFaceState(source, hfSecretFlag)
+		st, err := buildHuggingFaceState(source, hfSecretFlag, exclude)
 		if err != nil {
 			return llb.State{}, err
 		}
@@ -61,7 +62,7 @@ func resolveSourceState(source, sessionID, hfSecretFlag string, preserveHTTPFile
 
 // debug helper (not currently used in production code) to validate error paths.
 func mustResolve(source, sessionID, hfSecretFlag string, preserve bool) llb.State { //nolint:unused
-	st, err := resolveSourceState(source, sessionID, hfSecretFlag, preserve)
+	st, err := resolveSourceState(source, sessionID, hfSecretFlag, preserve, "")
 	if err != nil {
 		panic(fmt.Sprintf("resolve failed: %v", err))
 	}

@@ -17,15 +17,68 @@ const (
 // generateHFDownloadScript returns a shell script that downloads a Hugging Face
 // repository snapshot deterministically, honoring an optional token exposed
 // through a BuildKit secret at /run/secrets/hf-token.
-func generateHFDownloadScript(namespace, model, revision string) string {
+// exclude is an optional space-separated list of patterns (e.g., "'original/*' 'metal/*'")
+// which will be passed as a single --exclude flag with multiple patterns to the hf download command.
+func generateHFDownloadScript(namespace, model, revision, exclude string) string {
+	excludeFlags := ""
+	if exclude != "" {
+		// Parse the exclude patterns: they come in as "'pattern1' 'pattern2'"
+		// We need to convert this to: --exclude 'pattern1' 'pattern2'
+		// The patterns need to stay quoted for shell safety
+		patterns := parseExcludePatterns(exclude)
+		if len(patterns) > 0 {
+			excludeFlags = " --exclude"
+			for _, pattern := range patterns {
+				excludeFlags += fmt.Sprintf(" '%s'", pattern)
+			}
+		}
+	}
 	return fmt.Sprintf(`set -euo pipefail
 if [ -f /run/secrets/hf-token ]; then export HUGGING_FACE_HUB_TOKEN="$(cat /run/secrets/hf-token)"; fi
 mkdir -p /out
-hf download %s/%s --revision %s --local-dir /out
+hf download %s/%s --revision %s --local-dir /out%s
 # remove transient cache / lock artifacts
 rm -rf /out/.cache || true
 find /out -type f -name '*.lock' -delete || true
-`, namespace, model, revision)
+`, namespace, model, revision, excludeFlags)
+}
+
+// parseExcludePatterns takes a string like "'original/*' 'metal/*'" and returns
+// a slice of individual patterns without quotes: ["original/*", "metal/*"].
+func parseExcludePatterns(exclude string) []string {
+	if exclude == "" {
+		return nil
+	}
+	var patterns []string
+	current := ""
+	inQuote := false
+
+	for i := 0; i < len(exclude); i++ {
+		ch := exclude[i]
+		if ch == '\'' || ch == '"' {
+			if inQuote {
+				// End of quoted pattern
+				if current != "" {
+					patterns = append(patterns, current)
+					current = ""
+				}
+				inQuote = false
+			} else {
+				// Start of quoted pattern
+				inQuote = true
+			}
+		} else if inQuote {
+			current += string(ch)
+		}
+		// Skip whitespace outside quotes
+	}
+
+	// Handle any remaining pattern
+	if current != "" {
+		patterns = append(patterns, current)
+	}
+
+	return patterns
 }
 
 // generateHFSingleFileDownloadScript downloads a single file from a Hugging Face

@@ -11,7 +11,8 @@ import (
 // buildHuggingFaceState returns an llb.State containing the downloaded Hugging Face
 // repository snapshot rooted at /. It mounts an optional secret containing the token
 // when hfSecretFlag is non-empty (flag indicates user requested secret mount).
-func buildHuggingFaceState(source string, hfSecretFlag string) (llb.State, error) {
+// exclude is an optional space-separated list of patterns to exclude from download.
+func buildHuggingFaceState(source string, hfSecretFlag string, exclude string) (llb.State, error) {
 	if !strings.HasPrefix(source, "huggingface://") {
 		return llb.State{}, fmt.Errorf("not a huggingface source: %s", source)
 	}
@@ -19,7 +20,7 @@ func buildHuggingFaceState(source string, hfSecretFlag string) (llb.State, error
 	if err != nil {
 		return llb.State{}, fmt.Errorf("invalid huggingface source: %w", err)
 	}
-	dlScript := generateHFDownloadScript(spec.Namespace, spec.Model, spec.Revision)
+	dlScript := generateHFDownloadScript(spec.Namespace, spec.Model, spec.Revision, exclude)
 	runOpts := []llb.RunOption{llb.Args([]string{"bash", "-c", dlScript})}
 	if hfSecretFlag != "" { // presence acts as opt-in to secret mount
 		runOpts = append(runOpts, llb.AddSecret("/run/secrets/hf-token", llb.SecretID("hf-token")))

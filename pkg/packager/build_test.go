@@ -7,7 +7,7 @@ import (
 )
 
 func Test_generateHFDownloadScript(t *testing.T) {
-	script := generateHFDownloadScript("org", "model", "rev123")
+	script := generateHFDownloadScript("org", "model", "rev123", "")
 	checks := []string{
 		"set -euo pipefail",
 		"org/model",
@@ -25,6 +25,69 @@ func Test_generateHFDownloadScript(t *testing.T) {
 	// Ensure no accidental printf tokens remain unexpanded
 	if strings.Contains(script, "%s") {
 		t.Fatalf("unexpected unexpanded fmt token in script: %s", script)
+	}
+}
+
+func Test_generateHFDownloadScript_WithExclude(t *testing.T) {
+	script := generateHFDownloadScript("org", "model", "rev123", "'original/*' 'metal/*'")
+	checks := []string{
+		"set -euo pipefail",
+		"org/model",
+		"--revision rev123",
+		"--exclude 'original/*' 'metal/*'",
+		"hf download",
+	}
+	for _, c := range checks {
+		if !strings.Contains(script, c) {
+			t.Fatalf("expected script to contain %q; got %s", c, script)
+		}
+	}
+}
+
+func Test_parseExcludePatterns(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{
+			name:     "empty string",
+			input:    "",
+			expected: nil,
+		},
+		{
+			name:     "single quoted pattern",
+			input:    "'original/*'",
+			expected: []string{"original/*"},
+		},
+		{
+			name:     "multiple quoted patterns",
+			input:    "'original/*' 'metal/*'",
+			expected: []string{"original/*", "metal/*"},
+		},
+		{
+			name:     "double quotes",
+			input:    `"*.safetensors" "metal/**"`,
+			expected: []string{"*.safetensors", "metal/**"},
+		},
+		{
+			name:     "mixed patterns",
+			input:    "'original/**' \"metal/*\" '*.bin'",
+			expected: []string{"original/**", "metal/*", "*.bin"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseExcludePatterns(tt.input)
+			if len(result) != len(tt.expected) {
+				t.Fatalf("expected %d patterns, got %d: %v", len(tt.expected), len(result), result)
+			}
+			for i, exp := range tt.expected {
+				if result[i] != exp {
+					t.Fatalf("pattern %d: expected %q, got %q", i, exp, result[i])
+				}
+			}
+		})
 	}
 }
 
@@ -47,7 +110,7 @@ func Test_createMinimalImageConfig(t *testing.T) {
 
 func Test_buildHuggingFaceState_ScriptContent(t *testing.T) {
 	src := "huggingface://org/model@rev123"
-	st, err := buildHuggingFaceState(src, "")
+	st, err := buildHuggingFaceState(src, "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -72,7 +135,7 @@ func Test_buildHuggingFaceState_ScriptContent(t *testing.T) {
 
 func Test_buildHuggingFaceState_SecretMount(t *testing.T) {
 	src := "huggingface://org/model@main"
-	st, err := buildHuggingFaceState(src, "")
+	st, err := buildHuggingFaceState(src, "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -86,6 +149,27 @@ func Test_buildHuggingFaceState_SecretMount(t *testing.T) {
 	}
 	if !strings.Contains(combined, "/run/secrets/hf-token") {
 		t.Fatalf("expected secret mount path in definition")
+	}
+}
+
+func Test_buildHuggingFaceState_WithExclude(t *testing.T) {
+	src := "huggingface://org/model@rev123"
+	exclude := "'original/*' 'metal/*'"
+	st, err := buildHuggingFaceState(src, "", exclude)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	def, err := st.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	var combined string
+	for _, d := range def.ToPB().Def {
+		combined += string(d)
+	}
+	// Check that exclude patterns are in the command as a single --exclude flag
+	if !strings.Contains(combined, "--exclude 'original/*' 'metal/*'") {
+		t.Fatalf("expected def to contain \"--exclude 'original/*' 'metal/*'\", got: %s", combined)
 	}
 }
 
@@ -104,7 +188,7 @@ func Test_resolveSourceState_Variants(t *testing.T) {
 		{"subdir/", false, "subdir"},
 	}
 	for _, cse := range cases {
-		st, err := resolveSourceState(cse.src, session, "", cse.preserve)
+		st, err := resolveSourceState(cse.src, session, "", cse.preserve, "")
 		if err != nil {
 			t.Fatalf("resolve failed for %s: %v", cse.src, err)
 		}

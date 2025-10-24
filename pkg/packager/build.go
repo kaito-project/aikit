@@ -27,6 +27,7 @@ func BuildModelpack(ctx context.Context, c client.Client) (*client.Result, error
 		return nil, fmt.Errorf("source is required for modelpack target")
 	}
 	hfSecretFlag := getBuildArg(opts, "hf-token")
+	exclude := getBuildArg(opts, "exclude")
 	packMode := getBuildArg(opts, "layer_packaging")
 	if packMode == "" {
 		packMode = packModeRaw
@@ -35,7 +36,7 @@ func BuildModelpack(ctx context.Context, c client.Client) (*client.Result, error
 	refName := determineRefName(opts)
 	artifactType := v1.ArtifactTypeModelManifest
 	mtManifest := v1.MediaTypeModelConfig
-	modelState, err := resolveSourceState(source, sessionID, hfSecretFlag, true)
+	modelState, err := resolveSourceState(source, sessionID, hfSecretFlag, true, exclude)
 	if err != nil {
 		return nil, err
 	}
@@ -70,6 +71,7 @@ func BuildGeneric(ctx context.Context, c client.Client) (*client.Result, error) 
 		return nil, fmt.Errorf("source is required for generic target")
 	}
 	hfSecretFlag := getBuildArg(opts, "hf-token")
+	exclude := getBuildArg(opts, "exclude")
 	name := determineName(opts)
 	refName := determineRefName(opts)
 	artifactType := "application/vnd.unknown.artifact.v1"
@@ -79,7 +81,7 @@ func BuildGeneric(ctx context.Context, c client.Client) (*client.Result, error) 
 		packMode = packModeRaw
 	}
 	genericOutputMode := getBuildArg(opts, "generic_output_mode")
-	srcState, err := resolveSourceState(source, sessionID, hfSecretFlag, false)
+	srcState, err := resolveSourceState(source, sessionID, hfSecretFlag, false, exclude)
 	if err != nil {
 		return nil, err
 	}
