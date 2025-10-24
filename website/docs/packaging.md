@@ -2,6 +2,12 @@
 title: Packaging Models as OCI Artifacts
 ---
 
+:::caution[Experimental Feature]
+
+This feature might change without preserving backwards compatibility.
+
+:::
+
 AIKit can package large language models into Open Container Initiative (OCI) artifacts. This enables distribution of models through any OCI‑compliant registry.
 
 ## Overview
@@ -108,5 +114,16 @@ docker buildx build \
   --target packager/modelpack \
   --build-arg source=huggingface://meta-llama/Llama-3.2-1B \
   --build-arg name=llama \
+  --build-arg exclude="'original/**'" \
   --output=llama -<<<""
+```
+
+### Download exclusions (`--build-arg exclude=`)
+
+When downloading from Hugging Face, you can specify files or directories to exclude using the `--build-arg exclude=` option. This is useful for omitting unnecessary files from the download process. Exclusions use glob patterns and should be provided as a single string with space-separated patterns.
+
+For example, to exclude the `original` and `metal` directories, you can use the following command:
+
+```shell
+--build-arg exclude="'original/*' 'metal/*'"
 ```

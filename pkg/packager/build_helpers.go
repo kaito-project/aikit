@@ -34,7 +34,7 @@ func generateHFDownloadScript(namespace, model, revision, exclude string) string
 		}
 	}
 	return fmt.Sprintf(`set -euo pipefail
-if [ -f /run/secrets/hf-token ]; then export HUGGING_FACE_HUB_TOKEN="$(cat /run/secrets/hf-token)"; fi
+if [ -f /run/secrets/hf-token ]; then export HF_TOKEN="$(cat /run/secrets/hf-token)"; fi
 mkdir -p /out
 hf download %s/%s --revision %s --local-dir /out%s
 # remove transient cache / lock artifacts

@@ -110,7 +110,7 @@ func Test_createMinimalImageConfig(t *testing.T) {
 
 func Test_buildHuggingFaceState_ScriptContent(t *testing.T) {
 	src := "huggingface://org/model@rev123"
-	st, err := buildHuggingFaceState(src, "", "")
+	st, err := buildHuggingFaceState(src, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -135,7 +135,7 @@ func Test_buildHuggingFaceState_ScriptContent(t *testing.T) {
 
 func Test_buildHuggingFaceState_SecretMount(t *testing.T) {
 	src := "huggingface://org/model@main"
-	st, err := buildHuggingFaceState(src, "", "")
+	st, err := buildHuggingFaceState(src, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -155,7 +155,7 @@ func Test_buildHuggingFaceState_SecretMount(t *testing.T) {
 func Test_buildHuggingFaceState_WithExclude(t *testing.T) {
 	src := "huggingface://org/model@rev123"
 	exclude := "'original/*' 'metal/*'"
-	st, err := buildHuggingFaceState(src, "", exclude)
+	st, err := buildHuggingFaceState(src, exclude)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -188,7 +188,7 @@ func Test_resolveSourceState_Variants(t *testing.T) {
 		{"subdir/", false, "subdir"},
 	}
 	for _, cse := range cases {
-		st, err := resolveSourceState(cse.src, session, "", cse.preserve, "")
+		st, err := resolveSourceState(cse.src, session, cse.preserve, "")
 		if err != nil {
 			t.Fatalf("resolve failed for %s: %v", cse.src, err)
 		}

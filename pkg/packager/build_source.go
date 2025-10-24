@@ -13,9 +13,9 @@ import (
 // Supports local context ("." or "context"), HTTP(S), huggingface://, or a path/glob
 // inside the local context. For HTTP(S) single files, preserveHTTPFilename controls
 // whether the original basename is explicitly enforced (useful to avoid anonymous temp names).
-// hfSecretFlag indicates optional HF token secret mount for huggingface sources.
 // exclude is an optional space-separated list of patterns to exclude from huggingface downloads.
-func resolveSourceState(source, sessionID, hfSecretFlag string, preserveHTTPFilename bool, exclude string) (llb.State, error) {
+// HF token secret is automatically mounted if available in the BuildKit session.
+func resolveSourceState(source, sessionID string, preserveHTTPFilename bool, exclude string) (llb.State, error) {
 	if source == "" || source == "." || source == "context" {
 		return llb.Local(localNameContext, llb.SessionID(sessionID), llb.SharedKeyHint(localNameContext)), nil
 	}
@@ -33,16 +33,16 @@ func resolveSourceState(source, sessionID, hfSecretFlag string, preserveHTTPFile
 			if spec, err := inference.ParseHuggingFaceSpec(source); err == nil && spec.SubPath != "" {
 				// Use hf CLI to download only the specified file (deterministic & token aware)
 				fileScript := generateHFSingleFileDownloadScript(spec.Namespace, spec.Model, spec.Revision, spec.SubPath)
-				runOpts := []llb.RunOption{llb.Args([]string{"bash", "-c", fileScript})}
-				if hfSecretFlag != "" {
-					runOpts = append(runOpts, llb.AddSecret("/run/secrets/hf-token", llb.SecretID("hf-token")))
+				runOpts := []llb.RunOption{
+					llb.Args([]string{"bash", "-c", fileScript}),
+					llb.AddSecret("/run/secrets/hf-token", llb.SecretID("hf-token"), llb.SecretOptional),
 				}
 				run := llb.Image(hfCLIImage).Run(runOpts...)
 				return llb.Scratch().File(llb.Copy(run.Root(), "/out/", "/")), nil
 			}
 		}
 		// Fallback: download full repository snapshot
-		st, err := buildHuggingFaceState(source, hfSecretFlag, exclude)
+		st, err := buildHuggingFaceState(source, exclude)
 		if err != nil {
 			return llb.State{}, err
 		}
@@ -61,8 +61,8 @@ func resolveSourceState(source, sessionID, hfSecretFlag string, preserveHTTPFile
 }
 
 // debug helper (not currently used in production code) to validate error paths.
-func mustResolve(source, sessionID, hfSecretFlag string, preserve bool) llb.State { //nolint:unused
-	st, err := resolveSourceState(source, sessionID, hfSecretFlag, preserve, "")
+func mustResolve(source, sessionID string, preserve bool) llb.State { //nolint:unused
+	st, err := resolveSourceState(source, sessionID, preserve, "")
 	if err != nil {
 		panic(fmt.Sprintf("resolve failed: %v", err))
 	}
