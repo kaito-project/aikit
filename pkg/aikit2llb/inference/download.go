@@ -62,29 +62,54 @@ func handleOllamaRegistry(artifactURL string) (string, string) {
 }
 
 // handleGenericModelPack builds an oras command that:
-// 1. Fetches the manifest (tries insecure first for localhost-style registries)
+// 1. Fetches the manifest from the registry
 // 2. Extracts the first layer whose mediaType starts with application/vnd.cncf.model.weight.
 // 3. Downloads that blob to a file named after the model (base ref name) OR annotation title if present.
+// For localhost registries (localhost:* or 127.0.0.1:*), uses --insecure flag with a warning.
 func handleGenericModelPack(artifactURL string) (string, string) {
 	modelName := extractModelName(artifactURL)
+
+	// Determine if this is a localhost registry that may need insecure flag
+	isLocalhost := strings.HasPrefix(artifactURL, "localhost:") ||
+		strings.HasPrefix(artifactURL, "127.0.0.1:") ||
+		strings.HasPrefix(artifactURL, "::1:")
+
+	insecureFlag := ""
+	warningMsg := ""
+	if isLocalhost {
+		insecureFlag = "--insecure"
+		warningMsg = "echo '[WARNING] Using insecure connection for localhost registry' >&2\n"
+	}
+
 	cmd := fmt.Sprintf(`set -e
 ref=%[1]s
 tmp=/tmp/manifest.json
-# Fetch manifest (insecure first to support localhost:5000 style registries)
-if ! oras manifest fetch "$ref" -o "$tmp" --insecure 2>/dev/null; then
-	oras manifest fetch "$ref" -o "$tmp"
+%[3]s
+# Fetch manifest
+if ! oras manifest fetch "$ref" -o "$tmp" %[4]s 2>/tmp/oras-error.log; then
+	echo "Failed to fetch manifest from $ref" >&2
+	cat /tmp/oras-error.log >&2
+	exit 1
 fi
 layerDigest=$(jq -r '.layers[] | select(.mediaType | startswith("application/vnd.cncf.model.weight.")) | .digest' "$tmp" | head -n1)
-if [ -z "$layerDigest" ]; then echo "No application/vnd.cncf.model.weight.* layer found"; cat "$tmp"; exit 1; fi
+if [ -z "$layerDigest" ]; then 
+	echo "Error: No application/vnd.cncf.model.weight.* layer found in manifest" >&2
+	echo "Available layers:" >&2
+	jq -r '.layers[] | "\(.mediaType): \(.digest)"' "$tmp" >&2
+	exit 1
+fi
 title=$(jq -r '.layers[] | select(.digest=="'$layerDigest'") | .annotations["org.opencontainers.image.title"] // empty' "$tmp")
 outName=%[2]s
 if [ -n "$title" ]; then outName="$title"; fi
-# Fetch blob (again try insecure first)
-if ! oras blob fetch "$ref@$layerDigest" --output "$outName" --insecure 2>/dev/null; then
-	oras blob fetch "$ref@$layerDigest" --output "$outName"
+echo "Downloading model weight layer: $layerDigest" >&2
+# Fetch blob
+if ! oras blob fetch "$ref@$layerDigest" --output "$outName" %[4]s 2>/tmp/oras-blob-error.log; then
+	echo "Failed to fetch blob $layerDigest" >&2
+	cat /tmp/oras-blob-error.log >&2
+	exit 1
 fi
 ls -l "$outName"
-`, artifactURL, modelName)
+`, artifactURL, modelName, warningMsg, insecureFlag)
 	return modelName, cmd
 }
 
