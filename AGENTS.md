@@ -5,15 +5,17 @@ Trust this file first. Search the repo ONLY if info needed for your task is miss
 
 Summary / Stack
 ---------------
-AIKit builds minimal container images bundling open AI model artifacts (LLMs, diffusion, etc.) plus an OpenAI‑compatible runtime (LocalAI). Declarative YAML ("aikitfile") -> parsed & validated -> transformed into a BuildKit LLB graph -> multi‑arch Docker image (CPU; optional CUDA; experimental Apple Silicon via Podman). Primary language: Go. Aux: YAML (Helm, specs), Docker, Markdown, a Docusaurus (Node 18+) docs site.
+AIKit builds minimal container images bundling open AI model artifacts (LLMs, diffusion, etc.) plus an OpenAI‑compatible runtime (LocalAI). Two main build paths: (1) Declarative YAML ("aikitfile") -> parsed & validated -> transformed into a BuildKit LLB graph -> multi‑arch Docker image (CPU; optional CUDA; experimental Apple Silicon via Podman); (2) OCI packager targets (`packager/modelpack` for ModelPack‑compliant artifacts, `packager/generic` for arbitrary files) -> produces OCI layouts for distribution via registries. Primary language: Go. Aux: YAML (Helm, specs), Docker, Markdown, a Docusaurus (Node 18+) docs site.
 
 Repo Size & Layout (Key Paths)
 ------------------------------
-Root notable files: `Makefile`, `go.mod`, `go.sum`, `Dockerfile`, `Dockerfile.base*`, `AGENTS.md`, `README.md`, `LICENSE`, `charts/` (Helm), `models/` (distributed model specs), `test/` (CI & sample aikitfiles), `pkg/` (Go source), `cmd/frontend/main.go` (binary entrypoint), `scripts/` (utilities), `website/` (docs). Security/CI: `.github/workflows/*.yml` (CodeQL, dependency review, scorecards; other build/test workflows may exist). Lint config: `.golangci.yaml` (implicit—referenced by `make lint`).
+Root notable files: `Makefile`, `go.mod`, `go.sum`, `Dockerfile`, `Dockerfile.base*`, `Dockerfile.hf-cli` (Hugging Face CLI image), `AGENTS.md`, `README.md`, `LICENSE`, `charts/` (Helm), `models/` (distributed model specs), `test/` (CI & sample aikitfiles), `pkg/` (Go source), `cmd/frontend/main.go` (binary entrypoint), `scripts/` (utilities), `website/` (docs). Security/CI: `.github/workflows/*.yml` (CodeQL, dependency review, scorecards, packager tests, hf-cli release; other build/test workflows may exist). Lint config: `.golangci.yaml` (implicit—referenced by `make lint`).
 
 High-Level Architecture Flow
 ----------------------------
 `pkg/aikit/config` (schema + semantic validation) -> `pkg/aikit2llb` (convert spec to BuildKit LLB; CUDA & backend specific layering) -> `pkg/build` (build orchestration, args, validations) -> buildx produces image embedding model + templates consumed at runtime by LocalAI server on `:8080`. Supporting packages: `pkg/utils`, `pkg/version`.
+
+OCI Packager Path: `pkg/build` (target router) -> `pkg/packager` (ModelPack or generic target) -> source resolution (`pkg/packager/build_source.go`: local, HTTP, Hugging Face) -> layer assembly script generation (`pkg/packager/build_templates.go`) -> OCI layout output (manifest + blobs). Packager supports: raw, tar, tar+gzip, tar+zstd modes. ModelPack categorizes files (weights, config, docs, code, dataset) with proper media types per CNCF ModelPack spec.
 
 Fast vs Slow Loop
 -----------------
@@ -53,7 +55,7 @@ Test models (CI / minimal) live in `test/` named `aikitfile-*.yaml` and use synt
 
 Safe Change Patterns
 --------------------
-Schema change: edit structs + validation in `pkg/aikit/config`, add/adjust unit tests referencing a minimal test aikitfile. Build graph change: modify `pkg/aikit2llb`; ensure `make test` stays green; only build images if logic depends on runtime layering. Utility change: update `pkg/utils`, re-run fast loop. Avoid adding large artifacts to `test/`.
+Schema change: edit structs + validation in `pkg/aikit/config`, add/adjust unit tests referencing a minimal test aikitfile. Build graph change: modify `pkg/aikit2llb`; ensure `make test` stays green; only build images if logic depends on runtime layering. Packager change: modify `pkg/packager`, add/update tests in `pkg/packager/build_test.go`; validate OCI layout structure. Utility change: update `pkg/utils`, re-run fast loop. Avoid adding large artifacts to `test/`.
 
 Validating Runtime (Only If Needed)
 -----------------------------------
@@ -64,6 +66,19 @@ curl -s http://localhost:8080/v1/chat/completions \
   -d '{"model":"llama-3.2-1b-instruct","messages":[{"role":"user","content":"ping"}]}'
 ```
 Expect `.choices[0].message.content` field present.
+
+OCI Packager Usage (Experimental Feature)
+------------------------------------------
+Build OCI artifacts with targets `packager/modelpack` (CNCF ModelPack compliant) or `packager/generic` (general purpose). Supported sources: local context, HTTP(S), `huggingface://org/model[@revision][/file]`. Example:
+```
+docker buildx build --build-arg BUILDKIT_SYNTAX=ghcr.io/kaito-project/aikit/aikit:latest \
+  --target packager/modelpack \
+  --build-arg source=huggingface://Qwen/Qwen3-0.6B \
+  --build-arg name=qwen3 \
+  --build-arg layer_packaging=raw \
+  --output=qwen -<<<""
+```
+Output is an OCI layout (directory with `index.json`, `oci-layout`, `blobs/sha256/`). Use `skopeo copy oci:qwen/layout docker://registry/image:tag` to push. For Hugging Face private repos, pass `--secret id=hf-token,env=HF_TOKEN`. Use `--build-arg exclude="'pattern1' 'pattern2'"` to skip files during HF download. Packager modes: `raw` (per-file layers), `tar`, `tar+gzip`, `tar+zstd` (bundled layers). ModelPack auto-categorizes files into weights/config/docs/code/dataset with proper media types. Generic target accepts `--build-arg generic_output_mode=files` for direct file copy (no layout). See `website/docs/packaging.md` for complete reference.
 
 CI & Security Workflows (Replicate Core Steps Locally)
 ------------------------------------------------------

@@ -1,0 +1,168 @@
+name: packager-test
+
+on:
+  workflow_dispatch:
+  push:
+    paths-ignore:
+      - '**.md'
+      - 'website/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'website/**'
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packager:
+    runs-on: ubuntu-latest-16-cores
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        case:
+          - name: modelpack-raw
+            target: packager/modelpack
+            pack_mode: raw
+            output_mode: ''
+            expect_artifact: application/vnd.cncf.model.manifest.v1+json
+          - name: modelpack-targzip
+            target: packager/modelpack
+            pack_mode: tar+gzip
+            output_mode: ''
+            expect_artifact: application/vnd.cncf.model.manifest.v1+json
+          - name: generic-raw
+            target: packager/generic
+            pack_mode: raw
+            output_mode: ''
+            expect_artifact: application/vnd.unknown.artifact.v1
+          - name: generic-tar
+            target: packager/generic
+            pack_mode: tar
+            output_mode: ''
+            expect_artifact: application/vnd.unknown.artifact.v1
+          - name: generic-files
+            target: packager/generic
+            pack_mode: raw
+            output_mode: files
+            expect_artifact: skip
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+        with:
+          egress-policy: audit
+          allowed-endpoints: >
+            auth.docker.io:443
+            github.com:443
+            *.githubusercontent.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            sum.golang.org:443
+            *.ubuntu.com:80
+            security.ubuntu.com:80
+            ghcr.io:443
+            huggingface.co:443
+
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Setup Docker (containerd + insecure local registry)
+        uses: crazy-max/ghaction-setup-docker@b60f85385d03ac8acfca6d9996982511d8620a19 # v4.3.0
+        with:
+          daemon-config: |
+            {
+              "debug": true,
+              "insecure-registries": ["localhost:5000","127.0.0.1:5000"],
+              "features": {"containerd-snapshotter": true}
+            }
+
+      - name: Start local registry
+        run: docker run -d -p 5000:5000 --name registry registry:2
+
+      - name: Build & push frontend syntax image to local registry
+        run: |
+          set -euo pipefail
+          docker buildx build . -t localhost:5000/aikit/frontend:test --push --provenance=false --progress plain
+
+      - name: Build packager case
+        run: |
+          set -euo pipefail
+          dest=out-${{ matrix.case.name }}
+          # Use frontend via build arg pattern
+          args=(--build-arg BUILDKIT_SYNTAX=localhost:5000/aikit/frontend:test --target ${{ matrix.case.target }} --build-arg source=huggingface://Qwen/Qwen3-0.6B --build-arg layer_packaging=${{ matrix.case.pack_mode }} --build-arg name=${{ matrix.case.name }})
+          if [ "${{ matrix.case.output_mode }}" = "files" ]; then
+            args+=(--build-arg generic_output_mode=files)
+          fi
+          docker buildx build . "${args[@]}" \
+            --progress plain --provenance=false \
+            --output type=local,dest="$dest"
+          echo "Local output (truncated):"
+          find "$dest" -maxdepth 2 -type f | head -100
+
+      - name: Basic local output validation
+        run: |
+          set -euo pipefail
+          dest=out-${{ matrix.case.name }}
+          echo "Listing produced files (truncated)"
+          find "$dest" -maxdepth 3 -type f | head -100
+          # Check expected key files exist in local output (heuristic)
+          if [ '${{ matrix.case.output_mode }}' != 'files' ]; then
+            if [ ! -f "$dest/layout/index.json" ]; then echo "layout/index.json missing (expected for packaged layout)"; exit 1; fi
+          else
+            # files mode: ensure at least one non-empty file present
+            if ! find "$dest" -type f -maxdepth 2 | head -1 | grep -q . ; then
+              echo "No files produced in files mode"; exit 1; fi
+            # create placeholder remote-manifest for artifact upload consistency
+            echo '{}' > remote-manifest.json
+          fi
+          echo "Local output validation done for ${{ matrix.case.name }}"
+
+      - name: Push local layout with skopeo to local registry
+        if: ${{ matrix.case.output_mode != 'files' }}
+        run: |
+          set -euo pipefail
+          dest=out-${{ matrix.case.name }}
+          layout_root="$dest/layout"
+          if [ ! -f "$layout_root/index.json" ]; then echo "layout/index.json missing; cannot treat local output as OCI layout"; ls -R "$dest" | head -200; exit 1; fi
+          if [ ! -f "$layout_root/oci-layout" ]; then
+            echo '{"imageLayoutVersion":"1.0.0"}' > "$layout_root/oci-layout"
+          fi
+          skopeo copy --dest-tls-verify=false oci:$layout_root docker://localhost:5000/aikit/${{ matrix.case.name }}:test
+          sleep 2
+          curl -s http://localhost:5000/v2/_catalog | tee catalog.json
+          grep '"aikit/${{ matrix.case.name }}"' catalog.json
+
+      - name: Validate from registry
+        if: ${{ matrix.case.output_mode != 'files' }}
+        run: |
+          set -euo pipefail
+          dest=out-${{ matrix.case.name }}
+          localDigest=$(jq -r '.manifests[0].digest' "$dest/layout/index.json")
+          # Fetch raw manifest (artifact) and compute digest manually (inspect --format is image-specific and fails on artifactType)
+          skopeo inspect --tls-verify=false --raw docker://localhost:5000/aikit/${{ matrix.case.name }}:test > remote-manifest.json
+          remoteDigest=sha256:$(sha256sum remote-manifest.json | awk '{print $1}')
+          echo "Local digest:  $localDigest"
+          echo "Remote digest: $remoteDigest"
+          if [ "$localDigest" != "$remoteDigest" ]; then echo "Digest mismatch"; exit 1; fi
+          if [ '${{ matrix.case.expect_artifact }}' != 'skip' ]; then
+            artType=$(jq -r '.artifactType // empty' remote-manifest.json)
+            if [ -z "$artType" ]; then echo "artifactType missing remotely"; exit 1; fi
+            exp='${{ matrix.case.expect_artifact }}'
+            if [ "$artType" != "$exp" ]; then echo "Remote artifactType mismatch: $artType != $exp"; exit 1; fi
+          fi
+          if [ '${{ matrix.case.target }}' = 'packager/modelpack' ]; then
+            bad=$(jq -r '.layers[].mediaType' remote-manifest.json | grep -v '^application/vnd\.cncf\.model\.' || true)
+            if [ -n "$bad" ]; then echo "Unexpected remote layer media types (modelpack)\n$bad"; exit 1; fi
+          fi
+          echo "Remote registry validation passed for ${{ matrix.case.name }}"
+
+      - name: Upload validation artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: packager-${{ matrix.case.name }}
+          path: |
+            remote-manifest.json

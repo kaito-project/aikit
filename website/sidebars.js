@@ -32,6 +32,7 @@ const sidebars = {
       items: [
         'create-images',
         'fine-tune',
+        'packaging',
         'vision',
         'gpu',
         'kubernetes',

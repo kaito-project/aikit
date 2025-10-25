@@ -6,11 +6,13 @@
 
 AIKit is a comprehensive platform to quickly get started to host, deploy, build and fine-tune large language models (LLMs).
 
-AIKit offers two main capabilities:
+AIKit offers three main capabilities:
 
 - **Inference**: AIKit uses [LocalAI](https://localai.io/), which supports a wide range of inference capabilities and formats. LocalAI provides a drop-in replacement REST API that is OpenAI API compatible, so you can use any OpenAI API compatible client, such as [Kubectl AI](https://github.com/sozercan/kubectl-ai), [Chatbot-UI](https://github.com/sozercan/chatbot-ui) and many more, to send requests to open LLMs!
 
 - **[Fine-Tuning](https://kaito-project.github.io/aikit/docs/fine-tune)**: AIKit offers an extensible fine-tuning interface. It supports [Unsloth](https://github.com/unslothai/unsloth) for fast, memory efficient, and easy fine-tuning experience.
+
+- **[OCI Packaging](https://kaito-project.github.io/aikit/docs/packaging)**: Package models as OCI artifacts for distribution through any OCI-compliant registry. Supports [CNCF ModelPack](https://github.com/modelpack/model-spec) specification and generic artifact packaging.
 
 👉 For full documentation, please see [AIKit website](https://kaito-project.github.io/aikit/)!
 
@@ -19,13 +21,14 @@ AIKit offers two main capabilities:
 - 🐳 No GPU, Internet access or additional tools needed except for [Docker](https://docs.docker.com/desktop/install/linux-install/) or [Podman](https://podman.io)!
 - 🤏 Minimal image size, resulting in less vulnerabilities and smaller attack surface with a custom [chiseled](https://ubuntu.com/containers/chiseled) image
 - 🎵 [Fine-tune support](https://kaito-project.github.io/aikit/docs/fine-tune)
+- 📦 [OCI packaging support](https://kaito-project.github.io/aikit/docs/packaging) for distributing models as OCI artifacts
 - 🚀 Easy to use declarative configuration for [inference](https://kaito-project.github.io/aikit/docs/specs-inference) and [fine-tuning](https://kaito-project.github.io/aikit/docs/specs-finetune)
 - ✨ OpenAI API compatible to use with any OpenAI API compatible client
 - 📸 [Multi-modal model support](https://kaito-project.github.io/aikit/docs/vision)
 - 🖼️ [Image generation support](https://kaito-project.github.io/aikit/docs/diffusion)
 - 🦙 Support for GGUF ([`llama`](https://github.com/ggerganov/llama.cpp)), GPTQ or EXL2 ([`exllama2`](https://github.com/turboderp/exllamav2)), and GGML ([`llama-ggml`](https://github.com/ggerganov/llama.cpp)) models
 - 🚢 [Kubernetes deployment ready](https://kaito-project.github.io/aikit/docs/kubernetes)
-- 📦 Supports multiple models with a single image
+- 📚 Supports multiple models with a single image
 - 🖥️ Supports [AMD64 and ARM64](https://kaito-project.github.io/aikit/docs/create-images#multi-platform-support) CPUs and [GPU-accelerated inferencing with NVIDIA GPUs](https://kaito-project.github.io/aikit/docs/gpu)
 - 🔐 Ensure [supply chain security](https://kaito-project.github.io/aikit/docs/security) with SBOMs, Provenance attestations, and signed images
 - 🌈 Supports air-gapped environments with self-hosted, local, or any remote container registries to store model images for inference on the edge.

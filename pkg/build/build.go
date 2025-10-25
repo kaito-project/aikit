@@ -11,6 +11,7 @@ import (
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	"github.com/kaito-project/aikit/pkg/aikit2llb/finetune"
 	"github.com/kaito-project/aikit/pkg/aikit2llb/inference"
+	"github.com/kaito-project/aikit/pkg/packager"
 	"github.com/kaito-project/aikit/pkg/utils"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"github.com/moby/buildkit/client/llb"
@@ -26,7 +27,6 @@ import (
 const (
 	localNameContext     = "context"
 	localNameDockerfile  = "dockerfile"
-	localNameAikitfile   = "aikitfile.yaml"
 	defaultAikitfileName = "aikitfile.yaml"
 
 	keyFilename       = "filename"
@@ -37,6 +37,16 @@ const (
 )
 
 func Build(ctx context.Context, c client.Client) (*client.Result, error) {
+	opts := c.BuildOpts().Opts
+	if t, ok := opts[keyTarget]; ok {
+		switch t {
+		case "packager/modelpack":
+			return packager.BuildModelpack(ctx, c)
+		case "packager/generic":
+			return packager.BuildGeneric(ctx, c)
+		}
+	}
+
 	inferenceCfg, finetuneCfg, err := getAikitfileConfig(ctx, c)
 	if err != nil {
 		return nil, errors.Wrap(err, "getting aikitfile")
