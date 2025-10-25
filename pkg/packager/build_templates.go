@@ -55,10 +55,15 @@ cd "$src"
 > /tmp/dataset.list
 
 # Find all files, excluding lock files and cache, and sort deterministically
-find . -type f ! -name '*.lock' ! -path './.cache/*' -print | sed 's|^./||' | LC_ALL=C sort > /tmp/allfiles.list
+# Also cache file sizes in parallel to avoid repeated stat calls
+find . -type f ! -name '*.lock' ! -path './.cache/*' -print0 | \
+	xargs -0 -P $(nproc) -I {} sh -c 'echo "{}|$(stat -c%%s "{}")"' | \
+	LC_ALL=C sort > /tmp/allfiles_with_size.list
 
 # Categorize files by extension and size into appropriate lists
-while IFS= read -r f; do
+# File size is already computed and cached
+while IFS='|' read -r f sz; do
+	f=${f#./}
 	base=$(basename "$f" | tr A-Z a-z)
 	case "$base" in
 		# Model weight files
@@ -72,12 +77,20 @@ while IFS= read -r f; do
 		# Dataset files
 		*.csv|*.tsv|*.jsonl|*.parquet|*.arrow|*.h5|*.npz) echo "$f" >> /tmp/dataset.list ;;
 		# Unknown files: large ones (>10MB) go to weights, small ones to config
-		*) sz=$(stat -c%%s "$f"); if [ "$sz" -gt %[6]d ]; then echo "$f" >> /tmp/weights.list; else echo "$f" >> /tmp/config.list; fi ;;
+		*) if [ "$sz" -gt %[6]d ]; then echo "$f" >> /tmp/weights.list; else echo "$f" >> /tmp/config.list; fi ;;
 	esac
-done < /tmp/allfiles.list
+	# Cache size for later use
+	echo "$f|$sz" >> /tmp/file_sizes.cache
+done < /tmp/allfiles_with_size.list
 
 # Initialize JSON array for manifest layers
 layers_json=""
+
+# get_cached_size: Retrieve cached file size to avoid repeated stat calls
+get_cached_size() {
+	local file="$1"
+	grep -F "$file|" /tmp/file_sizes.cache 2>/dev/null | cut -d'|' -f2 | head -n1
+}
 
 # append_layer: Add a file as a layer blob with annotations
 # Args: file path, media type, filepath annotation, metadata JSON, untested flag
@@ -105,7 +118,8 @@ add_category() {
 		raw)
 			# Raw mode: each file becomes its own layer
 			while IFS= read -r f; do
-				fsize=$(stat -c%%s "$f")
+				fsize=$(get_cached_size "$f")
+				[ -z "$fsize" ] && fsize=$(stat -c%%s "$f")  # Fallback to stat if cache miss
 				meta=$(printf '{"name":"%%s","mode":420,"uid":0,"gid":0,"size":%%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0}' "$f" "$fsize")
 				tmpCp=/tmp/raw-$(basename "$f")
 				cp "$f" "$tmpCp"
@@ -123,7 +137,8 @@ add_category() {
 						tar+gzip) gzip -n "$tmpTar"; tmpTar="$tmpTar.gz"; mt=$mtTarGz ;;
 						tar+zstd) zstd -q --no-progress "$tmpTar"; tmpTar="$tmpTar.zst"; mt=$mtTarZst ;;
 					esac
-					fsize=$(stat -c%%s "$f")
+					fsize=$(get_cached_size "$f")
+					[ -z "$fsize" ] && fsize=$(stat -c%%s "$f")
 					meta=$(printf '{"name":"%%s","mode":420,"uid":0,"gid":0,"size":%%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0}' "$f" "$fsize")
 					append_layer "$tmpTar" "$mt" "$f" "$meta" "true"
 				done < "$list"
@@ -139,7 +154,8 @@ add_category() {
 				count=$(wc -l < "$list" | tr -d ' ')
 				totalSize=0
 				while IFS= read -r f2; do
-					sz=$(stat -c%%s "$f2")
+					sz=$(get_cached_size "$f2")
+					[ -z "$sz" ] && sz=$(stat -c%%s "$f2")
 					totalSize=$((totalSize + sz))
 				done < "$list"
 				meta=$(printf '{"name":"%%s","mode":420,"uid":0,"gid":0,"size":%%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0,"files":%%d}' "$cat" "$totalSize" "$count")
@@ -247,10 +263,21 @@ if [ -f /src ]; then mkdir -p /worksrc && cp /src /worksrc/; work=/worksrc; fi
 cd "$work"
 
 # Find all files, excluding lock files and cache, sorted deterministically
-find . -type f ! -name '*.lock' ! -path './.cache/*' -print | sed 's|^./||' | LC_ALL=C sort > /tmp/files.list
+# Cache file sizes for later use
+find . -type f ! -name '*.lock' ! -path './.cache/*' -print0 | \
+	xargs -0 -P $(nproc) -I {} sh -c 'f="{}"; echo "$f|$(stat -c%%s "$f")"' | \
+	sed 's|^\./||' | LC_ALL=C sort > /tmp/files_with_size.list
+
+# Extract just the file paths for processing
+cut -d'|' -f1 < /tmp/files_with_size.list > /tmp/files.list
 
 # Initialize JSON array for manifest layers
 layers_json=""
+
+# get_file_size: Retrieve cached file size
+get_file_size() {
+	grep -F "$1|" /tmp/files_with_size.list 2>/dev/null | cut -d'|' -f2 | head -n1
+}
 
 # append_layer: Add a file as a layer blob
 # Args: file path, media type
