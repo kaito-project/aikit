@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/moby/buildkit/client/llb"
 )
 
 func Test_generateHFDownloadScript(t *testing.T) {
@@ -583,6 +585,409 @@ func Test_getBuildArg(t *testing.T) {
 			result := getBuildArg(tt.opts, tt.key)
 			if result != tt.expected {
 				t.Fatalf("expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}
+
+// Test_generateHFSingleFileDownloadScript verifies script generation for single-file HF downloads.
+func Test_generateHFSingleFileDownloadScript(t *testing.T) {
+	tests := []struct {
+		name      string
+		namespace string
+		model     string
+		revision  string
+		filePath  string
+		contains  []string
+	}{
+		{
+			name:      "basic single file",
+			namespace: "meta-llama",
+			model:     "Llama-3.2-1B",
+			revision:  "main",
+			filePath:  "config.json",
+			contains: []string{
+				"set -euo pipefail",
+				"hf download meta-llama/Llama-3.2-1B config.json --revision main",
+				"mkdir -p /out",
+				"--local-dir /out",
+				"rm -rf /out/.cache",
+			},
+		},
+		{
+			name:      "nested file path",
+			namespace: "org",
+			model:     "model-name",
+			revision:  "v1.0",
+			filePath:  "weights/model.safetensors",
+			contains: []string{
+				"hf download org/model-name weights/model.safetensors --revision v1.0",
+			},
+		},
+		{
+			name:      "special characters in revision",
+			namespace: "user",
+			model:     "repo",
+			revision:  "feature/branch-name",
+			filePath:  "file.bin",
+			contains: []string{
+				"hf download user/repo file.bin --revision feature/branch-name",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			script := generateHFSingleFileDownloadScript(tt.namespace, tt.model, tt.revision, tt.filePath)
+			for _, substr := range tt.contains {
+				if !strings.Contains(script, substr) {
+					t.Errorf("expected script to contain %q\nGot script:\n%s", substr, script)
+				}
+			}
+			// Verify script has token handling
+			if !strings.Contains(script, "HUGGING_FACE_HUB_TOKEN") {
+				t.Error("expected script to handle HF token")
+			}
+		})
+	}
+}
+
+// Test_resolveSourceState_AllPaths tests all code paths in resolveSourceState.
+func Test_resolveSourceState_AllPaths(t *testing.T) {
+	sessionID := "test-session-123"
+
+	tests := []struct {
+		name              string
+		source            string
+		preserveHTTP      bool
+		exclude           string
+		expectError       bool
+		validateState     func(t *testing.T, st llb.State)
+		skipStateValidate bool // For cases where we can't easily validate the state
+	}{
+		{
+			name:         "empty source returns local context",
+			source:       "",
+			preserveHTTP: false,
+			exclude:      "",
+			expectError:  false,
+			validateState: func(t *testing.T, st llb.State) {
+				def, _ := st.Marshal(context.Background())
+				combined := marshalToString(def)
+				if !strings.Contains(combined, localNameContext) {
+					t.Error("expected local context")
+				}
+			},
+		},
+		{
+			name:         "dot source returns local context",
+			source:       ".",
+			preserveHTTP: false,
+			exclude:      "",
+			expectError:  false,
+			validateState: func(t *testing.T, st llb.State) {
+				def, _ := st.Marshal(context.Background())
+				combined := marshalToString(def)
+				if !strings.Contains(combined, localNameContext) {
+					t.Error("expected local context")
+				}
+			},
+		},
+		{
+			name:         "context keyword returns local context",
+			source:       "context",
+			preserveHTTP: false,
+			exclude:      "",
+			expectError:  false,
+			validateState: func(t *testing.T, st llb.State) {
+				def, _ := st.Marshal(context.Background())
+				combined := marshalToString(def)
+				if !strings.Contains(combined, localNameContext) {
+					t.Error("expected local context")
+				}
+			},
+		},
+		{
+			name:         "http URL without preserve filename",
+			source:       "http://example.com/model.bin",
+			preserveHTTP: false,
+			exclude:      "",
+			expectError:  false,
+			validateState: func(t *testing.T, st llb.State) {
+				def, _ := st.Marshal(context.Background())
+				combined := marshalToString(def)
+				if !strings.Contains(combined, "example.com/model.bin") {
+					t.Error("expected HTTP URL in state")
+				}
+			},
+		},
+		{
+			name:         "https URL with preserve filename",
+			source:       "https://example.com/path/model.safetensors",
+			preserveHTTP: true,
+			exclude:      "",
+			expectError:  false,
+			validateState: func(t *testing.T, st llb.State) {
+				def, _ := st.Marshal(context.Background())
+				combined := marshalToString(def)
+				if !strings.Contains(combined, "model.safetensors") {
+					t.Error("expected preserved filename")
+				}
+			},
+		},
+		{
+			name:              "huggingface full repo download",
+			source:            "huggingface://meta-llama/Llama-3.2-1B@main",
+			preserveHTTP:      false,
+			exclude:           "*.md *.txt",
+			expectError:       false,
+			skipStateValidate: true, // HF state is complex, just verify no error
+		},
+		{
+			name:              "huggingface single file download",
+			source:            "huggingface://org/model@rev/weights/file.bin",
+			preserveHTTP:      false,
+			exclude:           "",
+			expectError:       false,
+			skipStateValidate: true, // Complex multi-step state
+		},
+		{
+			name:         "local path without trailing slash",
+			source:       "models/weights",
+			preserveHTTP: false,
+			exclude:      "",
+			expectError:  false,
+			validateState: func(t *testing.T, st llb.State) {
+				def, _ := st.Marshal(context.Background())
+				combined := marshalToString(def)
+				if !strings.Contains(combined, "models/weights") {
+					t.Error("expected local path pattern")
+				}
+			},
+		},
+		{
+			name:         "local path with trailing slash",
+			source:       "models/",
+			preserveHTTP: false,
+			exclude:      "",
+			expectError:  false,
+			validateState: func(t *testing.T, st llb.State) {
+				def, _ := st.Marshal(context.Background())
+				combined := marshalToString(def)
+				// Should append ** for directory globbing
+				if !strings.Contains(combined, "models/") {
+					t.Error("expected directory path")
+				}
+			},
+		},
+		{
+			name:         "local glob pattern",
+			source:       "*.safetensors",
+			preserveHTTP: false,
+			exclude:      "",
+			expectError:  false,
+			validateState: func(t *testing.T, st llb.State) {
+				def, _ := st.Marshal(context.Background())
+				combined := marshalToString(def)
+				if !strings.Contains(combined, "safetensors") {
+					t.Error("expected glob pattern")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st, err := resolveSourceState(tt.source, sessionID, tt.preserveHTTP, tt.exclude)
+
+			if tt.expectError && err == nil {
+				t.Fatal("expected error but got none")
+			}
+			if !tt.expectError && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if !tt.expectError && !tt.skipStateValidate && tt.validateState != nil {
+				tt.validateState(t, st)
+			}
+		})
+	}
+}
+
+// marshalToString is a helper to convert LLB state to string for validation.
+func marshalToString(def *llb.Definition) string {
+	if def == nil {
+		return ""
+	}
+	var combined string
+	for _, d := range def.ToPB().Def {
+		combined += string(d)
+	}
+	return combined
+}
+
+// Test_BuildModelpack_ConfigValidation tests BuildModelpack configuration parsing
+// Note: Full integration testing is done in CI. This tests config validation paths.
+func Test_BuildModelpack_ConfigValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		buildOpts   map[string]string
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "missing source",
+			buildOpts: map[string]string{
+				"build-arg:name": "test-model",
+			},
+			expectError: true,
+			errorMsg:    "source is required",
+		},
+		{
+			name: "valid minimal config",
+			buildOpts: map[string]string{
+				"build-arg:source": ".",
+				"build-arg:name":   "test-model",
+			},
+			expectError: false,
+		},
+		{
+			name: "with all options",
+			buildOpts: map[string]string{
+				"build-arg:source":    "huggingface://org/model@main",
+				"build-arg:name":      "my-model",
+				"build-arg:ref-name":  "latest",
+				"build-arg:pack-mode": "raw",
+				"build-arg:exclude":   "*.md",
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test parseBuildConfig which is called by BuildModelpack
+			_, err := parseBuildConfig(tt.buildOpts, "test-session", true)
+
+			if tt.expectError && err == nil {
+				t.Fatal("expected error but got none")
+			}
+			if !tt.expectError && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.expectError && err != nil && tt.errorMsg != "" {
+				if !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error containing %q, got %q", tt.errorMsg, err.Error())
+				}
+			}
+		})
+	}
+}
+
+// Test_BuildGeneric_ConfigValidation tests BuildGeneric configuration parsing.
+func Test_BuildGeneric_ConfigValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		buildOpts   map[string]string
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "missing source",
+			buildOpts: map[string]string{
+				"build-arg:name": "test-artifact",
+			},
+			expectError: true,
+			errorMsg:    "source is required",
+		},
+		{
+			name: "valid minimal config",
+			buildOpts: map[string]string{
+				"build-arg:source": ".",
+				"build-arg:name":   "test-artifact",
+			},
+			expectError: false,
+		},
+		{
+			name: "files output mode",
+			buildOpts: map[string]string{
+				"build-arg:source": "models/",
+				"build-arg:name":   "my-files",
+				"build-arg:output": "files",
+			},
+			expectError: false,
+		},
+		{
+			name: "with debug flag",
+			buildOpts: map[string]string{
+				"build-arg:source": "https://example.com/data.tar.gz",
+				"build-arg:name":   "test",
+				"build-arg:debug":  "true",
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test parseBuildConfig which is called by BuildGeneric
+			_, err := parseBuildConfig(tt.buildOpts, "test-session", false)
+
+			if tt.expectError && err == nil {
+				t.Fatal("expected error but got none")
+			}
+			if !tt.expectError && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.expectError && err != nil && tt.errorMsg != "" {
+				if !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error containing %q, got %q", tt.errorMsg, err.Error())
+				}
+			}
+		})
+	}
+}
+
+// Test_resolveSourceState_ErrorCases tests error handling in resolveSourceState.
+func Test_resolveSourceState_ErrorCases(t *testing.T) {
+	sessionID := "test-session"
+
+	tests := []struct {
+		name        string
+		source      string
+		exclude     string
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name:        "invalid huggingface URL with malformed spec",
+			source:      "huggingface://invalid spec format",
+			exclude:     "",
+			expectError: true, // Will return error for invalid spec
+			errorMsg:    "invalid huggingface",
+		},
+		{
+			name:        "huggingface repo with exclude pattern",
+			source:      "huggingface://org/model@main",
+			exclude:     "*.txt *.md",
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := resolveSourceState(tt.source, sessionID, false, tt.exclude)
+
+			if tt.expectError && err == nil {
+				t.Fatal("expected error but got none")
+			}
+			if !tt.expectError && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.expectError && err != nil && tt.errorMsg != "" {
+				if !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error containing %q, got %q", tt.errorMsg, err.Error())
+				}
 			}
 		})
 	}
