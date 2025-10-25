@@ -1,9 +1,9 @@
 package inference
 
 import (
+	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
-	"github.com/sozercan/aikit/pkg/aikit/config"
-	"github.com/sozercan/aikit/pkg/utils"
 )
 
 func installVLLM(c *config.InferenceConfig, s llb.State, merge llb.State) llb.State {

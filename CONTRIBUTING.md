@@ -36,7 +36,7 @@ Before you begin, ensure you have the following installed on your development ma
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/sozercan/aikit.git
+git clone https://github.com/kaito-project/aikit.git
 cd aikit
 ```
 
@@ -252,8 +252,8 @@ make run-test-model-applesilicon
 
 ## Getting Help
 
-- Check existing [Issues](https://github.com/sozercan/aikit/issues) for known problems
-- Review the [Documentation](https://sozercan.github.io/aikit/) for detailed usage instructions
+- Check existing [Issues](https://github.com/kaito-project/aikit/issues) for known problems
+- Review the [Documentation](https://kaito-project.github.io/aikit/) for detailed usage instructions
 - Create a new issue if you encounter problems or have questions
 
 ## Release Process
