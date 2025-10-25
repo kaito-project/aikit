@@ -25,6 +25,7 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 		utils.BackendExllamaV2: "exllama2",
 		utils.BackendDiffusers: "diffusers",
 		utils.BackendLlamaCpp:  "llama-cpp",
+		utils.BackendVLLM:      "vllm",
 	}
 
 	backendName, exists := backendMap[backend]
@@ -41,10 +42,12 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 	// Handle CUDA runtime
 	if runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
 		switch backendName {
-		case "exllama2":
+		case utils.BackendExllamaV2:
 			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-exllama2", baseTag)
-		case "diffusers":
+		case utils.BackendDiffusers:
 			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-diffusers", baseTag)
+		case utils.BackendVLLM:
+			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-vllm", baseTag)
 		case defaultBackendName:
 			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-llama-cpp", baseTag)
 		default:
@@ -72,6 +75,7 @@ func getBackendAlias(backend string) string {
 		utils.BackendDiffusers: "diffusers",
 		utils.BackendExllamaV2: "exllama2",
 		utils.BackendLlamaCpp:  "llama-cpp",
+		utils.BackendVLLM:      "vllm",
 	}
 
 	if alias, exists := aliasMap[backend]; exists {
@@ -97,6 +101,8 @@ func getBackendName(backend, runtime string, platform specs.Platform) string {
 			return "cuda12-diffusers"
 		case utils.BackendLlamaCpp:
 			return cuda12LlamaCppBackend
+		case utils.BackendVLLM:
+			return "cuda12-vllm"
 		default:
 			// Fallback to llama-cpp for unsupported backends
 			return cuda12LlamaCppBackend
