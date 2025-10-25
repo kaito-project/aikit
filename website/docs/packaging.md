@@ -127,3 +127,7 @@ For example, to exclude the `original` and `metal` directories, you can use the 
 ```shell
 --build-arg exclude="'original/*' 'metal/*'"
 ```
+
+## What's next?
+
+👉 Now that you have packaged your model as an OCI artifact, you can refer to [Creating Model Images](create-images.md#oci-artifacts) on how to create an image with AIKit to use for inference!
