@@ -75,6 +75,36 @@ func Test_parseExcludePatterns(t *testing.T) {
 			input:    "'original/**' \"metal/*\" '*.bin'",
 			expected: []string{"original/**", "metal/*", "*.bin"},
 		},
+		{
+			name:     "whitespace only",
+			input:    "   ",
+			expected: nil,
+		},
+		{
+			name:     "unclosed quote",
+			input:    "'pattern",
+			expected: []string{"pattern"}, // Parser captures content until end
+		},
+		{
+			name:     "empty quotes",
+			input:    "''",
+			expected: nil, // Empty pattern is not added
+		},
+		{
+			name:     "pattern with spaces inside quotes",
+			input:    "'pattern with spaces'",
+			expected: []string{"pattern with spaces"},
+		},
+		{
+			name:     "consecutive quotes",
+			input:    "''  ''  ''",
+			expected: nil,
+		},
+		{
+			name:     "patterns with special characters",
+			input:    "'**/*.bin' '*.safetensors' 'model-[0-9]*.gguf'",
+			expected: []string{"**/*.bin", "*.safetensors", "model-[0-9]*.gguf"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -109,67 +139,117 @@ func Test_createMinimalImageConfig(t *testing.T) {
 }
 
 func Test_buildHuggingFaceState_ScriptContent(t *testing.T) {
-	src := "huggingface://org/model@rev123"
-	st, err := buildHuggingFaceState(src, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	tests := []struct {
+		name        string
+		source      string
+		exclude     string
+		expectError bool
+		errorMsg    string
+		mustContain []string
+	}{
+		{
+			name:    "basic huggingface source",
+			source:  "huggingface://org/model@rev123",
+			exclude: "",
+			mustContain: []string{
+				"org/model",
+				"--revision rev123",
+				"hf download",
+				"/run/secrets/hf-token",
+			},
+		},
+		{
+			name:    "with exclude patterns",
+			source:  "huggingface://org/model@rev123",
+			exclude: "'original/*' 'metal/*'",
+			mustContain: []string{
+				"org/model",
+				"--revision rev123",
+				"--exclude 'original/*' 'metal/*'",
+				"hf download",
+			},
+		},
+		{
+			name:        "non-huggingface source",
+			source:      "https://example.com/model.bin",
+			exclude:     "",
+			expectError: true,
+			errorMsg:    "not a huggingface source",
+		},
+		{
+			name:        "invalid huggingface URL",
+			source:      "huggingface://",
+			exclude:     "",
+			expectError: true,
+			errorMsg:    "invalid huggingface source",
+		},
+		{
+			name:        "malformed huggingface path",
+			source:      "huggingface://org",
+			exclude:     "",
+			expectError: true,
+			errorMsg:    "invalid huggingface source",
+		},
+		{
+			name:    "valid huggingface source",
+			source:  "huggingface://org/model@main",
+			exclude: "",
+			mustContain: []string{
+				"org/model",
+				"--revision main",
+			},
+		},
+		{
+			name:    "valid with single exclude pattern",
+			source:  "huggingface://org/model@v1.0",
+			exclude: "'*.bin'",
+			mustContain: []string{
+				"org/model",
+				"--exclude '*.bin'",
+			},
+		},
+		{
+			name:    "multiple exclude patterns",
+			source:  "huggingface://org/model",
+			exclude: "'original/*' 'metal/*' '*.lock'",
+			mustContain: []string{
+				"org/model",
+				"--exclude 'original/*' 'metal/*' '*.lock'",
+			},
+		},
 	}
-	def, err := st.Marshal(context.Background())
-	if err != nil {
-		t.Fatalf("marshal failed: %v", err)
-	}
-	var combined string
-	for _, d := range def.ToPB().Def {
-		combined += string(d)
-	}
-	for _, expect := range []string{"org/model", "--revision rev123", "hf download"} {
-		if !strings.Contains(combined, expect) {
-			t.Fatalf("expected def to contain %q", expect)
-		}
-	}
-	// Secret mount now unconditional; ensure presence even with empty flag.
-	if !strings.Contains(combined, "/run/secrets/hf-token") {
-		t.Fatalf("expected secret mount directive in definition: %s", combined)
-	}
-}
 
-func Test_buildHuggingFaceState_SecretMount(t *testing.T) {
-	src := "huggingface://org/model@main"
-	st, err := buildHuggingFaceState(src, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	def, err := st.Marshal(context.Background())
-	if err != nil {
-		t.Fatalf("marshal failed: %v", err)
-	}
-	var combined string
-	for _, d := range def.ToPB().Def {
-		combined += string(d)
-	}
-	if !strings.Contains(combined, "/run/secrets/hf-token") {
-		t.Fatalf("expected secret mount path in definition")
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st, err := buildHuggingFaceState(tt.source, tt.exclude)
+			if tt.expectError {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.errorMsg)
+				}
+				if tt.errorMsg != "" && !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Fatalf("expected error containing %q, got %q", tt.errorMsg, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 
-func Test_buildHuggingFaceState_WithExclude(t *testing.T) {
-	src := "huggingface://org/model@rev123"
-	exclude := "'original/*' 'metal/*'"
-	st, err := buildHuggingFaceState(src, exclude)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	def, err := st.Marshal(context.Background())
-	if err != nil {
-		t.Fatalf("marshal failed: %v", err)
-	}
-	var combined string
-	for _, d := range def.ToPB().Def {
-		combined += string(d)
-	}
-	// Check that exclude patterns are in the command as a single --exclude flag
-	if !strings.Contains(combined, "--exclude 'original/*' 'metal/*'") {
-		t.Fatalf("expected def to contain \"--exclude 'original/*' 'metal/*'\", got: %s", combined)
+			def, err := st.Marshal(context.Background())
+			if err != nil {
+				t.Fatalf("marshal failed: %v", err)
+			}
+			var combined string
+			for _, d := range def.ToPB().Def {
+				combined += string(d)
+			}
+
+			for _, expect := range tt.mustContain {
+				if !strings.Contains(combined, expect) {
+					t.Fatalf("expected def to contain %q, got: %s", expect, combined)
+				}
+			}
+		})
 	}
 }
 
@@ -246,5 +326,264 @@ func Test_generateGenericScript_RawOctetStream(t *testing.T) {
 	}
 	if !strings.Contains(script, "PACK_MODE=raw") {
 		t.Fatalf("expected PACK_MODE=raw in script")
+	}
+}
+
+// Test internal helper functions for build configuration parsing.
+
+func Test_parseBuildConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		opts        map[string]string
+		sessionID   string
+		isModelpack bool
+		expectError bool
+		errorMsg    string
+		validate    func(*testing.T, *buildConfig)
+	}{
+		{
+			name:        "missing source for modelpack",
+			opts:        map[string]string{},
+			sessionID:   "session123",
+			isModelpack: true,
+			expectError: true,
+			errorMsg:    "source is required for modelpack target",
+		},
+		{
+			name:        "missing source for generic",
+			opts:        map[string]string{},
+			sessionID:   "session123",
+			isModelpack: false,
+			expectError: true,
+			errorMsg:    "source is required for generic target",
+		},
+		{
+			name: "empty source string",
+			opts: map[string]string{
+				"build-arg:source": "",
+			},
+			sessionID:   "session123",
+			isModelpack: true,
+			expectError: true,
+			errorMsg:    "source is required",
+		},
+		{
+			name: "valid minimal config",
+			opts: map[string]string{
+				"build-arg:source": "https://example.com/model.bin",
+			},
+			sessionID:   "session123",
+			isModelpack: false,
+			expectError: false,
+			validate: func(t *testing.T, cfg *buildConfig) {
+				if cfg.source != "https://example.com/model.bin" {
+					t.Errorf("expected source https://example.com/model.bin, got %s", cfg.source)
+				}
+				if cfg.packMode != packModeRaw {
+					t.Errorf("expected default pack mode %s, got %s", packModeRaw, cfg.packMode)
+				}
+			},
+		},
+		{
+			name: "custom pack mode",
+			opts: map[string]string{
+				"build-arg:source":          ".",
+				"build-arg:layer_packaging": "tar+gzip",
+			},
+			sessionID:   "session123",
+			isModelpack: false,
+			expectError: false,
+			validate: func(t *testing.T, cfg *buildConfig) {
+				if cfg.packMode != "tar+gzip" {
+					t.Errorf("expected pack mode tar+gzip, got %s", cfg.packMode)
+				}
+			},
+		},
+		{
+			name: "debug flag parsing",
+			opts: map[string]string{
+				"build-arg:source": ".",
+				"build-arg:debug":  "1",
+			},
+			sessionID:   "session123",
+			isModelpack: false,
+			expectError: false,
+			validate: func(t *testing.T, cfg *buildConfig) {
+				if !cfg.debug {
+					t.Error("expected debug to be true")
+				}
+			},
+		},
+		{
+			name: "exclude patterns",
+			opts: map[string]string{
+				"build-arg:source":  "huggingface://org/model",
+				"build-arg:exclude": "'*.bin' '*.safetensors'",
+			},
+			sessionID:   "session123",
+			isModelpack: true,
+			expectError: false,
+			validate: func(t *testing.T, cfg *buildConfig) {
+				if cfg.exclude != "'*.bin' '*.safetensors'" {
+					t.Errorf("expected exclude patterns, got %s", cfg.exclude)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := parseBuildConfig(tt.opts, tt.sessionID, tt.isModelpack)
+			if tt.expectError {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.errorMsg)
+				}
+				if tt.errorMsg != "" && !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Fatalf("expected error containing %q, got %q", tt.errorMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if cfg == nil {
+					t.Fatal("expected non-nil config")
+				}
+				if tt.validate != nil {
+					tt.validate(t, cfg)
+				}
+			}
+		})
+	}
+}
+
+func Test_determineName(t *testing.T) {
+	tests := []struct {
+		name     string
+		opts     map[string]string
+		expected string
+	}{
+		{
+			name:     "nil opts defaults to aikitmodel",
+			opts:     nil,
+			expected: "aikitmodel",
+		},
+		{
+			name:     "empty opts defaults to aikitmodel",
+			opts:     map[string]string{},
+			expected: "aikitmodel",
+		},
+		{
+			name: "name provided",
+			opts: map[string]string{
+				"build-arg:name": "mymodel",
+			},
+			expected: "mymodel",
+		},
+		{
+			name: "empty name falls back to default",
+			opts: map[string]string{
+				"build-arg:name": "",
+			},
+			expected: "aikitmodel",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := determineName(tt.opts)
+			if result != tt.expected {
+				t.Fatalf("expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}
+
+func Test_determineRefName(t *testing.T) {
+	tests := []struct {
+		name     string
+		opts     map[string]string
+		expected string
+	}{
+		{
+			name:     "nil opts defaults to latest",
+			opts:     nil,
+			expected: "latest",
+		},
+		{
+			name:     "empty opts defaults to latest",
+			opts:     map[string]string{},
+			expected: "latest",
+		},
+		{
+			name: "name provided",
+			opts: map[string]string{
+				"build-arg:name": "v1.0.0",
+			},
+			expected: "v1.0.0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := determineRefName(tt.opts)
+			if result != tt.expected {
+				t.Fatalf("expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}
+
+func Test_getBuildArg(t *testing.T) {
+	tests := []struct {
+		name     string
+		opts     map[string]string
+		key      string
+		expected string
+	}{
+		{
+			name:     "nil opts returns empty",
+			opts:     nil,
+			key:      "source",
+			expected: "",
+		},
+		{
+			name:     "empty opts returns empty",
+			opts:     map[string]string{},
+			key:      "source",
+			expected: "",
+		},
+		{
+			name: "key exists",
+			opts: map[string]string{
+				"build-arg:source": "value",
+			},
+			key:      "source",
+			expected: "value",
+		},
+		{
+			name: "key does not exist",
+			opts: map[string]string{
+				"build-arg:other": "value",
+			},
+			key:      "source",
+			expected: "",
+		},
+		{
+			name: "empty value",
+			opts: map[string]string{
+				"build-arg:source": "",
+			},
+			key:      "source",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := getBuildArg(tt.opts, tt.key)
+			if result != tt.expected {
+				t.Fatalf("expected %q, got %q", tt.expected, result)
+			}
+		})
 	}
 }
