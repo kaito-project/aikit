@@ -645,7 +645,7 @@ func Test_generateHFSingleFileDownloadScript(t *testing.T) {
 				}
 			}
 			// Verify script has token handling
-			if !strings.Contains(script, "HUGGING_FACE_HUB_TOKEN") {
+			if !strings.Contains(script, "HF_TOKEN") {
 				t.Error("expected script to handle HF token")
 			}
 		})

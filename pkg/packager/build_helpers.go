@@ -85,7 +85,7 @@ func parseExcludePatterns(exclude string) []string {
 // repository deterministically. filePath is the relative path inside the repo.
 func generateHFSingleFileDownloadScript(namespace, model, revision, filePath string) string {
 	return fmt.Sprintf(`set -euo pipefail
-if [ -f /run/secrets/hf-token ]; then export HUGGING_FACE_HUB_TOKEN="$(cat /run/secrets/hf-token)"; fi
+if [ -f /run/secrets/hf-token ]; then export HF_TOKEN="$(cat /run/secrets/hf-token)"; fi
 mkdir -p /out
 hf download %s/%s %s --revision %s --local-dir /out
 # remove transient cache / lock artifacts

@@ -81,7 +81,7 @@ layers_json=""
 
 # append_layer: Add a file as a layer blob with annotations
 # Args: file path, media type, filepath annotation, metadata JSON, untested flag
-append_layer() { 
+append_layer() {
 	file="$1"; mt="$2"; fpath="$3"; metaJson="$4"; untested="$5"
 	[ ! -f "$file" ] && return 0
 	dgst=$(sha256sum "$file" | cut -d' ' -f1)
