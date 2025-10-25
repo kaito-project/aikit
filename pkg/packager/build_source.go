@@ -9,6 +9,12 @@ import (
 	"github.com/moby/buildkit/client/llb"
 )
 
+const (
+	// minPathDepthForHFFile is the minimum number of slashes needed in a huggingface://
+	// URL to indicate a file path (namespace/model/file...).
+	minPathDepthForHFFile = 2
+)
+
 // resolveSourceState normalizes a model/artifact source reference into an llb.State.
 // Supports local context ("." or "context"), HTTP(S), huggingface://, or a path/glob
 // inside the local context. For HTTP(S) single files, preserveHTTPFilename controls
@@ -29,7 +35,7 @@ func resolveSourceState(source, sessionID string, preserveHTTPFilename bool, exc
 	case strings.HasPrefix(source, "huggingface://"):
 		// If the reference includes a file path (namespace/model/file...), fetch only that file.
 		trimmed := strings.TrimPrefix(source, "huggingface://")
-		if strings.Count(trimmed, "/") >= 2 { // namespace/model/file (optionally with further subdirs)
+		if strings.Count(trimmed, "/") >= minPathDepthForHFFile { // namespace/model/file (optionally with further subdirs)
 			if spec, err := inference.ParseHuggingFaceSpec(source); err == nil && spec.SubPath != "" {
 				// Use hf CLI to download only the specified file (deterministic & token aware)
 				fileScript := generateHFSingleFileDownloadScript(spec.Namespace, spec.Model, spec.Revision, spec.SubPath)
@@ -58,13 +64,4 @@ func resolveSourceState(source, sessionID string, preserveHTTPFilename bool, exc
 			llb.SharedKeyHint(localNameContext+":"+include),
 		), nil
 	}
-}
-
-// debug helper (not currently used in production code) to validate error paths.
-func mustResolve(source, sessionID string, preserve bool) llb.State { //nolint:unused
-	st, err := resolveSourceState(source, sessionID, preserve, "")
-	if err != nil {
-		panic(fmt.Sprintf("resolve failed: %v", err))
-	}
-	return st
 }
