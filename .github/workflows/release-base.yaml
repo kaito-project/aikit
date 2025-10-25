@@ -6,13 +6,15 @@ on:
   workflow_dispatch: # used for testing
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write
+  contents: read
 
 jobs:
   release-base:
-    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    runs-on: ubuntu-latest-16-cores
     timeout-minutes: 360
     strategy:
       fail-fast: true
@@ -22,23 +24,23 @@ jobs:
           - applesilicon
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@6c439dc8bdf85cadbbce9ed30d1c7b959517bc49 # v2.12.2
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           fetch-tags: true
           fetch-depth: 0
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
 
       - name: Login to GHCR
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -49,13 +51,13 @@ jobs:
           if [ ${{ matrix.runtime }} == "base" ]; then
             echo PLATFORMS="linux/amd64,linux/arm64" >> $GITHUB_ENV
             echo FILE="Dockerfile.base" >> $GITHUB_ENV
-            echo TAG="ghcr.io/sozercan/base:latest" >> $GITHUB_ENV
+            echo TAG="ghcr.io/kaito-project/aikit/base:latest" >> $GITHUB_ENV
             echo CACHE_FROM="type=gha,scope=base" >> $GITHUB_ENV
             echo CACHE_TO="type=gha,scope=base,mode=max" >> $GITHUB_ENV
           elif [ ${{ matrix.runtime }} == "applesilicon" ]; then
             echo PLATFORMS="linux/arm64" >> $GITHUB_ENV
             echo FILE="Dockerfile.base-applesilicon" >> $GITHUB_ENV
-            echo TAG="ghcr.io/sozercan/applesilicon/base:latest" >> $GITHUB_ENV
+            echo TAG="ghcr.io/kaito-project/aikit/applesilicon/base:latest" >> $GITHUB_ENV
             echo CACHE_FROM="type=gha,scope=base-applesilicon" >> $GITHUB_ENV
             echo CACHE_TO="type=gha,scope=base-applesilicon,mode=max" >> $GITHUB_ENV
           fi
@@ -76,12 +78,12 @@ jobs:
       - name: Sign the images with GitHub OIDC Token
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
-        run: cosign sign --yes "ghcr.io/sozercan/base@${DIGEST}"
+        run: cosign sign --yes "ghcr.io/kaito-project/aikit/base@${DIGEST}"
 
       - name: Verify image signature
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
         run: |
-          cosign verify ghcr.io/sozercan/base@${DIGEST} \
+          cosign verify ghcr.io/kaito-project/aikit/base@${DIGEST} \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity https://github.com/sozercan/aikit/.github/workflows/release-base.yaml@refs/heads/main
+            --certificate-identity https://github.com/kaito-project/aikit/.github/workflows/release-base.yaml@refs/heads/main

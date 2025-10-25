@@ -1,0 +1,29 @@
+package packager
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/kaito-project/aikit/pkg/aikit2llb/inference"
+	"github.com/moby/buildkit/client/llb"
+)
+
+// buildHuggingFaceState returns an llb.State containing the downloaded Hugging Face
+// repository snapshot rooted at /. It automatically mounts the HF token secret if available.
+// exclude is an optional space-separated list of patterns to exclude from download.
+func buildHuggingFaceState(source string, exclude string) (llb.State, error) {
+	if !strings.HasPrefix(source, "huggingface://") {
+		return llb.State{}, fmt.Errorf("not a huggingface source: %s", source)
+	}
+	spec, err := inference.ParseHuggingFaceSpec(source)
+	if err != nil {
+		return llb.State{}, fmt.Errorf("invalid huggingface source: %w", err)
+	}
+	dlScript := generateHFDownloadScript(spec.Namespace, spec.Model, spec.Revision, exclude)
+	runOpts := []llb.RunOption{
+		llb.Args([]string{"bash", "-c", dlScript}),
+		llb.AddSecret("/run/secrets/hf-token", llb.SecretID("hf-token"), llb.SecretOptional),
+	}
+	run := llb.Image(hfCLIImage).Run(runOpts...)
+	return llb.Scratch().File(llb.Copy(run.Root(), "/out/", "/", &llb.CopyInfo{CopyDirContentsOnly: true})), nil
+}

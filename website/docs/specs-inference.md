@@ -8,7 +8,7 @@ title: Inference API Specifications
 apiVersion: # required. only v1alpha1 is supported at the moment
 debug: # optional. if set to true, debug logs will be printed
 runtime: # optional. defaults to avx. can be "avx", "avx2", "avx512", "cuda"
-backends: # optional. list of additional backends. can be "exllama2", "diffusers", "mamba"
+backends: # optional. list of additional backends. can be "llama-cpp" (default), "exllama2", "diffusers"
 models: # required. list of models to build
   - name: # required. name of the model
     source: # required. source of the model. can be a url or a local file
@@ -22,7 +22,7 @@ config: # optional. list of config files
 Example:
 
 ```yaml
-#syntax=ghcr.io/sozercan/aikit:latest
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
 apiVersion: v1alpha1
 debug: true
 runtime: cuda

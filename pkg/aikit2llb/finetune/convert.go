@@ -3,11 +3,11 @@ package finetune
 import (
 	"fmt"
 
+	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/utils"
+	"github.com/kaito-project/aikit/pkg/version"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/util/system"
-	"github.com/sozercan/aikit/pkg/aikit/config"
-	"github.com/sozercan/aikit/pkg/utils"
-	"github.com/sozercan/aikit/pkg/version"
 	"gopkg.in/yaml.v2"
 )
 
@@ -52,7 +52,7 @@ func Aikit2LLB(c *config.FineTuneConfig) llb.State {
 		if version == "" {
 			version = "main"
 		}
-		unslothScriptURL := fmt.Sprintf("https://raw.githubusercontent.com/sozercan/aikit/%s/pkg/finetune/target_unsloth.py", version)
+		unslothScriptURL := fmt.Sprintf("https://raw.githubusercontent.com/kaito-project/aikit/%s/pkg/finetune/target_unsloth.py", version)
 		var opts []llb.HTTPOption
 		opts = append(opts, llb.Chmod(0o755))
 		unslothScript := llb.HTTP(unslothScriptURL, opts...)

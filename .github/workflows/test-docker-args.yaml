@@ -2,17 +2,20 @@ name: docker-test-args
 
 on:
   push:
-    branches:
-      - main
     paths-ignore:
       - '**.md'
       - 'website/**'
   pull_request:
-    branches:
-      - main
     paths-ignore:
       - '**.md'
       - 'website/**'
+  workflow_dispatch:
+    inputs:
+      enable_cache:
+        description: 'Enable build cache'
+        type: boolean
+        default: false
+        required: false
 
 permissions: read-all
 
@@ -22,7 +25,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-16-cores
     timeout-minutes: 240
     strategy:
       fail-fast: false
@@ -32,18 +35,8 @@ jobs:
           - huggingface
           - https
     steps:
-      - uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
       - name: Harden Runner
-        uses: step-security/harden-runner@6c439dc8bdf85cadbbce9ed30d1c7b959517bc49 # v2.12.2
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
         with:
           egress-policy: audit
           allowed-endpoints: >
@@ -66,11 +59,12 @@ jobs:
             developer.download.nvidia.com:443
             ghcr.io:443
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
       # need containerd image store for testing local images
-      - uses: crazy-max/ghaction-setup-docker@b60f85385d03ac8acfca6d9996982511d8620a19 # v4.3.0
+      - uses: crazy-max/ghaction-setup-docker@3fb92d6d9c634363128c8cce4bc3b2826526370a # v4.4.0
         with:
+          version: version=v27.5.1
           daemon-config: |
             {
               "debug": true,
@@ -82,10 +76,13 @@ jobs:
 
       - name: build aikit
         run: |
+          CACHE_FLAGS=""
+          if [ "${{ github.event.inputs.enable_cache }}" = "true" ]; then
+            CACHE_FLAGS="--cache-from=type=gha,scope=aikit-amd64 --cache-to=type=gha,scope=aikit-amd64,mode=max"
+          fi
           docker buildx build . -t aikit:test \
             --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=aikit-amd64 \
-            --cache-to=type=gha,scope=aikit-amd64,mode=max
+            $CACHE_FLAGS
 
       - name: set url
         run: |
@@ -102,11 +99,14 @@ jobs:
 
       - name: build test model
         run: |
+          CACHE_FLAGS=""
+          if [ "${{ github.event.inputs.enable_cache }}" = "true" ]; then
+            CACHE_FLAGS="--cache-from=type=gha,scope=testmodel-${{ matrix.protocol }} --cache-to=type=gha,scope=testmodel-${{ matrix.protocol }},mode=max"
+          fi
           docker buildx build -t testmodel:test \
             --build-arg="model=$MODEL_URL" \
             --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=testmodel-${{ matrix.protocol }} \
-            --cache-to=type=gha,scope=testmodel-${{ matrix.protocol }},mode=max \
+            $CACHE_FLAGS \
             "https://raw.githubusercontent.com/${REPO}/${SOURCE_BRANCH}/test/aikitfile-args.yaml"
         env:
           REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}

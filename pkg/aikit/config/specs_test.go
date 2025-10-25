@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/sozercan/aikit/pkg/utils"
+	"github.com/kaito-project/aikit/pkg/utils"
 )
 
 func TestNewFromBytes(t *testing.T) {

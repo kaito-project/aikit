@@ -13,11 +13,11 @@ This backend:
 ## Example
 
 :::warning
-Please make sure to change syntax to `#syntax=ghcr.io/sozercan/aikit:latest` in the examples below.
+Please make sure to change syntax to `#syntax=ghcr.io/kaito-project/aikit/aikit:latest` in the examples below.
 :::
 
 ### CPU
-https://github.com/sozercan/aikit/blob/main/test/aikitfile-llama.yaml
+https://github.com/kaito-project/aikit/blob/main/test/aikitfile-llama.yaml
 
 ### GPU (CUDA)
-https://github.com/sozercan/aikit/blob/main/test/aikitfile-llama-cuda.yaml
+https://github.com/kaito-project/aikit/blob/main/test/aikitfile-llama-cuda.yaml

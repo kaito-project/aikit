@@ -7,26 +7,27 @@ on:
       - main
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write
+  contents: read
 
 jobs:
   pre-release:
-    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    runs-on: ubuntu-latest-16-cores
     timeout-minutes: 360
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@6c439dc8bdf85cadbbce9ed30d1c7b959517bc49 # v2.12.2
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
         with:
-          egress-policy: block
+          egress-policy: audit
           allowed-endpoints: >
             auth.docker.io:443
             fulcio.sigstore.dev:443
             ghcr.io:443
             github.com:443
             *.githubusercontent.com:443
-            pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
@@ -35,19 +36,19 @@ jobs:
             tuf-repo-cdn.sigstore.dev:443
             sum.golang.org:443
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           fetch-tags: true
           fetch-depth: 0
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
 
       - name: Login to GHCR
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -58,14 +59,14 @@ jobs:
           set -x
           GIT_COMMIT=$(git rev-list --abbrev-commit --tags --max-count=1)
           GIT_TAG=$(git describe --abbrev=0 --tags ${GIT_COMMIT} 2>/dev/null)
-          echo LDFLAGS="-X github.com/sozercan/aikit/pkg/version.Version=${GIT_TAG}" >> $GITHUB_ENV
+          echo LDFLAGS="-X github.com/kaito-project/aikit/pkg/version.Version=${GIT_TAG}" >> $GITHUB_ENV
 
       - name: Build and push
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         id: build-and-push
         with:
           push: true
-          tags: ghcr.io/sozercan/aikit:dev
+          tags: ghcr.io/kaito-project/aikit/aikit:dev
           cache-from: type=gha,scope=aikit
           cache-to: type=gha,scope=aikit,mode=max
           sbom: true
@@ -79,12 +80,12 @@ jobs:
       - name: Sign the images with GitHub OIDC Token
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
-        run: cosign sign --yes "ghcr.io/sozercan/aikit@${DIGEST}"
+        run: cosign sign --yes "ghcr.io/kaito-project/aikit/aikit@${DIGEST}"
 
       - name: Verify image signature
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
         run: |
-          cosign verify ghcr.io/sozercan/aikit@${DIGEST} \
+          cosign verify ghcr.io/kaito-project/aikit/aikit@${DIGEST} \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity https://github.com/sozercan/aikit/.github/workflows/pre-release.yaml@refs/heads/main
+            --certificate-identity https://github.com/kaito-project/aikit/.github/workflows/pre-release.yaml@refs/heads/main

@@ -8,10 +8,10 @@ Vision is supported through [llama-cpp](llama-cpp.md) and [llava](https://llava.
 ## Example
 
 :::warning
-Please make sure to change syntax to `#syntax=ghcr.io/sozercan/aikit:latest` in the examples below.
+Please make sure to change syntax to `#syntax=ghcr.io/kaito-project/aikit/aikit:latest` in the examples below.
 :::
 
-https://github.com/sozercan/aikit/blob/main/test/aikitfile-llava.yaml
+https://github.com/kaito-project/aikit/blob/main/test/aikitfile-llava.yaml
 
 ## Demo
 

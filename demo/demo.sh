@@ -3,7 +3,7 @@
 . third_party/demo-magic/demo-magic.sh
 
 clear
-DEMO_PROMPT="${GREEN}➜  ${COLOR_RESET}"
+export DEMO_PROMPT="${GREEN}➜  ${COLOR_RESET}"
 
 echo "✨ In this demo, we are going to start by fine tuning a model and then deploy the model as a minimal container!"
 
@@ -20,7 +20,7 @@ echo ""
 echo "🗃️ Create a configuration for the fine tuning. We are going to be using a Mistral model and fine tune using OpenHermes dataset."
 
 cat > aikit-finetune.yaml << EOF
-#syntax=ghcr.io/sozercan/aikit:latest
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
 apiVersion: v1alpha1
 baseModel: unsloth/mistral-7b-instruct-v0.2-bnb-4bit
 datasets:
@@ -59,7 +59,7 @@ echo ""
 echo "📃 We'll start by creating a basic inference configuration file for the deployment."
 
 cat > aikit-inference.yaml << EOF
-#syntax=ghcr.io/sozercan/aikit:latest
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
 debug: true
 apiVersion: v1alpha1
 runtime: cuda

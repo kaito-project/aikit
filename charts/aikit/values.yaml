@@ -1,5 +1,5 @@
 image:
-  repository: ghcr.io/sozercan/llama3
+  repository: ghcr.io/kaito-project/aikit/llama3.1
   tag: "8b"
   pullPolicy: IfNotPresent
 
@@ -81,7 +81,7 @@ postInstall:
     enabled: true
     image:
       repository: registry.k8s.io/kubectl
-      tag: v1.33.2
+      tag: v1.34.1
       pullPolicy: IfNotPresent
       pullSecrets: []
     podSecurity: ["pod-security.kubernetes.io/audit=restricted",

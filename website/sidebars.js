@@ -32,6 +32,7 @@ const sidebars = {
       items: [
         'create-images',
         'fine-tune',
+        'packaging',
         'vision',
         'gpu',
         'kubernetes',
@@ -54,7 +55,6 @@ const sidebars = {
       items: [
         'llama-cpp',
         'exllama2',
-        'mamba',
         'diffusion',
       ],
     },

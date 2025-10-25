@@ -1,4 +1,4 @@
-#syntax=ghcr.io/sozercan/aikit:dev
+#syntax=ghcr.io/kaito-project/aikit/aikit:dev
 apiVersion: v1alpha1
 debug: true
 models:

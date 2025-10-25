@@ -4,7 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/sozercan/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/aikit/config"
+	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func Test_validateConfig(t *testing.T) {
@@ -66,10 +67,24 @@ func Test_validateConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "valid backend but no cuda runtime",
+			name: "valid exllama2 backend with cpu runtime",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Backends:   []string{"exllama2"},
+				Models: []config.Model{
+					{
+						Name:   "test",
+						Source: "foo",
+					},
+				},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "diffusers backend requires cuda runtime",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{"diffusers"},
 				Models: []config.Model{
 					{
 						Name:   "test",
@@ -99,6 +114,102 @@ func Test_validateConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := validateInferenceConfig(tt.args.c); (err != nil) != tt.wantErr {
 				t.Errorf("validateConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func Test_validateBackendPlatformCompatibility(t *testing.T) {
+	tests := []struct {
+		name            string
+		config          *config.InferenceConfig
+		targetPlatforms []*specs.Platform
+		wantErr         bool
+	}{
+		{
+			name: "llama-cpp backend with arm64 platform - should pass",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{"llama-cpp"},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: "arm64", OS: "linux"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "exllama2 backend with arm64 platform - should fail",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{"exllama2"},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: "arm64", OS: "linux"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "diffusers backend with arm64 platform - should fail",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{"diffusers"},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: "arm64", OS: "linux"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "exllama2 backend with amd64 platform - should pass",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{"exllama2"},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: "amd64", OS: "linux"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "mixed platforms with exllama2 backend - should fail",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{"exllama2"},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: "amd64", OS: "linux"},
+				{Architecture: "arm64", OS: "linux"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "mixed platforms with llama-cpp backend - should pass",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{"llama-cpp"},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: "amd64", OS: "linux"},
+				{Architecture: "arm64", OS: "linux"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "no backends specified with arm64 platform - should pass",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: "arm64", OS: "linux"},
+			},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateBackendPlatformCompatibility(tt.config, tt.targetPlatforms); (err != nil) != tt.wantErr {
+				t.Errorf("validateBackendPlatformCompatibility() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}

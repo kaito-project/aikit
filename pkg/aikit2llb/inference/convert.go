@@ -5,16 +5,16 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/sozercan/aikit/pkg/aikit/config"
-	"github.com/sozercan/aikit/pkg/utils"
 )
 
 const (
-	distrolessBase = "ghcr.io/sozercan/base:latest"
-	localAIRepo    = "https://github.com/mudler/LocalAI"
-	localAIVersion = "v2.26.0"
+	distrolessBase = "ghcr.io/kaito-project/aikit/base:latest"
+	localAIVersion = "v3.6.0"
+	localAIRepo    = "ghcr.io/kaito-project/aikit/localai:"
 	cudaVersion    = "12-5"
 )
 
@@ -34,7 +34,7 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 		return state, nil, err
 	}
 
-	state, merge, err = addLocalAI(c, state, merge, *platform)
+	state, merge, err = addLocalAI(state, merge, *platform)
 	if err != nil {
 		return state, nil, err
 	}
@@ -45,18 +45,7 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 	}
 
 	// install backend dependencies
-	for b := range c.Backends {
-		switch c.Backends[b] {
-		case utils.BackendExllamaV2:
-			merge = installExllama(state, merge)
-		case utils.BackendMamba:
-			merge = installMamba(state, merge)
-		case utils.BackendDiffusers:
-			merge = installDiffusers(state, merge)
-		case utils.BackendVLLM:
-			merge = installVLLM(c, state, merge)
-		}
-	}
+	merge = installBackends(c, *platform, state, merge)
 
 	imageCfg := NewImageConfig(c, platform)
 	return merge, imageCfg, nil
@@ -107,7 +96,8 @@ func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, platform
 
 	// create config file if defined
 	if c.Config != "" {
-		s = s.Run(utils.Shf("mkdir -p /configuration && echo -n \"%s\" > /config.yaml", c.Config)).Root()
+		s = s.Run(utils.Shf("mkdir -p /configuration && echo -n \"%s\" > /config.yaml", c.Config),
+			llb.WithCustomName(fmt.Sprintf("Creating config for platform %s/%s", platform.OS, platform.Architecture))).Root()
 	}
 
 	diff := llb.Diff(savedState, s)
@@ -144,15 +134,10 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 			s = s.Run(utils.Sh(exllamaDeps)).Root()
 		}
 
-		if c.Backends[b] == utils.BackendMamba {
-			mambaDeps := fmt.Sprintf("apt-get install -y --no-install-recommends cuda-crt-%[1]s cuda-cudart-dev-%[1]s cuda-nvcc-%[1]s && apt-get clean", cudaVersion)
-			s = s.Run(utils.Sh(mambaDeps)).Root()
-		}
-
-		if c.Backends[b] == utils.BackendVLLM && c.Runtime == utils.RuntimeNVIDIA {
-			vllmDeps := fmt.Sprintf("apt-get install -y --no-install-recommends cuda-crt-%[1]s cuda-cudart-dev-%[1]s cuda-nvcc-%[1]s && apt-get clean", cudaVersion)
-			s = s.Run(utils.Sh(vllmDeps)).Root()
-		}
+		// if c.Backends[b] == utils.BackendVLLM && c.Runtime == utils.RuntimeNVIDIA {
+		// 	vllmDeps := fmt.Sprintf("apt-get install -y --no-install-recommends cuda-crt-%[1]s cuda-cudart-dev-%[1]s cuda-nvcc-%[1]s && apt-get clean", cudaVersion)
+		// 	s = s.Run(utils.Sh(vllmDeps)).Root()
+		// }
 	}
 
 	diff := llb.Diff(savedState, s)
@@ -160,37 +145,34 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 }
 
 // addLocalAI adds the LocalAI binary to the image.
-func addLocalAI(c *config.InferenceConfig, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State, error) {
-	var localAIURL string
-	if c.Runtime == utils.RuntimeAppleSilicon {
-		localAIURL = fmt.Sprintf("https://sertaccdnvs.azureedge.net/localai/%[1]s/kompute/local-ai", localAIVersion)
-	} else {
-		binaryNames := map[string]string{
-			utils.PlatformAMD64: "local-ai-Linux-x86_64",
-			utils.PlatformARM64: "local-ai-Linux-arm64",
-		}
-		binaryName, exists := binaryNames[platform.Architecture]
-		if !exists {
-			return s, merge, fmt.Errorf("unsupported architecture %s", platform.Architecture)
-		}
-		localAIURL = fmt.Sprintf("https://github.com/mudler/LocalAI/releases/download/%[1]s/%[2]s", localAIVersion, binaryName)
+func addLocalAI(s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State, error) {
+	// Map architectures to OCI artifact references & internal artifact filenames
+	artifactRefs := map[string]struct {
+		Ref string
+	}{
+		utils.PlatformAMD64: {Ref: localAIRepo + localAIVersion + "-amd64"},
+		utils.PlatformARM64: {Ref: localAIRepo + localAIVersion + "-arm64"},
+	}
+
+	art, ok := artifactRefs[platform.Architecture]
+	if !ok {
+		return s, merge, fmt.Errorf("unsupported architecture %s", platform.Architecture)
 	}
 
 	savedState := s
 
-	var opts []llb.HTTPOption
-	opts = append(opts, llb.Filename("local-ai"), llb.Chmod(0o755))
-	localAI := llb.HTTP(localAIURL, opts...)
+	// Use the oras CLI image to pull the artifact containing the LocalAI binary
+	tooling := llb.Image(orasImage, llb.Platform(platform)).Run(
+		utils.Shf("set -e\noras pull %[1]s\nchmod +x local-ai\nchmod 755 local-ai", art.Ref),
+		llb.WithCustomName("Pulling LocalAI from OCI artifact "+art.Ref),
+	).Root()
+
+	// Copy the prepared binary into /usr/bin/local-ai
 	s = s.File(
-		llb.Copy(localAI, "local-ai", "/usr/bin/local-ai"),
-		llb.WithCustomName("Copying "+utils.FileNameFromURL(localAIURL)+" to /usr/bin"), //nolint: goconst
+		llb.Copy(tooling, "local-ai", "/usr/bin/local-ai"),
+		llb.WithCustomName("Copying local-ai from OCI artifact to /usr/bin"),
 	)
 
 	diff := llb.Diff(savedState, s)
 	return s, llb.Merge([]llb.State{merge, diff}), nil
-}
-
-// cloneLocalAI clones the LocalAI repository to the image used for python backends.
-func cloneLocalAI(s llb.State) llb.State {
-	return s.Run(utils.Shf("git clone --filter=blob:none --no-checkout %[1]s /tmp/localai/ && cd /tmp/localai && git sparse-checkout init --cone && git sparse-checkout set backend/python && git checkout %[2]s && rm -rf .git", localAIRepo, localAIVersion)).Root()
 }

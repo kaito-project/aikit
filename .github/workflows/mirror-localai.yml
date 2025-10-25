@@ -1,0 +1,76 @@
+name: Mirror LocalAI Binary to GHCR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "LocalAI version tag (e.g. v3.4.0)"
+        required: true
+        default: v3.4.0
+
+permissions:
+  contents: read
+  actions: read
+  packages: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [linux-amd64, linux-arm64]
+    env:
+      ORAS_VERSION: v1.2.0
+    steps:
+      - name: Compute variables
+        id: vars
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          ARCH_INPUT="${{ matrix.arch }}"
+          # Normalize arch for tag suffix (linux-amd64 -> amd64, linux-arm64 -> arm64)
+          case "${ARCH_INPUT}" in
+            linux-amd64) ARCH_TAG=amd64 ;;
+            linux-arm64) ARCH_TAG=arm64 ;;
+            *) echo "Unsupported arch: ${ARCH_INPUT}"; exit 1 ;;
+          esac
+          ASSET_NAME="local-ai-${VERSION}-${ARCH_INPUT}"
+          UPSTREAM_URL="https://github.com/mudler/LocalAI/releases/download/${VERSION}/${ASSET_NAME}"
+          TARGET_TAG="${VERSION}-${ARCH_TAG}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "arch=${ARCH_INPUT}" >> $GITHUB_OUTPUT
+          echo "arch_tag=${ARCH_TAG}" >> $GITHUB_OUTPUT
+          echo "asset=${ASSET_NAME}" >> $GITHUB_OUTPUT
+          echo "url=${UPSTREAM_URL}" >> $GITHUB_OUTPUT
+          echo "tag=${TARGET_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Show plan
+        run: |
+          echo "Mirroring ${{ steps.vars.outputs.url }} -> ghcr.io/kaito-project/aikit/localai:${{ steps.vars.outputs.tag }}"
+
+      - name: Install ORAS
+        run: |
+          curl -sSL https://github.com/oras-project/oras/releases/download/${ORAS_VERSION}/oras_${ORAS_VERSION#v}_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin oras
+          oras version
+
+      - name: Download LocalAI binary
+        run: |
+          curl -fL "${{ steps.vars.outputs.url }}" -o local-ai
+          chmod +x local-ai
+          echo "Downloaded binary size:" $(stat -c%s local-ai) "bytes"
+
+      - name: Login to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push OCI artifact
+        run: |
+          oras push ghcr.io/kaito-project/aikit/localai:${{ steps.vars.outputs.tag }} \
+            --annotation org.opencontainers.image.source=${{ github.repository }} \
+            --annotation org.opencontainers.image.title=local-ai \
+            --annotation org.opencontainers.image.version=${{ steps.vars.outputs.version }} \
+            local-ai:application/vnd.localai.binary.layer.v1+octet-stream
+
+      - name: Summary
+        run: |
+          echo "Mirrored LocalAI ${{ steps.vars.outputs.version }} (${{ steps.vars.outputs.arch }}) to ghcr.io/kaito-project/aikit/localai:${{ steps.vars.outputs.tag }}" >> $GITHUB_STEP_SUMMARY

@@ -12,7 +12,7 @@ To access the SBOM for a specific AIKit image, use the following command:
 
 ```bash
 # update this with the image you want to inspect
-IMAGE=ghcr.io/sozercan/llama3:8b
+IMAGE=ghcr.io/kaito-project/aikit/llama3.1:8b
 docker buildx imagetools inspect $IMAGE --format "{{ json .SBOM.SPDX }}"
 ```
 
@@ -26,7 +26,7 @@ To inspect the provenance attestation for an AIKit image, you can use the follow
 
 ```bash
 # update this with the image you want to inspect
-IMAGE=ghcr.io/sozercan/llama3:8b
+IMAGE=ghcr.io/kaito-project/aikit/llama3.1:8b
 docker buildx imagetools inspect $IMAGE --format "{{ json .Provenance.SLSA }}"
 ```
 
@@ -49,17 +49,17 @@ This automated and regular process ensures that our users always have access to 
 AIKit and pre-made models are keyless signed with OIDC in GitHub Actions with [cosign](https://github.com/sigstore/cosign). You can verify the images with the following commands:
 
 ```bash
-IMAGE=ghcr.io/sozercan/llama2:7b # update this with the image you want to verify
+IMAGE=ghcr.io/kaito-project/aikit/llama2:7b # update this with the image you want to verify
 DIGEST=$(cosign triangulate ${IMAGE} --type digest)
 cosign verify ${DIGEST} \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-    --certificate-identity-regexp 'https://github\.com/sozercan/aikit/\.github/workflows/.+'
+    --certificate-identity-regexp 'https://github\.com/kaito-project/aikit/\.github/workflows/.+'
 ```
 
 You should see an output similar to the following:
 
 ```bash
-Verification for ghcr.io/sozercan/llama2@sha256:d47fdba491a9a47ce4911539a77e0c0a12b2e14f5beed88cb8072924b02130b4 --
+Verification for ghcr.io/kaito-project/aikit/llama2@sha256:d47fdba491a9a47ce4911539a77e0c0a12b2e14f5beed88cb8072924b02130b4 --
 The following checks were performed on each of these signatures:
   - The cosign claims were validated
   - Existence of the claims in the transparency log was verified offline

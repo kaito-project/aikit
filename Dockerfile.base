@@ -1,6 +1,6 @@
 ARG UBUNTU_RELEASE=22.04
 
-FROM golang:1.24-bookworm@sha256:10f549dc8489597aa7ed2b62008199bb96717f52a8e8434ea035d5b44368f8a6 AS builder
+FROM golang:1.25-bookworm@sha256:51b6b12427dc03451c24f7fc996c43a20e8a8e56f0849dd0db6ff6e9225cc892 AS builder
 ARG UBUNTU_RELEASE
 ARG TARGETARCH
 
@@ -12,7 +12,10 @@ RUN mkdir -p /rootfs && chisel cut --release ubuntu-$UBUNTU_RELEASE --root /root
     base-files_release-info \
     ca-certificates_data \
     libgcc-s1_libs \
-    libc6_libs
+    libc6_libs \
+    bash_bins \
+    coreutils_bins \
+    grep_bins
 
 FROM scratch
 COPY --from=builder /rootfs /

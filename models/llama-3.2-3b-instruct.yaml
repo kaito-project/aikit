@@ -1,4 +1,4 @@
-#syntax=ghcr.io/sozercan/aikit:latest
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
 apiVersion: v1alpha1
 debug: true
 runtime: cuda
@@ -52,6 +52,7 @@ models:
           {{.Input }}
           <|start_header_id|>assistant<|end_header_id|>
       - name: completion
+        template: |
           {{.Input}}
 config: |
   - name: llama-3.2-3b-instruct

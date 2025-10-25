@@ -39,7 +39,7 @@ AIKit is capable of supporting multiple fine tuning implementation targets. At t
 Create a YAML file with your configuration. For example, minimum config looks like:
 
 ```yaml
-#syntax=ghcr.io/sozercan/aikit:latest
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
 apiVersion: v1alpha1
 baseModel: "unsloth/llama-2-7b-bnb-4bit" # base model to be fine tuned. this can be any model from Huggingface. For unsloth optimized base models, see https://huggingface.co/unsloth
 datasets:
@@ -58,10 +58,10 @@ Please refer to [Unsloth documentation](https://github.com/unslothai/unsloth) fo
 #### Example Configuration
 
 :::warning
-Please make sure to change syntax to `#syntax=ghcr.io/sozercan/aikit:latest` in the example below.
+Please make sure to change syntax to `#syntax=ghcr.io/kaito-project/aikit/aikit:latest` in the example below.
 :::
 
-https://github.com/sozercan/aikit/blob/main/test/aikitfile-unsloth.yaml
+https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth.yaml
 
 
 ## Build
@@ -78,7 +78,7 @@ Output will be a `GGUF` model file with the name and quanization format from the
 
 ```bash
 $ ls -al _output
--rw-r--r--  1 sozercan sozercan 7161089856 Mar  3 00:19 aikit-model-q4_k_m.gguf
+-rw-r--r--  1 kaito-project kaito-project 7161089856 Mar  3 00:19 aikit-model-q4_k_m.gguf
 ```
 
 ## Demo

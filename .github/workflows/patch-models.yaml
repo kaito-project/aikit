@@ -7,140 +7,130 @@ on:
 
 permissions:
   contents: read
-  packages: write
-  id-token: write
 
 jobs:
-    patch-models:
-        runs-on: ubuntu-latest
-        timeout-minutes: 240
-        strategy:
-          fail-fast: false
-          matrix:
-            images:
-              - ghcr.io/sozercan/llama3.1:8b
-              - ghcr.io/sozercan/llama3.3:70b
-              - ghcr.io/sozercan/llama3.2:1b
-              - ghcr.io/sozercan/llama3.2:3b
-              - ghcr.io/sozercan/mixtral:8x7b
-              - ghcr.io/sozercan/phi3.5:3.8b
-              - ghcr.io/sozercan/gemma2:2b
-              - ghcr.io/sozercan/codestral:22b
-              - ghcr.io/sozercan/flux1:dev
-        steps:
-        - uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
-          with:
-            tool-cache: true
-            android: true
-            dotnet: true
-            haskell: true
-            large-packages: true
-            docker-images: true
-            swap-storage: true
+  patch-models:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    runs-on: ubuntu-latest-16-cores
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        images:
+          - ghcr.io/kaito-project/aikit/llama3.1:8b
+          - ghcr.io/kaito-project/aikit/llama3.3:70b
+          - ghcr.io/kaito-project/aikit/llama3.2:1b
+          - ghcr.io/kaito-project/aikit/llama3.2:3b
+          - ghcr.io/kaito-project/aikit/mixtral:8x7b
+          - ghcr.io/kaito-project/aikit/phi3.5:3.8b
+          - ghcr.io/kaito-project/aikit/gemma2:2b
+          - ghcr.io/kaito-project/aikit/codestral:22b
+          - ghcr.io/kaito-project/aikit/flux1:dev
+    steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+      with:
+        egress-policy: audit
+        allowed-endpoints: >
+          api.github.com:443
+          auth.docker.io:443
+          fulcio.sigstore.dev:443
+          ghcr.io:443
+          github.com:443
+          *.githubusercontent.com:443
+          proxy.golang.org:443
+          registry-1.docker.io:443
+          rekor.sigstore.dev:443
+          storage.googleapis.com:443
+          tuf-repo-cdn.sigstore.dev:443
+          *.ubuntu.com:80
+          *.blob.core.windows.net:443
 
-        - name: Harden Runner
-          uses: step-security/harden-runner@6c439dc8bdf85cadbbce9ed30d1c7b959517bc49 # v2.12.2
-          with:
-            egress-policy: block
-            allowed-endpoints: >
-              api.github.com:443
-              auth.docker.io:443
-              fulcio.sigstore.dev:443
-              ghcr.io:443
-              github.com:443
-              objects.githubusercontent.com:443
-              pkg-containers.githubusercontent.com:443
-              production.cloudflare.docker.com:443
-              proxy.golang.org:443
-              registry-1.docker.io:443
-              rekor.sigstore.dev:443
-              storage.googleapis.com:443
-              tuf-repo-cdn.sigstore.dev:443
-              *.ubuntu.com:80
-              *.blob.core.windows.net:443
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
 
-        - name: Set up Docker Buildx
-          uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+    - name: Login to GHCR
+      uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
-        - name: Login to GHCR
-          uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
-          with:
-            registry: ghcr.io
-            username: ${{ github.actor }}
-            password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Download Trivy
+      run: |
+        TRIVY_VERSION=$(
+            curl --silent "https://api.github.com/repos/aquasecurity/trivy/releases/latest" | \
+            grep '"tag_name":' | \
+            sed -E 's/.*"v([^"]+)".*/\1/'
+        )
+        wget https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz
+        tar zxvf trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz
+        mv trivy /usr/local/bin
+        rm trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz
 
-        - name: Download Trivy
-          run: |
-            TRIVY_VERSION=$(
-                curl --silent "https://api.github.com/repos/aquasecurity/trivy/releases/latest" | \
-                grep '"tag_name":' | \
-                sed -E 's/.*"v([^"]+)".*/\1/'
-            )
-            wget https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz
-            tar zxvf trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz
-            mv trivy /usr/local/bin
-            rm trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz
+    - name: Download retry
+      run: |
+        wget https://github.com/joshdk/retry/releases/download/v${VERSION}/retry-linux-amd64.tar.gz
+        tar -xf retry-linux-amd64.tar.gz
+        sudo install retry /usr/bin/retry
+      env:
+        VERSION: 1.4.0
 
-        - name: Download retry
-          run: |
-            wget https://github.com/joshdk/retry/releases/download/v${VERSION}/retry-linux-amd64.tar.gz
-            tar -xf retry-linux-amd64.tar.gz
-            sudo install retry /usr/bin/retry
-          env:
-            VERSION: 1.4.0
+    - name: Scan with Trivy
+      run: |
+        retry -attempts ${ATTEMPTS} -max-time ${MAX_TIME} trivy image --pkg-types os --exit-code 0 --format json --output report.json --timeout ${TRIVY_TIMEOUT} --ignore-unfixed ${{ matrix.images }}
+      env:
+        ATTEMPTS: 25
+        MAX_TIME: 0
+        TRIVY_TIMEOUT: 60m
 
-        - name: Scan with Trivy
-          run: |
-            retry -attempts ${ATTEMPTS} -max-time ${MAX_TIME} trivy image --pkg-types os --exit-code 0 --format json --output report.json --timeout ${TRIVY_TIMEOUT} --ignore-unfixed ${{ matrix.images }}
-          env:
-            ATTEMPTS: 25
-            MAX_TIME: 0
-            TRIVY_TIMEOUT: 60m
+    - name: Check vulnerability count
+      id: vuln_count
+      run: |
+        cat report.json | jq
+        vuln_count=$(jq '.Results[0].Vulnerabilities | length' report.json)
+        echo "vuln_count=$vuln_count" >> $GITHUB_OUTPUT
 
-        - name: Check vulnerability count
-          id: vuln_count
-          run: |
-            cat report.json | jq
-            vuln_count=$(jq '.Results[0].Vulnerabilities | length' report.json)
-            echo "vuln_count=$vuln_count" >> $GITHUB_OUTPUT
+    - name: Get image tag
+      run: |
+        image_tag=$(echo ${{ matrix.images }} | cut -d':' -f2)
+        echo $image_tag
+        echo "image_tag=$image_tag" >> $GITHUB_ENV
 
-        - name: Get image tag
-          run: |
-            image_tag=$(echo ${{ matrix.images }} | cut -d':' -f2)
-            echo $image_tag
-            echo "image_tag=$image_tag" >> $GITHUB_ENV
+    - name: Copa Action
+      if: steps.vuln_count.outputs.vuln_count != '0'
+      id: copa
+      uses: project-copacetic/copa-action@3843e22efdca421adb37aa8dec103a0f1db68544 # v1.2.1
+      with:
+        image: ${{ matrix.images }}
+        image-report: 'report.json'
+        patched-tag: ${image_tag}
+        timeout: 30m
 
-        - name: Copa Action
-          if: steps.vuln_count.outputs.vuln_count != '0'
-          id: copa
-          uses: project-copacetic/copa-action@3843e22efdca421adb37aa8dec103a0f1db68544 # v1.2.1
-          with:
-            image: ${{ matrix.images }}
-            image-report: 'report.json'
-            patched-tag: ${image_tag}
-            timeout: 30m
+    - name: Install Cosign
+      if: steps.copa.conclusion == 'success'
+      uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
 
-        - name: Install Cosign
-          if: steps.copa.conclusion == 'success'
-          uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+    - name: Docker Push Patched Image
+      id: push
+      if: steps.copa.conclusion == 'success'
+      run: |
+        docker tag ${{ steps.copa.outputs.patched-image }} ${{ matrix.images }}
+        docker images
+        docker push ${{ matrix.images }}
+        echo "DIGEST=$(cosign triangulate ${{ matrix.images }} --type digest)" >> $GITHUB_ENV
 
-        - name: Docker Push Patched Image
-          id: push
-          if: steps.copa.conclusion == 'success'
-          run: |
-            docker tag ${{ steps.copa.outputs.patched-image }} ${{ matrix.images }}
-            docker images
-            docker push ${{ matrix.images }}
-            echo "DIGEST=$(cosign triangulate ${{ matrix.images }} --type digest)" >> $GITHUB_ENV
+    - name: Sign the images with GitHub OIDC Token
+      id: sign
+      if: steps.push.conclusion == 'success'
+      run: cosign sign --yes ${DIGEST}
 
-        - name: Sign the images with GitHub OIDC Token
-          id: sign
-          if: steps.push.conclusion == 'success'
-          run: cosign sign --yes ${DIGEST}
-
-        - name: Verify image signature
-          if: steps.sign.conclusion == 'success'
-          run: |
-            cosign verify ${DIGEST} \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              --certificate-identity-regexp 'https://github\.com/sozercan/aikit/\.github/workflows/.+'
+    - name: Verify image signature
+      if: steps.sign.conclusion == 'success'
+      run: |
+        cosign verify ${DIGEST} \
+          --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+          --certificate-identity-regexp 'https://github\.com/kaito-project/aikit/\.github/workflows/.+'

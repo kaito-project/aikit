@@ -8,6 +8,11 @@ import (
 	"strings"
 
 	"github.com/containerd/platforms"
+	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/aikit2llb/finetune"
+	"github.com/kaito-project/aikit/pkg/aikit2llb/inference"
+	"github.com/kaito-project/aikit/pkg/packager"
+	"github.com/kaito-project/aikit/pkg/utils"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/exporter/containerimage/exptypes"
@@ -16,17 +21,12 @@ import (
 	"github.com/moby/buildkit/frontend/gateway/client"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
-	"github.com/sozercan/aikit/pkg/aikit/config"
-	"github.com/sozercan/aikit/pkg/aikit2llb/finetune"
-	"github.com/sozercan/aikit/pkg/aikit2llb/inference"
-	"github.com/sozercan/aikit/pkg/utils"
 	"golang.org/x/sync/errgroup"
 )
 
 const (
 	localNameContext     = "context"
 	localNameDockerfile  = "dockerfile"
-	localNameAikitfile   = "aikitfile.yaml"
 	defaultAikitfileName = "aikitfile.yaml"
 
 	keyFilename       = "filename"
@@ -37,6 +37,16 @@ const (
 )
 
 func Build(ctx context.Context, c client.Client) (*client.Result, error) {
+	opts := c.BuildOpts().Opts
+	if t, ok := opts[keyTarget]; ok {
+		switch t {
+		case "packager/modelpack":
+			return packager.BuildModelpack(ctx, c)
+		case "packager/generic":
+			return packager.BuildGeneric(ctx, c)
+		}
+	}
+
 	inferenceCfg, finetuneCfg, err := getAikitfileConfig(ctx, c)
 	if err != nil {
 		return nil, errors.Wrap(err, "getting aikitfile")
@@ -121,6 +131,12 @@ func buildInference(ctx context.Context, c client.Client, cfg *config.InferenceC
 		}
 	} else if platform == "" {
 		targetPlatforms = []*specs.Platform{&defaultBuildPlatform}
+	}
+
+	// Validate backends against target platforms
+	err = validateBackendPlatformCompatibility(cfg, targetPlatforms)
+	if err != nil {
+		return nil, errors.Wrap(err, "validating backend platform compatibility")
 	}
 
 	if cfg.Runtime == utils.RuntimeAppleSilicon {
@@ -277,14 +293,15 @@ func getAikitfileConfig(ctx context.Context, c client.Client) (*config.Inference
 
 	var st *llb.State
 	var ok bool
+	keepGit := true
 	switch {
 	case strings.HasPrefix(context, "git"):
-		st, ok = dockerui.DetectGitContext(context, true)
+		st, ok, _ = dockerui.DetectGitContext(context, &keepGit)
 		if !ok {
 			return nil, nil, errors.Errorf("invalid git context %s", context)
 		}
 	case strings.HasPrefix(context, "http") || strings.HasPrefix(context, "https"):
-		st, ok = dockerui.DetectGitContext(context, true)
+		st, ok, _ = dockerui.DetectGitContext(context, &keepGit)
 		if !ok {
 			st, filename, _ = dockerui.DetectHTTPContext(context)
 		}
@@ -452,21 +469,20 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 		return errors.New("only one backend is supported at this time")
 	}
 
-	if (slices.Contains(c.Backends, utils.BackendExllamaV2) ||
-		slices.Contains(c.Backends, utils.BackendMamba) ||
-		slices.Contains(c.Backends, utils.BackendDiffusers) ||
-		slices.Contains(c.Backends, utils.BackendVLLM)) &&
-		c.Runtime != utils.RuntimeNVIDIA {
-		return errors.New("exllama, mamba, and diffusers backends only supports nvidia cuda runtime. please add 'runtime: cuda' to your aikitfile.yaml")
+	if slices.Contains(c.Backends, utils.BackendDiffusers) && c.Runtime != utils.RuntimeNVIDIA {
+		return errors.New("diffusers backend only supports nvidia cuda runtime. please add 'runtime: cuda' to your aikitfile.yaml")
 	}
 
 	if c.Runtime == utils.RuntimeAppleSilicon && len(c.Backends) > 0 {
-		return errors.New("apple silicon runtime only supports the default llama-cpp backend")
+		for _, backend := range c.Backends {
+			if backend != utils.BackendLlamaCpp {
+				return errors.New("apple silicon runtime only supports llama-cpp backend")
+			}
+		}
 	}
 
 	backends := []string{
 		utils.BackendExllamaV2,
-		utils.BackendMamba,
 		utils.BackendDiffusers,
 		utils.BackendVLLM,
 	}
@@ -479,6 +495,29 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 	runtimes := []string{"", utils.RuntimeNVIDIA, utils.RuntimeAppleSilicon}
 	if !slices.Contains(runtimes, c.Runtime) {
 		return errors.Errorf("runtime %s is not supported", c.Runtime)
+	}
+
+	return nil
+}
+
+// validateBackendPlatformCompatibility validates that backends are compatible with target platforms.
+func validateBackendPlatformCompatibility(c *config.InferenceConfig, targetPlatforms []*specs.Platform) error {
+	// Check if any target platform is ARM64
+	hasARM64Platform := false
+	for _, tp := range targetPlatforms {
+		if tp != nil && tp.Architecture == utils.PlatformARM64 {
+			hasARM64Platform = true
+			break
+		}
+	}
+
+	// If we have ARM64 platforms, validate backend compatibility
+	if hasARM64Platform {
+		for _, backend := range c.Backends {
+			if backend != utils.BackendLlamaCpp {
+				return errors.Errorf("backend %s is not supported on arm64 platform. only llama-cpp backend supports arm64", backend)
+			}
+		}
 	}
 
 	return nil

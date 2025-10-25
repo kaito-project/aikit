@@ -5,9 +5,9 @@ import (
 	"path"
 	"strings"
 
-	"github.com/sozercan/aikit/pkg/aikit/config"
-	"github.com/sozercan/aikit/pkg/aikit2llb/inference"
-	"github.com/sozercan/aikit/pkg/utils"
+	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/aikit2llb/inference"
+	"github.com/kaito-project/aikit/pkg/utils"
 )
 
 // parseBuildArgs parses the build arguments and configures inference settings.

@@ -9,18 +9,29 @@ import {themes as prismThemes} from 'prism-react-renderer';
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'AIKit',
-  tagline: 'Dinosaurs are cool',
+  tagline: 'Fine-tune, build, and deploy open-source LLMs easily!',
   favicon: 'img/favicon.ico',
+  headTags: [
+    {
+      tagName: "meta",
+      attributes: {
+        // Allow Algolia crawler to index the site
+        // See https://www.algolia.com/doc/tools/crawler/getting-started/create-crawler/#verify-your-domain.
+        name: "algolia-site-verification",
+        content: "58101301D914B63C",
+      }
+    },
+  ],
 
   // Set the production url of your site here
-  url: 'https://sozercan.github.io',
+  url: 'https://kaito-project.github.io',
   // Set the /<baseUrl>/ pathname under which your site is served
   // For GitHub pages deployment, it is often '/<projectName>/'
   baseUrl: '/aikit/docs/',
 
   // GitHub pages deployment config.
   // If you aren't using GitHub pages, you don't need these.
-  organizationName: 'sozercan', // Usually your GitHub org/user name.
+  organizationName: 'kaito-project', // Usually your GitHub org/user name.
   projectName: 'aikit', // Usually your repo name.
 
   onBrokenLinks: 'throw', // throw
@@ -45,7 +56,7 @@ const config = {
           // Please change this to your repo.
           // Remove this to remove the "edit this page" links.
           editUrl:
-            'https://github.com/sozercan/aikit/blob/main/website/docs/',
+            'https://github.com/kaito-project/aikit/blob/main/website/docs/',
         },
         blog: false,
         theme: {
@@ -68,7 +79,7 @@ const config = {
         },
         items: [
           {
-            href: 'https://github.com/sozercan/aikit',
+            href: 'https://github.com/kaito-project/aikit',
             position: 'right',
             className: 'header-github-link',
             'aria-label': 'GitHub repository',
@@ -91,12 +102,12 @@ const config = {
       },
       announcementBar: {
         id: 'announcementBar-1', // Increment on change
-        content: `⭐️ If you like AIKit, please give it a star on <a target="_blank" rel="noopener noreferrer" href="https://github.com/sozercan/aikit">GitHub</a>!</a>`,
+        content: `⭐️ If you like AIKit, please give it a star on <a target="_blank" rel="noopener noreferrer" href="https://github.com/kaito-project/aikit">GitHub</a>!</a>`,
       },
       algolia: {
-        appId: 'RHJCSXGPIU',
-        apiKey: '87916a9628113114a3b81499694c8fe1',
-        indexName: 'sozercanio',
+        appId: 'BWYV6PMJ5K',
+        apiKey: 'e2cfa004b0a812062660e0039aca0bda',
+        indexName: 'aikit-crawler',
       },
     }),
 };

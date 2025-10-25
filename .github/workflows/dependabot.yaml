@@ -2,13 +2,15 @@ name: Dependabot auto-merge
 on: pull_request
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   dependabot:
+    permissions:
+      contents: write
+      pull-requests: write
     runs-on: ubuntu-latest
-    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'sozercan/aikit'
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'kaito-project/aikit'
     steps:
       - name: Dependabot metadata
         id: metadata

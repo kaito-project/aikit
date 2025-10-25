@@ -5,7 +5,7 @@ title: Quick Start
 You can get started with AIKit quickly on your local machine without a GPU!
 
 ```bash
-docker run -d --rm -p 8080:8080 ghcr.io/sozercan/llama3.1:8b
+docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.1:8b
 ```
 
 After running this, navigate to [http://localhost:8080/chat](http://localhost:8080/chat) to access the WebUI.

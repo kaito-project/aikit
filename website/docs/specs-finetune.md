@@ -5,7 +5,7 @@ title: Fine Tuning API Specifications
 ## v1alpha1
 
 ```yaml
-#syntax=ghcr.io/sozercan/aikit:latest
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
 apiVersion: # required. only v1alpha1 is supported at the moment
 baseModel: # required. any base model from Huggingface. for unsloth, see for 4bit pre-quantized models: https://huggingface.co/unsloth
 datasets:
@@ -34,7 +34,7 @@ output:
 Example:
 
 ```yaml
-#syntax=ghcr.io/sozercan/aikit:latest
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
 apiVersion: v1alpha1
 baseModel: unsloth/mistral-7b-instruct-v0.2-bnb-4bit
 datasets:

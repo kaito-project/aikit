@@ -1,0 +1,68 @@
+name: release-hf-cli
+
+on:
+  schedule:
+    - cron: "0 0 * * 0"  # weekly
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-hf-cli:
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    runs-on: ubuntu-latest-16-cores
+    timeout-minutes: 120
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-tags: true
+          fetch-depth: 0
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Login to GHCR
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push hf-cli image
+        id: build-and-push
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          push: true
+          sbom: true
+          provenance: true
+          tags: ghcr.io/kaito-project/aikit/hf-cli:latest
+          cache-from: type=gha,scope=hf-cli
+          cache-to: type=gha,scope=hf-cli,mode=max
+          platforms: linux/amd64,linux/arm64
+          file: Dockerfile.hf-cli
+
+      - name: Sign the image with GitHub OIDC Token
+        env:
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+        run: cosign sign --yes "ghcr.io/kaito-project/aikit/hf-cli@${DIGEST}"
+
+      - name: Verify image signature
+        env:
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+        run: |
+          cosign verify ghcr.io/kaito-project/aikit/hf-cli@${DIGEST} \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity https://github.com/kaito-project/aikit/.github/workflows/release-hf-cli.yaml@refs/heads/main

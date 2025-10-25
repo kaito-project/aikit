@@ -2,17 +2,21 @@ name: docker-test
 
 on:
   push:
-    branches:
-      - main
     paths-ignore:
       - '**.md'
       - 'website/**'
   pull_request:
-    branches:
-      - main
     paths-ignore:
       - '**.md'
       - 'website/**'
+  workflow_dispatch:
+    inputs:
+      # there is an outage for gha cache - disabling for now
+      enable_cache:
+        description: 'Enable build cache'
+        type: boolean
+        default: false
+        required: false
 
 permissions: read-all
 
@@ -22,31 +26,25 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.arch == 'arm64' && 'github-arm64-2c-8gb' || 'ubuntu-latest-16-cores' }}
     timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
         backend:
           - llama
+          - llama-cuda # this tests cpu inference with cuda libraries present in the image
         arch:
           - amd64
           - arm64
+        exclude:
+          - backend: llama-cuda
+            arch: arm64
     steps:
-      - uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
       - name: Harden Runner
-        uses: step-security/harden-runner@6c439dc8bdf85cadbbce9ed30d1c7b959517bc49 # v2.12.2
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
         with:
-          egress-policy: block
+          egress-policy: audit
           allowed-endpoints: >
             auth.docker.io:443
             huggingface.co:443
@@ -69,12 +67,14 @@ jobs:
             *.ubuntu.com:80
             ghcr.io:443
             sum.golang.org:443
+            quay.io:443
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
       # need containerd image store for testing local images
-      - uses: crazy-max/ghaction-setup-docker@b60f85385d03ac8acfca6d9996982511d8620a19 # v4.3.0
+      - uses: crazy-max/ghaction-setup-docker@3fb92d6d9c634363128c8cce4bc3b2826526370a # v4.4.0
         with:
+          version: version=v27.5.1
           daemon-config: |
             {
               "debug": true,
@@ -88,20 +88,27 @@ jobs:
 
       - name: build aikit
         run: |
+          CACHE_FLAGS=""
+          if [ "${{ github.event.inputs.enable_cache }}" = "true" ]; then
+            CACHE_FLAGS="--cache-from=type=gha,scope=aikit-${{ matrix.arch }} --cache-to=type=gha,scope=aikit-${{ matrix.arch }},mode=max"
+          fi
           docker buildx build . -t aikit:test \
             --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=aikit-${{ matrix.arch }} \
-            --cache-to=type=gha,scope=aikit-${{ matrix.arch }},mode=max \
+            $CACHE_FLAGS \
             --platform linux/${{ matrix.arch }}
 
       - name: build test model
         run: |
+          CACHE_FLAGS=""
+          if [ "${{ github.event.inputs.enable_cache }}" = "true" ]; then
+            CACHE_FLAGS="--cache-from=type=gha,scope=testmodel-${{ matrix.arch }} --cache-to=type=gha,scope=testmodel-${{ matrix.arch }},mode=max"
+          fi
           docker buildx build . -t testmodel:test \
             -f test/aikitfile-${{ matrix.backend }}.yaml \
             --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=testmodel-${{ matrix.arch }} \
-            --cache-to=type=gha,scope=testmodel-${{ matrix.arch }},mode=max \
-            --platform linux/${{ matrix.arch }}
+            $CACHE_FLAGS \
+            --platform linux/${{ matrix.arch }} \
+            ${{ matrix.backend == 'llama-cuda' && '--build-arg=runtime=cuda' || '' }}
 
       - name: list images
         run: docker images
@@ -110,7 +117,6 @@ jobs:
         run: docker run --name testmodel -d -p 8080:8080 --platform "linux/${{ matrix.arch }}" testmodel:test
 
       - name: run llama test
-        if: matrix.backend == 'llama'
         run: |
           result=$(curl --fail --retry 10 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
             "model": "llama-3.2-1b-instruct",
@@ -125,7 +131,7 @@ jobs:
 
       - name: save logs
         if: always()
-        run: docker logs testmodel > /tmp/docker-${{ matrix.backend }}.log
+        run: docker logs testmodel > /tmp/docker-${{ matrix.backend }}-${{ matrix.arch }}.log
 
       - name: publish test artifacts
         if: always()
@@ -137,7 +143,7 @@ jobs:
             /tmp/images/*.png
 
   test-protocol:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-16-cores
     timeout-minutes: 240
     strategy:
       fail-fast: false
@@ -146,20 +152,10 @@ jobs:
           - oci
           - hf
     steps:
-      - uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
       - name: Harden Runner
-        uses: step-security/harden-runner@6c439dc8bdf85cadbbce9ed30d1c7b959517bc49 # v2.12.2
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
         with:
-          egress-policy: block
+          egress-policy: audit
           allowed-endpoints: >
             auth.docker.io:443
             huggingface.co:443
@@ -184,12 +180,14 @@ jobs:
             *.cloudflarestorage.com:443
             ghcr.io:443
             sum.golang.org:443
+            quay.io:443
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
       # need containerd image store for testing local images
-      - uses: crazy-max/ghaction-setup-docker@b60f85385d03ac8acfca6d9996982511d8620a19 # v4.3.0
+      - uses: crazy-max/ghaction-setup-docker@3fb92d6d9c634363128c8cce4bc3b2826526370a # v4.4.0
         with:
+          version: version=v27.5.1
           daemon-config: |
             {
               "debug": true,
@@ -201,18 +199,24 @@ jobs:
 
       - name: build aikit
         run: |
+          CACHE_FLAGS=""
+          if [ "${{ github.event.inputs.enable_cache }}" = "true" ]; then
+            CACHE_FLAGS="--cache-from=type=gha,scope=aikit-amd64 --cache-to=type=gha,scope=aikit-amd64,mode=max"
+          fi
           docker buildx build . -t aikit:test \
             --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=aikit-amd64 \
-            --cache-to=type=gha,scope=aikit-amd64,mode=max
+            $CACHE_FLAGS
 
       - name: build test model
         run: |
+          CACHE_FLAGS=""
+          if [ "${{ github.event.inputs.enable_cache }}" = "true" ]; then
+            CACHE_FLAGS="--cache-from=type=gha,scope=testmodel-${{ matrix.protocol }} --cache-to=type=gha,scope=testmodel-${{ matrix.protocol }},mode=max"
+          fi
           docker buildx build . -t testmodel:test \
             -f test/aikitfile-${{ matrix.protocol }}.yaml \
             --load --provenance=false --progress plain \
-            --cache-from=type=gha,scope=testmodel-${{ matrix.protocol }} \
-            --cache-to=type=gha,scope=testmodel-${{ matrix.protocol }},mode=max
+            $CACHE_FLAGS
 
       - name: list images
         run: docker images
