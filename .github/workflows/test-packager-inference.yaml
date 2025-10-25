@@ -36,15 +36,10 @@ jobs:
 
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
-      - name: Setup Docker (containerd + insecure local registry)
-        uses: crazy-max/ghaction-setup-docker@b60f85385d03ac8acfca6d9996982511d8620a19 # v4.3.0
-        with:
-          daemon-config: |
-            {
-              "debug": true,
-              "insecure-registries": ["localhost:5000","127.0.0.1:5000"],
-              "features": {"containerd-snapshotter": true}
-            }
+      - name: Setup buildx with host network access
+        run: |
+          docker buildx create --use --name host-network --driver-opt network=host || true
+          docker buildx inspect --bootstrap
 
       - name: Start local registry
         run: docker run -d -p 5000:5000 --name registry registry:2
@@ -77,18 +72,17 @@ jobs:
           sha=sha256:$(sha256sum pushed-manifest.json | awk '{print $1}')
           echo "Pushed manifest digest: $sha"
 
-      - name: Generate aikit inference spec referencing OCI artifact (based on test/aikitfile-llama.yaml)
+      - name: Prepare inference aikitfile
         run: |
-          set -euo pipefail
           # Start from existing test spec and adjust:
           sed '1s|.*|#syntax=localhost:5000/aikit:local|' test/aikitfile-llama.yaml > inference-aikitfile.yaml
           # Replace the source line with oci reference; keep rest of templates/config
-          sed -i "s|^\( *source: \).*|    source: oci://docker.io/sozercan/llama-3.2-1b-instruct:modelpack|" inference-aikitfile.yaml
+          sed -i "s|^\( *source: \).*|    source: oci://localhost:5000/aikit/llama-3.2-1b-instruct:modelpack|" inference-aikitfile.yaml
           # Optionally shrink context size for faster test (reduce to 512)
           sed -i 's/context_size: 8192/context_size: 512/' inference-aikitfile.yaml
           # Ensure parameters.model is set explicitly (some specs may vary)
           sed -i 's|^\( *model: \).*|      model: llama-3.2-1b-instruct|' inference-aikitfile.yaml
-          grep -n 'oci://docker.io/sozercan/llama-3.2-1b-instruct:modelpack' inference-aikitfile.yaml
+          grep -n 'oci://localhost:5000/aikit/llama-3.2-1b-instruct:modelpack' inference-aikitfile.yaml
           sed -n '1,120p' inference-aikitfile.yaml
 
       - name: Build inference image from aikit spec

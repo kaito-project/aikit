@@ -93,7 +93,7 @@ if ! oras manifest fetch "$ref" -o "$tmp" %[4]s 2>/tmp/oras-error.log; then
 fi
 layerDigest=$(jq -r '.layers[] | select(.mediaType | startswith("application/vnd.cncf.model.weight.")) | .digest' "$tmp" | head -n1)
 if [ -z "$layerDigest" ]; then
-	echo "Error: No application/vnd.cncf.model.weight.* layer found in manifest" >&2
+	echo "Error: No application/vnd.cncf.model.weight.* layer found in manifest. Verify that the artifact was packaged with the modelpack target." >&2
 	echo "Available layers:" >&2
 	jq -r '.layers[] | "\(.mediaType): \(.digest)"' "$tmp" >&2
 	exit 1
