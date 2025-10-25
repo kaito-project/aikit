@@ -132,7 +132,7 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 	case utils.BackendDiffusers:
 		merge = installPythonBaseDependencies(s, merge)
 	case utils.BackendVLLM:
-		merge = installPythonBaseDependencies(s, merge)
+		merge = installVLLMDependencies(s, merge)
 	}
 
 	// Use Apple Silicon specific registry for arm64 platforms
