@@ -44,7 +44,7 @@ func resolveSourceState(source, sessionID string, preserveHTTPFilename bool, exc
 		// Fallback: download full repository snapshot
 		st, err := buildHuggingFaceState(source, exclude)
 		if err != nil {
-			return llb.State{}, err
+			return llb.State{}, fmt.Errorf("failed to build huggingface state for %q: %w", source, err)
 		}
 		return st, nil
 	default:

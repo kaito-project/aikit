@@ -107,7 +107,7 @@ if ! oras blob fetch "$ref@$layerDigest" --output "$outName" %[4]s 2>/tmp/oras-b
 	echo "Failed to fetch blob $layerDigest" >&2
 	cat /tmp/oras-blob-error.log >&2
 	exit 1
-fihfSpecPattern
+fi
 ls -l "$outName"
 `, artifactURL, modelName, warningMsg, insecureFlag)
 	return modelName, cmd

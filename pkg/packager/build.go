@@ -14,118 +14,146 @@ import (
 )
 
 const (
-	localNameContext = "context"
-	packModeRaw      = "raw"
+	localNameContext    = "context"
+	packModeRaw         = "raw"
+	defaultPlatformOS   = "linux"
+	defaultPlatformArch = "amd64"
 )
 
-// BuildModelpack builds a modelpack OCI layout (target packager/modelpack).
-func BuildModelpack(ctx context.Context, c client.Client) (*client.Result, error) {
-	opts := c.BuildOpts().Opts
-	sessionID := c.BuildOpts().SessionID
-	source := getBuildArg(opts, "source")
-	if source == "" {
-		return nil, fmt.Errorf("source is required for modelpack target")
+// buildConfig holds common build parameters extracted from BuildKit options.
+type buildConfig struct {
+	source            string
+	exclude           string
+	packMode          string
+	name              string
+	refName           string
+	sessionID         string
+	genericOutputMode string
+	debug             bool
+}
+
+// parseBuildConfig extracts and validates build configuration from BuildKit options.
+func parseBuildConfig(opts map[string]string, sessionID string, isModelpack bool) (*buildConfig, error) {
+	cfg := &buildConfig{
+		source:    getBuildArg(opts, "source"),
+		exclude:   getBuildArg(opts, "exclude"),
+		packMode:  getBuildArg(opts, "layer_packaging"),
+		name:      determineName(opts),
+		refName:   determineRefName(opts),
+		sessionID: sessionID,
+		debug:     getBuildArg(opts, "debug") == "1",
 	}
-	exclude := getBuildArg(opts, "exclude")
-	packMode := getBuildArg(opts, "layer_packaging")
-	if packMode == "" {
-		packMode = packModeRaw
+
+	if cfg.source == "" {
+		target := "generic"
+		if isModelpack {
+			target = "modelpack"
+		}
+		return nil, fmt.Errorf("source is required for %s target", target)
 	}
-	name := determineName(opts)
-	refName := determineRefName(opts)
-	artifactType := v1.ArtifactTypeModelManifest
-	mtManifest := v1.MediaTypeModelConfig
-	modelState, err := resolveSourceState(source, sessionID, true, exclude)
+
+	if cfg.packMode == "" {
+		cfg.packMode = packModeRaw
+	}
+
+	if !isModelpack {
+		cfg.genericOutputMode = getBuildArg(opts, "generic_output_mode")
+	}
+
+	return cfg, nil
+}
+
+// solveAndBuildResult is a helper that marshals an LLB state, solves it,
+// and constructs a client.Result with the appropriate image config.
+// This eliminates the repeated marshal→solve→getRef→createConfig→buildResult pattern.
+func solveAndBuildResult(ctx context.Context, c client.Client, state llb.State, customName string) (*client.Result, error) {
+	def, err := state.Marshal(ctx, llb.WithCustomName(customName))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to marshal %s LLB definition: %w", customName, err)
 	}
-	script := generateModelpackScript(packMode, artifactType, mtManifest, name, refName)
-	run := llb.Image(bashImage).Run(llb.Args([]string{"bash", "-c", script}), llb.AddMount("/src", modelState, llb.Readonly))
-	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
-	def, err := final.Marshal(ctx, llb.WithCustomName("packager:modelpack"))
-	if err != nil {
-		return nil, err
-	}
+
 	resSolve, err := c.Solve(ctx, client.SolveRequest{Definition: def.ToPB()})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to solve %s build: %w", customName, err)
 	}
+
 	ref, err := resSolve.SingleRef()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get %s result reference: %w", customName, err)
 	}
-	bCfg, _ := createMinimalImageConfig("linux", "amd64")
+
+	bCfg, err := createMinimalImageConfig(defaultPlatformOS, defaultPlatformArch)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create image config: %w", err)
+	}
+
 	out := client.NewResult()
 	out.AddMeta(exptypes.ExporterImageConfigKey, bCfg)
 	out.SetRef(ref)
 	return out, nil
 }
 
+// BuildModelpack builds a modelpack OCI layout (target packager/modelpack).
+func BuildModelpack(ctx context.Context, c client.Client) (*client.Result, error) {
+	opts := c.BuildOpts().Opts
+	sessionID := c.BuildOpts().SessionID
+
+	cfg, err := parseBuildConfig(opts, sessionID, true)
+	if err != nil {
+		return nil, err
+	}
+
+	modelState, err := resolveSourceState(cfg.source, cfg.sessionID, true, cfg.exclude)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve modelpack source %q: %w", cfg.source, err)
+	}
+
+	artifactType := v1.ArtifactTypeModelManifest
+	mtManifest := v1.MediaTypeModelConfig
+	script := generateModelpackScript(cfg.packMode, artifactType, mtManifest, cfg.name, cfg.refName)
+
+	run := llb.Image(bashImage).Run(
+		llb.Args([]string{"bash", "-c", script}),
+		llb.AddMount("/src", modelState, llb.Readonly),
+	)
+	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
+
+	return solveAndBuildResult(ctx, c, final, "packager:modelpack")
+}
+
 // BuildGeneric builds a generic artifact layout (target packager/generic).
 func BuildGeneric(ctx context.Context, c client.Client) (*client.Result, error) {
 	opts := c.BuildOpts().Opts
 	sessionID := c.BuildOpts().SessionID
-	source := getBuildArg(opts, "source")
-	if source == "" {
-		return nil, fmt.Errorf("source is required for generic target")
-	}
-	exclude := getBuildArg(opts, "exclude")
-	name := determineName(opts)
-	refName := determineRefName(opts)
-	artifactType := "application/vnd.unknown.artifact.v1"
-	debugFlag := getBuildArg(opts, "debug")
-	packMode := getBuildArg(opts, "layer_packaging")
-	if packMode == "" {
-		packMode = packModeRaw
-	}
-	genericOutputMode := getBuildArg(opts, "generic_output_mode")
-	srcState, err := resolveSourceState(source, sessionID, false, exclude)
+
+	cfg, err := parseBuildConfig(opts, sessionID, false)
 	if err != nil {
 		return nil, err
 	}
-	if genericOutputMode == "files" {
+
+	srcState, err := resolveSourceState(cfg.source, cfg.sessionID, false, cfg.exclude)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve generic source %q: %w", cfg.source, err)
+	}
+
+	if cfg.genericOutputMode == "files" {
 		// For raw file passthrough, copy directly from the resolved source state root.
 		// This avoids relying on an intermediate run mount (which previously caused
 		// missing /src path errors in some remote source scenarios).
 		final := llb.Scratch().File(llb.Copy(srcState, "/", "/"))
-		def, err := final.Marshal(ctx, llb.WithCustomName("packager:generic-files"))
-		if err != nil {
-			return nil, err
-		}
-		resSolve, err := c.Solve(ctx, client.SolveRequest{Definition: def.ToPB()})
-		if err != nil {
-			return nil, err
-		}
-		ref, err := resSolve.SingleRef()
-		if err != nil {
-			return nil, err
-		}
-		bCfg, _ := createMinimalImageConfig("linux", "amd64")
-		out := client.NewResult()
-		out.AddMeta(exptypes.ExporterImageConfigKey, bCfg)
-		out.SetRef(ref)
-		return out, nil
+		return solveAndBuildResult(ctx, c, final, "packager:generic-files")
 	}
-	script := generateGenericScript(packMode, artifactType, name, refName, debugFlag == "1")
-	run := llb.Image(bashImage).Run(llb.Args([]string{"bash", "-c", script}), llb.AddMount("/src", srcState, llb.Readonly))
+
+	artifactType := "application/vnd.unknown.artifact.v1"
+	script := generateGenericScript(cfg.packMode, artifactType, cfg.name, cfg.refName, cfg.debug)
+
+	run := llb.Image(bashImage).Run(
+		llb.Args([]string{"bash", "-c", script}),
+		llb.AddMount("/src", srcState, llb.Readonly),
+	)
 	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
-	def, err := final.Marshal(ctx, llb.WithCustomName("packager:generic"))
-	if err != nil {
-		return nil, err
-	}
-	resSolve, err := c.Solve(ctx, client.SolveRequest{Definition: def.ToPB()})
-	if err != nil {
-		return nil, err
-	}
-	ref, err := resSolve.SingleRef()
-	if err != nil {
-		return nil, err
-	}
-	bCfg, _ := createMinimalImageConfig("linux", "amd64")
-	out := client.NewResult()
-	out.AddMeta(exptypes.ExporterImageConfigKey, bCfg)
-	out.SetRef(ref)
-	return out, nil
+
+	return solveAndBuildResult(ctx, c, final, "packager:generic")
 }
 
 func getBuildArg(opts map[string]string, k string) string {
