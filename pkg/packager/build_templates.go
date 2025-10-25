@@ -32,9 +32,6 @@ const (
 //	mtManifest: manifest config media type (e.g. v1.MediaTypeModelConfig)
 //	name: annotation org.opencontainers.image.title
 //	refName: annotation org.opencontainers.image.ref.name
-//
-// Note: This script is complex due to inline packaging logic. Future improvement:
-// consider moving to separate .sh template file for easier testing and shellcheck validation.
 func generateModelpackScript(packMode, artifactType, mtManifest, name, refName string) string { //nolint:lll
 	tmpl := `set -euo pipefail
 PACK_MODE=%[1]s

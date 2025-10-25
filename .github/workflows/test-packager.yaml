@@ -92,7 +92,7 @@ jobs:
           set -euo pipefail
           dest=out-${{ matrix.case.name }}
           # Use frontend via build arg pattern
-          args=(--build-arg BUILDKIT_SYNTAX=localhost:5000/aikit/frontend:test --target ${{ matrix.case.target }} --build-arg source=huggingface://openai/gpt-oss-20b --build-arg layer_packaging=${{ matrix.case.pack_mode }} --build-arg name=${{ matrix.case.name }})
+          args=(--build-arg BUILDKIT_SYNTAX=localhost:5000/aikit/frontend:test --target ${{ matrix.case.target }} --build-arg source=huggingface://Qwen/Qwen3-0.6B --build-arg layer_packaging=${{ matrix.case.pack_mode }} --build-arg name=${{ matrix.case.name }})
           if [ "${{ matrix.case.output_mode }}" = "files" ]; then
             args+=(--build-arg generic_output_mode=files)
           fi
