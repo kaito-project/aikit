@@ -131,8 +131,8 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 		merge = installExllamaDependencies(s, merge)
 	case utils.BackendDiffusers:
 		merge = installPythonBaseDependencies(s, merge)
-	case utils.BackendVLLM:
-		merge = installVLLMDependencies(s, merge)
+	// case utils.BackendVLLM:
+	// 	merge = installVLLMDependencies(s, merge)
 	}
 
 	// Use Apple Silicon specific registry for arm64 platforms
@@ -162,13 +162,11 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 	)
 
 	if backend == utils.BackendVLLM {
-		s = s.AddEnv("BUILD_TYPE", "cublas").AddEnv("CUDA_MAJOR_VERSION", "12")
 
-		// update requirements-cublas12-after.txt to pin flash-attn to 2.8.2
-		reqFilePath := fmt.Sprintf("%s/requirements-cublas12-after.txt", backendDir)
-		s = s.Run(utils.Sh(fmt.Sprintf("ls -al %s", reqFilePath)), llb.IgnoreCache).Root()
-		s = s.Run(utils.Sh(fmt.Sprintf(`sed -i 's/^flash-attn.*/flash-attn==2.8.2/' %s`, reqFilePath)), llb.IgnoreCache).Root()
-		s = s.Run(utils.Sh(fmt.Sprintf("cat %s", reqFilePath)), llb.IgnoreCache).Root()
+		// source venv/bin/activate
+		s = s.Run(utils.Sh(fmt.Sprintf(". /backends/%s/venv/bin/activate", backendName)), llb.IgnoreCache).Root()
+		// downgrade flash-attn to 2.8.2
+		s = s.Run(utils.Shf("pip install flash-attn==2.8.2 --no-dependencies"), llb.IgnoreCache).Root()
 	}
 
 	// Ensure the directory exists and create metadata.json for the backend
