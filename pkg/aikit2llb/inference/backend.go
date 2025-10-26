@@ -158,13 +158,17 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 			CreateDestPath: true,
 			AllowWildcard:  true,
 		}),
-		llb.WithCustomName(fmt.Sprintf("Installing backend %s from %s", backend, ociImage)),
+		llb.WithCustomName(fmt.Sprintf("Installing backend %s from %s to %s", backend, ociImage, backendDir)),
 	)
 
 	if backend == utils.BackendVLLM {
+		s = s.AddEnv("BUILD_TYPE", "cublas").AddEnv("CUDA_MAJOR_VERSION", "12")
+
 		// update requirements-cublas12-after.txt to pin flash-attn to 2.8.2
 		reqFilePath := fmt.Sprintf("%s/requirements-cublas12-after.txt", backendDir)
+		s = s.Run(utils.Sh(fmt.Sprintf("ls -al %s", reqFilePath)), llb.IgnoreCache).Root()
 		s = s.Run(utils.Sh(fmt.Sprintf(`sed -i 's/^flash-attn.*/flash-attn==2.8.2/' %s`, reqFilePath)), llb.IgnoreCache).Root()
+		s = s.Run(utils.Sh(fmt.Sprintf("cat %s", reqFilePath)), llb.IgnoreCache).Root()
 	}
 
 	// Ensure the directory exists and create metadata.json for the backend

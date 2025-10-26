@@ -45,6 +45,7 @@ func emptyImage(c *config.InferenceConfig, platform *specs.Platform) *specs.Imag
 		"LD_LIBRARY_PATH=/usr/local/cuda/lib64",
 		"BUILD_TYPE=cublas",
 		"CUDA_HOME=/usr/local/cuda",
+		"CUDA_MAJOR_VERSION=12",
 	}
 	if c.Runtime == utils.RuntimeNVIDIA {
 		img.Config.Env = append(img.Config.Env, cudaEnv...)
