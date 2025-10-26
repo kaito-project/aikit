@@ -131,8 +131,8 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 		merge = installExllamaDependencies(s, merge)
 	case utils.BackendDiffusers:
 		merge = installPythonBaseDependencies(s, merge)
-	case utils.BackendVLLM:
-		merge = installVLLMDependencies(s, merge)
+	// case utils.BackendVLLM:
+	// 	merge = installVLLMDependencies(s, merge)
 	}
 
 	// Use Apple Silicon specific registry for arm64 platforms
@@ -160,6 +160,12 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 		}),
 		llb.WithCustomName(fmt.Sprintf("Installing backend %s from %s", backend, ociImage)),
 	)
+
+	if backend == utils.BackendVLLM {
+		// update requirements-cublas12-after.txt to pin flash-attn to 2.8.2
+		reqFilePath := fmt.Sprintf("%s/requirements-cublas12-after.txt", backendDir)
+		s = s.Run(utils.Sh(fmt.Sprintf(`sed -i 's/^flash-attn.*/flash-attn==2.8.2/' %s`, reqFilePath)), llb.IgnoreCache).Root()
+	}
 
 	// Ensure the directory exists and create metadata.json for the backend
 	backendAlias := getBackendAlias(backend)
