@@ -18,7 +18,7 @@ AIKit provides an extensible OCI packaging system. At this time, two explicit bu
 
 - `packager/generic` – produces generic OCI artifacts.
 
-### Sources Supported
+## Sources Supported
 
 Specify the source with `--build-arg source=`:
 
@@ -101,7 +101,7 @@ skopeo copy oci:qwen/layout docker://$REGISTRY
 - Raw mode now assigns layer media type: `application/octet-stream`
 - Tar / compressed modes: standard image layer media type (`application/vnd.oci.image.layer.v1.tar`, `application/vnd.oci.image.layer.v1.tar+gzip`, `application/vnd.oci.image.layer.v1.tar+zstd`)
 
-## Hugging Face Token Usage Example
+## Private Hugging Face Models
 
 You can provide a Hugging Face token for private model access using [Docker build secrets](https://docs.docker.com/build/building/secrets/).
 
@@ -118,7 +118,7 @@ docker buildx build \
   --output=llama -<<<""
 ```
 
-### Download exclusions (`--build-arg exclude=`)
+## Download exclusions (`--build-arg exclude=`)
 
 When downloading from Hugging Face, you can specify files or directories to exclude using the `--build-arg exclude=` option. This is useful for omitting unnecessary files from the download process. Exclusions use glob patterns and should be provided as a single string with space-separated patterns.
 
