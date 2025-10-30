@@ -99,7 +99,7 @@ append_layer() {
 	mv "$file" /layout/blobs/sha256/$dgst
 	[ -n "$layers_json" ] && layers_json="$layers_json , "
 	metaEsc=$(printf '%%s' "$metaJson" | sed 's/"/\\"/g')
-	ann="{ \"org.cncf.model.filepath\": \"$fpath\", \"org.cncf.model.file.metadata+json\": \"$metaEsc\", \"org.cncf.model.file.mediatype.untested\": \"$untested\" }"
+	ann="{ \"org.opencontainers.image.title\": \"$fpath\", \"org.cncf.model.filepath\": \"$fpath\", \"org.cncf.model.file.metadata+json\": \"$metaEsc\", \"org.cncf.model.file.mediatype.untested\": \"$untested\" }"
 	layers_json="${layers_json}{ \"mediaType\": \"$mt\", \"digest\": \"sha256:$dgst\", \"size\": $size, \"annotations\": $ann }"
 }
 
