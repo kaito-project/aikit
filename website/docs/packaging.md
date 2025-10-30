@@ -41,7 +41,7 @@ docker buildx build \
   --output=qwen -<<<""
 ```
 
-See [Pushing to a Registry](#pushing-models-to-a-registry) above for instructions on how to push the resulting OCI layout to a remote registry.
+See [Pushing to a Registry](#pushing-models-to-a-registry) for instructions on how to push the resulting OCI layout to a remote registry.
 
 ### Layer Categorization
 
@@ -80,7 +80,7 @@ docker buildx build \
   --output=example -<<<""
 ```
 
-See [Pushing to a Registry](#pushing-models-to-a-registry) above for instructions on how to push the resulting OCI layout to a remote registry.
+See [Pushing to a Registry](#pushing-models-to-a-registry) for instructions on how to push the resulting OCI layout to a remote registry.
 
 ### Output Modes
 
