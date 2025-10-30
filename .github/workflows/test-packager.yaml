@@ -159,6 +159,8 @@ jobs:
           fi
           echo "Remote registry validation passed for ${{ matrix.case.name }}"
 
+      - uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1.2.4
+
       - name: Download and verify filenames from registry
         if: ${{ matrix.case.output_mode != 'files' }}
         run: |
