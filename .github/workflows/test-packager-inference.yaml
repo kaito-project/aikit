@@ -81,7 +81,7 @@ jobs:
           # Optionally shrink context size for faster test (reduce to 512)
           sed -i 's/context_size: 8192/context_size: 512/' inference-aikitfile.yaml
           # Ensure parameters.model is set explicitly (some specs may vary)
-          sed -i 's|^\( *model: \).*|      model: llama-3.2-1b-instruct|' inference-aikitfile.yaml
+          sed -i 's|^\( *model: \).*|      model: Llama-3.2-1B-Instruct.Q4_K_M.gguf|' inference-aikitfile.yaml
           grep -n 'oci://localhost:5000/aikit/llama-3.2-1b-instruct:modelpack' inference-aikitfile.yaml
           sed -n '1,120p' inference-aikitfile.yaml
 

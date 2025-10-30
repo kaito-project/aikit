@@ -41,12 +41,7 @@ docker buildx build \
   --output=qwen -<<<""
 ```
 
-Due to current BuildKit limitations, we can not push directly to a remote registry at this time. You must first output to a local OCI layout, then use a tool like [`skopeo`](https://github.com/containers/skopeo) or [`oras`](https://github.com/oras-project/oras) to copy the image to a remote registry.
-
-```shell
-export REGISTRY=docker.io/youruser/qwen3:0.6b
-skopeo copy oci:qwen/layout docker://$REGISTRY
-```
+See [Pushing to a Registry](#pushing-models-to-a-registry) for instructions on how to push the resulting OCI layout to a remote registry.
 
 ### Layer Categorization
 
@@ -85,12 +80,7 @@ docker buildx build \
   --output=example -<<<""
 ```
 
-then use a tool like [`skopeo`](https://github.com/containers/skopeo) or [`oras`](https://github.com/oras-project/oras) to copy the image to a remote registry.
-
-```shell
-export REGISTRY=docker.io/youruser/qwen3:0.6b
-skopeo copy oci:qwen/layout docker://$REGISTRY
-```
+See [Pushing to a Registry](#pushing-models-to-a-registry) for instructions on how to push the resulting OCI layout to a remote registry.
 
 ### Output Modes
 
@@ -101,7 +91,43 @@ skopeo copy oci:qwen/layout docker://$REGISTRY
 - Raw mode now assigns layer media type: `application/octet-stream`
 - Tar / compressed modes: standard image layer media type (`application/vnd.oci.image.layer.v1.tar`, `application/vnd.oci.image.layer.v1.tar+gzip`, `application/vnd.oci.image.layer.v1.tar+zstd`)
 
-## Hugging Face Token Usage Example
+## Pushing models to a registry
+
+Due to current BuildKit limitations, we can not push directly to a remote registry at this time. You must first output to a local OCI layout, then use a tool like [`oras`](https://github.com/oras-project/oras) or [`skopeo`](https://github.com/containers/skopeo) to copy the image to a remote registry.
+
+```shell
+export REGISTRY=docker.io/youruser/qwen3:0.6b
+
+# using oras
+oras cp --from-oci-layout qwen/layout:qwen3 $REGISTRY
+
+# using skopeo
+skopeo copy oci:qwen/layout docker://$REGISTRY
+```
+
+## Pulling models from a registry
+
+If you want to pull the raw model files, you can pull OCI artifacts using tools like [`oras`](https://github.com/oras-project/oras) or [`skopeo`](https://github.com/containers/skopeo).
+
+```shell
+export REGISTRY=docker.io/youruser/qwen3:0.6b
+
+# using oras
+# oras will automatically preserve file names based on annotations
+oras pull $REGISTRY --output path/to/qwen3/
+
+# using skopeo
+skopeo copy docker://$REGISTRY dir://path/to/qwen3/
+# then rename files based on annotations
+for digest in $(jq -r '.layers[].digest' manifest.json); do
+  name=$(jq -r --arg digest "$digest" '.layers[] | select(.digest==$digest) | .annotations["org.cncf.model.filepath"]' manifest.json)
+  if [ "$name" != "null" ]; then
+    mv "${digest#sha256:}" "$name"
+  fi
+done
+```
+
+## Private Hugging Face Models
 
 You can provide a Hugging Face token for private model access using [Docker build secrets](https://docs.docker.com/build/building/secrets/).
 

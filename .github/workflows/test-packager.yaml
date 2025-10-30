@@ -159,6 +159,80 @@ jobs:
           fi
           echo "Remote registry validation passed for ${{ matrix.case.name }}"
 
+      - uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1.2.4
+
+      - name: Download and verify filenames from registry
+        if: ${{ matrix.case.output_mode != 'files' }}
+        run: |
+          set -euo pipefail
+          download_dir="downloaded-${{ matrix.case.name }}"
+          mkdir -p "$download_dir"
+
+          echo "Downloading artifact from registry using oras..."
+          cd "$download_dir"
+          oras pull --insecure localhost:5000/aikit/${{ matrix.case.name }}:test
+          cd ..
+
+          echo "Fetching manifest for validation..."
+          oras manifest fetch --insecure localhost:5000/aikit/${{ matrix.case.name }}:test > "$download_dir/manifest.json"
+
+          echo "Verifying filenames match org.opencontainers.image.title annotations..."
+          manifest_file="$download_dir/manifest.json"
+          if [ ! -f "$manifest_file" ]; then
+            echo "manifest.json not found"
+            exit 1
+          fi
+
+          # Extract layers and verify each one has the correct filename annotation
+          layer_count=$(jq -r '.layers | length' "$manifest_file")
+          echo "Found $layer_count layers in manifest"
+
+          errors=0
+          for i in $(seq 0 $((layer_count - 1))); do
+            title=$(jq -r ".layers[$i].annotations[\"org.opencontainers.image.title\"] // empty" "$manifest_file")
+            filepath=$(jq -r ".layers[$i].annotations[\"org.cncf.model.filepath\"] // empty" "$manifest_file")
+            mediaType=$(jq -r ".layers[$i].mediaType" "$manifest_file")
+
+            echo "Layer $i: title='$title', filepath='$filepath', mediaType=$mediaType"
+
+            # Verify org.opencontainers.image.title exists
+            if [ -z "$title" ]; then
+              echo "  ERROR: org.opencontainers.image.title annotation missing for layer $i"
+              errors=$((errors + 1))
+              continue
+            fi
+
+            # For modelpack, verify title matches filepath
+            if [ '${{ matrix.case.target }}' = 'packager/modelpack' ]; then
+              if [ -n "$filepath" ] && [ "$title" != "$filepath" ]; then
+                echo "  ERROR: org.opencontainers.image.title ('$title') does not match org.cncf.model.filepath ('$filepath')"
+                errors=$((errors + 1))
+              else
+                echo "  ✓ Filename annotations match"
+              fi
+            fi
+
+            # Verify the downloaded file exists with the correct name (oras should use org.opencontainers.image.title)
+            if [ -f "$download_dir/$title" ]; then
+              file_size=$(stat -c%s "$download_dir/$title")
+              echo "  ✓ File exists: $title (size: $file_size bytes)"
+            else
+              echo "  ERROR: Expected file not found: $title"
+              echo "  Available files:"
+              ls -lh "$download_dir" | grep -v "^total" | grep -v "manifest.json" | head -10
+              errors=$((errors + 1))
+            fi
+          done
+
+          if [ $errors -gt 0 ]; then
+            echo ""
+            echo "FAILED: $errors error(s) found during filename verification"
+            exit 1
+          fi
+
+          echo ""
+          echo "✓ All filenames verified successfully"
+
       - name: Upload validation artifacts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -166,3 +240,4 @@ jobs:
           name: packager-${{ matrix.case.name }}
           path: |
             remote-manifest.json
+            downloaded-${{ matrix.case.name }}/manifest.json
