@@ -46,7 +46,10 @@ func handleOCI(source string, s llb.State, platform specs.Platform) llb.State {
 	toolingImage = toolingImage.Run(utils.Sh(script)).Root()
 	// Copy all files from /download to /models
 	s = s.File(
-		llb.Copy(toolingImage, "/download/", "/models/", createCopyOptions()...),
+		llb.Copy(toolingImage, "/download/", "/models/", &llb.CopyInfo{
+			CopyDirContentsOnly: true,
+			CreateDestPath:      true,
+		}),
 		llb.WithCustomName("Copying weight layer from "+artifactURL+" to /models/"),
 	)
 	return s
