@@ -44,7 +44,7 @@ func handleOCI(source string, s llb.State, platform specs.Platform) llb.State {
 	orasCmd := handleGenericModelPack(artifactURL)
 	script = fmt.Sprintf("apk add --no-cache jq curl && %s", orasCmd)
 	toolingImage = toolingImage.Run(utils.Sh(script)).Root()
-	// Copy all files from /download to /models (oras pull downloads with proper filenames)
+	// Copy all files from /download to /models
 	s = s.File(
 		llb.Copy(toolingImage, "/download/", "/models/", createCopyOptions()...),
 		llb.WithCustomName("Copying weight layer from "+artifactURL+" to /models/"),
@@ -82,7 +82,6 @@ ref=%[1]s
 %[2]s
 mkdir -p /download
 cd /download
-# Pull artifact using oras - filenames come from org.opencontainers.image.title annotations
 echo "Pulling artifact from $ref" >&2
 if ! oras pull %[3]s "$ref" 2>/tmp/oras-error.log; then
 	echo "Failed to pull artifact from $ref" >&2
