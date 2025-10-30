@@ -41,10 +41,15 @@ docker buildx build \
   --output=qwen -<<<""
 ```
 
-Due to current BuildKit limitations, we can not push directly to a remote registry at this time. You must first output to a local OCI layout, then use a tool like [`skopeo`](https://github.com/containers/skopeo) or [`oras`](https://github.com/oras-project/oras) to copy the image to a remote registry.
+Due to current BuildKit limitations, we can not push directly to a remote registry at this time. You must first output to a local OCI layout, then use a tool like [`oras`](https://github.com/oras-project/oras) or [`skopeo`](https://github.com/containers/skopeo) to copy the image to a remote registry.
 
 ```shell
 export REGISTRY=docker.io/youruser/qwen3:0.6b
+
+# using oras
+oras cp --from-oci-layout qwen/layout:qwen3 $REGISTRY
+
+# using skopeo
 skopeo copy oci:qwen/layout docker://$REGISTRY
 ```
 
@@ -126,6 +131,28 @@ For example, to exclude the `original` and `metal` directories, you can use the 
 
 ```shell
 --build-arg exclude="'original/*' 'metal/*'"
+```
+
+## Pulling models from OCI registries
+
+You can pull OCI artifacts created with AIKit using tools like [`oras`](https://github.com/oras-project/oras) or [`skopeo`](https://github.com/containers/skopeo).
+
+```shell
+export REGISTRY=docker.io/youruser/qwen3:0.6b
+
+# using oras
+# oras will automatically preserve file names based on annotations
+oras cp --from-oci-layout qwen/layout:qwen3 $REGISTRY
+
+# using skopeo
+skopeo copy docker://$REGISTRY dir://path/to/qwen3/
+# then rename files based on annotations
+for digest in $(jq -r '.layers[].digest' manifest.json); do
+  name=$(jq -r --arg digest "$digest" '.layers[] | select(.digest==$digest) | .annotations["org.cncf.model.filepath"]' manifest.json)
+  if [ "$name" != "null" ]; then
+    mv "${digest#sha256:}" "$name"
+  fi
+done
 ```
 
 ## What's next?
