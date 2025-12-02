@@ -36,7 +36,7 @@ func Test_generateHFDownloadScript_WithExclude(t *testing.T) {
 		"set -euo pipefail",
 		"org/model",
 		"--revision rev123",
-		"--exclude 'original/*' 'metal/*'",
+		"--exclude 'original/*' --exclude 'metal/*'",
 		"hf download",
 	}
 	for _, c := range checks {
@@ -167,7 +167,7 @@ func Test_buildHuggingFaceState_ScriptContent(t *testing.T) {
 			mustContain: []string{
 				"org/model",
 				"--revision rev123",
-				"--exclude 'original/*' 'metal/*'",
+				"--exclude 'original/*' --exclude 'metal/*'",
 				"hf download",
 			},
 		},
@@ -216,7 +216,7 @@ func Test_buildHuggingFaceState_ScriptContent(t *testing.T) {
 			exclude: "'original/*' 'metal/*' '*.lock'",
 			mustContain: []string{
 				"org/model",
-				"--exclude 'original/*' 'metal/*' '*.lock'",
+				"--exclude 'original/*' --exclude 'metal/*' --exclude '*.lock'",
 			},
 		},
 	}
