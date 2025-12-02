@@ -18,19 +18,16 @@ const (
 // repository snapshot deterministically, honoring an optional token exposed
 // through a BuildKit secret at /run/secrets/hf-token.
 // exclude is an optional space-separated list of patterns (e.g., "'original/*' 'metal/*'")
-// which will be passed as a single --exclude flag with multiple patterns to the hf download command.
+// which will be passed as separate --exclude flags to the hf download command.
 func generateHFDownloadScript(namespace, model, revision, exclude string) string {
 	excludeFlags := ""
 	if exclude != "" {
 		// Parse the exclude patterns: they come in as "'pattern1' 'pattern2'"
-		// We need to convert this to: --exclude 'pattern1' 'pattern2'
-		// The patterns need to stay quoted for shell safety
+		// We need to convert this to: --exclude 'pattern1' --exclude 'pattern2'
+		// Each pattern requires its own --exclude flag per hf cli syntax
 		patterns := parseExcludePatterns(exclude)
-		if len(patterns) > 0 {
-			excludeFlags = " --exclude"
-			for _, pattern := range patterns {
-				excludeFlags += fmt.Sprintf(" '%s'", pattern)
-			}
+		for _, pattern := range patterns {
+			excludeFlags += fmt.Sprintf(" --exclude '%s'", pattern)
 		}
 	}
 	return fmt.Sprintf(`set -euo pipefail
