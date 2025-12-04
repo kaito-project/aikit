@@ -99,7 +99,7 @@ append_layer() {
 	mv "$file" /layout/blobs/sha256/$dgst
 	[ -n "$layers_json" ] && layers_json="$layers_json , "
 	metaEsc=$(printf '%%s' "$metaJson" | sed 's/"/\\"/g')
-	ann="{ \"org.cncf.model.filepath\": \"$fpath\", \"org.cncf.model.file.metadata+json\": \"$metaEsc\", \"org.cncf.model.file.mediatype.untested\": \"$untested\" }"
+	ann="{ \"org.opencontainers.image.title\": \"$fpath\", \"org.cncf.model.filepath\": \"$fpath\", \"org.cncf.model.file.metadata+json\": \"$metaEsc\", \"org.cncf.model.file.mediatype.untested\": \"$untested\" }"
 	layers_json="${layers_json}{ \"mediaType\": \"$mt\", \"digest\": \"sha256:$dgst\", \"size\": $size, \"annotations\": $ann }"
 }
 
@@ -276,16 +276,17 @@ get_file_size() {
 	grep -F "$1|" /tmp/files_with_size.list 2>/dev/null | cut -d'|' -f2 | head -n1
 }
 
-# append_layer: Add a file as a layer blob
-# Args: file path, media type
+# append_layer: Add a file as a layer blob with annotations
+# Args: file path, media type, title (original filename)
 append_layer() {
-	file="$1"; mt="$2"
+	file="$1"; mt="$2"; title="$3"
 	[ ! -f "$file" ] && return 0
 	dgst=$(sha256sum "$file" | cut -d' ' -f1)
 	size=$(stat -c%%s "$file")
 	mv "$file" /layout/blobs/sha256/$dgst
 	[ -n "$layers_json" ] && layers_json="$layers_json , "
-	layers_json="${layers_json}{ \"mediaType\": \"$mt\", \"digest\": \"sha256:$dgst\", \"size\": $size }"
+	ann="{ \"org.opencontainers.image.title\": \"$title\" }"
+	layers_json="${layers_json}{ \"mediaType\": \"$mt\", \"digest\": \"sha256:$dgst\", \"size\": $size, \"annotations\": $ann }"
 }
 
 # Process files according to pack mode
@@ -294,19 +295,20 @@ case "$PACK_MODE" in
 		# Raw mode: each file becomes its own layer
 		while IFS= read -r f; do
 			cp "$f" "/tmp/$(basename "$f")"
-			append_layer "/tmp/$(basename "$f")" "%s"
+			append_layer "/tmp/$(basename "$f")" "%s" "$f"
 		done < /tmp/files.list ;;
 	tar|tar+gzip|tar+zstd)
 		# Archive mode: bundle all files into single tar
 		tarFile=/tmp/allfiles.tar
 		tar -cf "$tarFile" -T /tmp/files.list || true
 		mt="%s"
+		layerName="allfiles.tar"
 		case "$PACK_MODE" in
 			tar) outFile="$tarFile" ;;
-			tar+gzip) gzip -n "$tarFile"; outFile="$tarFile.gz" ;;
-			tar+zstd) zstd -q --no-progress "$tarFile"; outFile="$tarFile.zst" ;;
+			tar+gzip) gzip -n "$tarFile"; outFile="$tarFile.gz"; layerName="allfiles.tar.gz" ;;
+			tar+zstd) zstd -q --no-progress "$tarFile"; outFile="$tarFile.zst"; layerName="allfiles.tar.zst" ;;
 		esac
-		append_layer "$outFile" "$mt" ;;
+		append_layer "$outFile" "$mt" "$layerName" ;;
 	*) echo "unknown PACK_MODE $PACK_MODE" >&2; exit 1 ;;
 esac
 

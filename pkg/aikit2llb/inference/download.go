@@ -41,13 +41,16 @@ func handleOCI(source string, s llb.State, platform specs.Platform) llb.State {
 	}
 
 	// Generic (ModelPack) selects the first application/vnd.cncf.model.weight.* layer.
-	modelName, orasCmd := handleGenericModelPack(artifactURL)
+	orasCmd := handleGenericModelPack(artifactURL)
 	script = fmt.Sprintf("apk add --no-cache jq curl && %s", orasCmd)
 	toolingImage = toolingImage.Run(utils.Sh(script)).Root()
-	modelPath := fmt.Sprintf("/models/%s", modelName)
+	// Copy all files from /download to /models
 	s = s.File(
-		llb.Copy(toolingImage, modelName, modelPath, createCopyOptions()...),
-		llb.WithCustomName("Copying weight layer from "+artifactURL+" to "+modelPath),
+		llb.Copy(toolingImage, "/download/", "/models/", &llb.CopyInfo{
+			CopyDirContentsOnly: true,
+			CreateDestPath:      true,
+		}),
+		llb.WithCustomName("Copying weight layer from "+artifactURL+" to /models/"),
 	)
 	return s
 }
@@ -61,14 +64,10 @@ func handleOllamaRegistry(artifactURL string) (string, string) {
 	return modelName, orasCmd
 }
 
-// handleGenericModelPack builds an oras command that:
-// 1. Fetches the manifest from the registry
-// 2. Extracts the first layer whose mediaType starts with application/vnd.cncf.model.weight.
-// 3. Downloads that blob to a file named after the model (base ref name) OR annotation title if present.
+// handleGenericModelPack builds an oras command that pulls the artifact,
+// automatically using org.opencontainers.image.title for filenames.
 // For localhost registries (localhost:* or 127.0.0.1:*), uses --insecure flag with a warning.
-func handleGenericModelPack(artifactURL string) (string, string) {
-	modelName := extractModelName(artifactURL)
-
+func handleGenericModelPack(artifactURL string) string {
 	// Determine if this is a localhost registry that may need insecure flag
 	isLocalhost := strings.HasPrefix(artifactURL, "localhost:") ||
 		strings.HasPrefix(artifactURL, "127.0.0.1:") ||
@@ -83,34 +82,20 @@ func handleGenericModelPack(artifactURL string) (string, string) {
 
 	cmd := fmt.Sprintf(`set -e
 ref=%[1]s
-tmp=/tmp/manifest.json
-%[3]s
-# Fetch manifest
-if ! oras manifest fetch "$ref" -o "$tmp" %[4]s 2>/tmp/oras-error.log; then
-	echo "Failed to fetch manifest from $ref" >&2
+%[2]s
+mkdir -p /download
+cd /download
+echo "Pulling artifact from $ref" >&2
+if ! oras pull %[3]s "$ref" 2>/tmp/oras-error.log; then
+	echo "Failed to pull artifact from $ref" >&2
 	cat /tmp/oras-error.log >&2
 	exit 1
 fi
-layerDigest=$(jq -r '.layers[] | select(.mediaType | startswith("application/vnd.cncf.model.weight.")) | .digest' "$tmp" | head -n1)
-if [ -z "$layerDigest" ]; then
-	echo "Error: No application/vnd.cncf.model.weight.* layer found in manifest. Verify that the artifact was packaged with the modelpack target." >&2
-	echo "Available layers:" >&2
-	jq -r '.layers[] | "\(.mediaType): \(.digest)"' "$tmp" >&2
-	exit 1
-fi
-title=$(jq -r '.layers[] | select(.digest=="'$layerDigest'") | .annotations["org.opencontainers.image.title"] // empty' "$tmp")
-outName=%[2]s
-if [ -n "$title" ]; then outName="$title"; fi
-echo "Downloading model weight layer: $layerDigest" >&2
-# Fetch blob
-if ! oras blob fetch "$ref@$layerDigest" --output "$outName" %[4]s 2>/tmp/oras-blob-error.log; then
-	echo "Failed to fetch blob $layerDigest" >&2
-	cat /tmp/oras-blob-error.log >&2
-	exit 1
-fi
-ls -l "$outName"
-`, artifactURL, modelName, warningMsg, insecureFlag)
-	return modelName, cmd
+echo "Downloaded files:" >&2
+ls -lh /download
+`, artifactURL, warningMsg, insecureFlag)
+
+	return cmd
 }
 
 // handleHTTP handles HTTP(S) downloads.
@@ -195,14 +180,6 @@ func handleLocal(source string, s llb.State) llb.State {
 		llb.WithCustomName("Copying "+utils.FileNameFromURL(source)+" to /models"),
 	)
 	return s
-}
-
-// extractModelName extracts the model name from an OCI artifact URL.
-func extractModelName(artifactURL string) string {
-	modelName := path.Base(artifactURL)
-	modelName = strings.Split(modelName, ":")[0]
-	modelName = strings.Split(modelName, "@")[0]
-	return modelName
 }
 
 // createCopyOptions returns the common llb.CopyOption used in file operations.
