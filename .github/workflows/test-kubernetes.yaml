@@ -29,7 +29,7 @@ jobs:
     timeout-minutes: 240
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        uses: step-security/harden-runner@df199fb7be9f65074067a9eb93f12bb4c5547cf2 # v2.13.3
         with:
           egress-policy: audit
           allowed-endpoints: >
@@ -54,7 +54,7 @@ jobs:
             *.azureedge.net:443
             ghcr.io:443
 
-      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       # need containerd image store for testing local images
       - uses: crazy-max/ghaction-setup-docker@e61617a16c407a86262fb923c35a616ddbe070b3 # v4.6.0
