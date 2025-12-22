@@ -44,6 +44,29 @@ models:
 			wantErr: false,
 		},
 		{
+			name: "valid yaml with preload models",
+			args: args{b: []byte(`
+apiVersion: v1alpha1
+runtime: cuda
+preload_models: true
+models:
+- name: test-model
+  source: test.gguf
+`)},
+			want: &InferenceConfig{
+				APIVersion:    utils.APIv1alpha1,
+				Runtime:       utils.RuntimeNVIDIA,
+				PreloadModels: true,
+				Models: []Model{
+					{
+						Name:   "test-model",
+						Source: "test.gguf",
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "invalid yaml",
 			args: args{b: []byte(`
 foo
