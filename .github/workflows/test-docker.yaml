@@ -42,7 +42,7 @@ jobs:
             arch: arm64
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
         with:
           egress-policy: audit
           allowed-endpoints: >
@@ -129,6 +129,36 @@ jobs:
             exit 1
           fi
 
+      - name: run tool calling test
+        run: |
+          result=$(curl --fail --retry 10 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
+            "model": "llama-3.2-1b-instruct",
+            "messages": [{"role": "user", "content": "What is the weather in Paris?"}],
+            "tools": [{
+              "type": "function",
+              "function": {
+                "name": "get_weather",
+                "description": "Get the current weather for a location",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "location": {"type": "string", "description": "The city name"}
+                  },
+                  "required": ["location"]
+                }
+              }
+            }]
+          }')
+          echo "$result"
+
+          tool_calls=$(echo "$result" | jq -r '.choices[0].message.tool_calls')
+          if [ "$tool_calls" = "null" ] || [ -z "$tool_calls" ]; then
+            echo "ERROR: No tool_calls in response"
+            exit 1
+          fi
+
+          echo "Tool calling test passed"
+
       - name: save logs
         if: always()
         run: docker logs testmodel > /tmp/docker-${{ matrix.backend }}-${{ matrix.arch }}.log
@@ -153,7 +183,7 @@ jobs:
           - hf
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
         with:
           egress-policy: audit
           allowed-endpoints: >
