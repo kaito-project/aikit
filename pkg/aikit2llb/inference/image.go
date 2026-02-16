@@ -13,7 +13,7 @@ func NewImageConfig(c *config.InferenceConfig, platform *specs.Platform) *specs.
 	if c.Debug {
 		cmd = append(cmd, "--debug")
 	}
-	if c.Config != "" {
+	if c.Config != "" || c.PreloadModels {
 		cmd = append(cmd, "--config-file=/config.yaml")
 	}
 
