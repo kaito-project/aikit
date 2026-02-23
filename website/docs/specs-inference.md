@@ -9,6 +9,7 @@ apiVersion: # required. only v1alpha1 is supported at the moment
 debug: # optional. if set to true, debug logs will be printed
 runtime: # optional. defaults to avx. can be "avx", "avx2", "avx512", "cuda"
 backends: # optional. list of additional backends. can be "llama-cpp" (default), "exllama2", "diffusers"
+preload_models: # optional. if set to true, models will be loaded into memory on startup
 models: # required. list of models to build
   - name: # required. name of the model
     source: # required. source of the model. can be a url or a local file
@@ -59,3 +60,21 @@ config: |
       chat_message: \"llama-2-7b-chat\"
     system_prompt: \"You are a helpful assistant, below is a conversation, please respond with the next message and do not ask follow-up questions\"
 ```
+
+## Preloading Models
+
+For faster response times, you can enable preloading of models into memory on startup by setting `preload_models: true`:
+
+```yaml
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
+apiVersion: v1alpha1
+debug: true
+runtime: cuda
+preload_models: true
+models:
+  - name: llama-3.2-1b-instruct
+    source: https://huggingface.co/MaziyarPanahi/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct.Q4_K_M.gguf
+    sha256: "e4650dd6b45ef456066b11e4927f775eef4dd1e0e8473c3c0f27dd19ee13cc4e"
+```
+
+When `preload_models` is enabled, all models will be loaded into memory when the LocalAI server starts, eliminating the initial loading delay on first request.
