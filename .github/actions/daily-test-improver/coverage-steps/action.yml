@@ -1,0 +1,66 @@
+name: 'Generate Test Coverage Report'
+description: 'Builds the project, runs tests with coverage, and uploads coverage artifacts'
+
+runs:
+  using: 'composite'
+  steps:
+    # Step 1: Install Go dependencies
+    # This ensures all Go modules are downloaded and ready for testing
+    - name: Install Go dependencies
+      shell: bash
+      run: |
+        echo "=== Installing Go dependencies ===" | tee -a coverage-steps.log
+        go mod download 2>&1 | tee -a coverage-steps.log
+        echo "Go dependencies installed successfully" | tee -a coverage-steps.log
+    
+    # Step 2: Run tests with coverage
+    # Uses the Makefile test target which runs:
+    # go test -v ./... -race -coverprofile=coverage.txt -covermode=atomic
+    # This produces coverage.txt in the repository root
+    - name: Run tests with coverage
+      shell: bash
+      run: |
+        echo "=== Running tests with coverage ===" | tee -a coverage-steps.log
+        make test 2>&1 | tee -a coverage-steps.log
+        echo "Tests completed" | tee -a coverage-steps.log
+    
+    # Step 3: Generate coverage summary
+    # Extracts overall coverage percentage and per-package breakdown
+    - name: Generate coverage summary
+      shell: bash
+      run: |
+        echo "=== Generating coverage summary ===" | tee -a coverage-steps.log
+        if [ -f coverage.txt ]; then
+          echo "Coverage report generated at: coverage.txt" | tee -a coverage-steps.log
+          echo "" | tee -a coverage-steps.log
+          echo "=== Overall Coverage ===" | tee -a coverage-steps.log
+          go tool cover -func=coverage.txt | grep total | tee -a coverage-steps.log
+          echo "" | tee -a coverage-steps.log
+          echo "=== Per-Package Coverage ===" | tee -a coverage-steps.log
+          go tool cover -func=coverage.txt | tee -a coverage-steps.log
+        else
+          echo "ERROR: coverage.txt not found!" | tee -a coverage-steps.log
+          exit 1
+        fi
+    
+    # Step 4: Generate HTML coverage report
+    # Creates a human-readable HTML report for detailed coverage analysis
+    - name: Generate HTML coverage report
+      shell: bash
+      run: |
+        echo "=== Generating HTML coverage report ===" | tee -a coverage-steps.log
+        go tool cover -html=coverage.txt -o coverage.html 2>&1 | tee -a coverage-steps.log
+        echo "HTML coverage report generated at: coverage.html" | tee -a coverage-steps.log
+    
+    # Step 5: Upload coverage artifacts
+    # Uploads coverage.txt, coverage.html, and coverage-steps.log as artifacts
+    # These will be available in the GitHub Actions UI under the "coverage" artifact
+    - name: Upload coverage artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage
+        path: |
+          coverage.txt
+          coverage.html
+          coverage-steps.log
+        retention-days: 30
