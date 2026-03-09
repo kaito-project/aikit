@@ -35,7 +35,7 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 
 	// Handle Apple Silicon - use Vulkan llama-cpp
 	if runtime == utils.RuntimeAppleSilicon {
-		return fmt.Sprintf("%s-gpu-vulkan-llama-cpp", baseTag)
+		return fmt.Sprintf("%s-%s", baseTag, vulkanLlamaCppBackend)
 	}
 
 	// Handle CUDA runtime
