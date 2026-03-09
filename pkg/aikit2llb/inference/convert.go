@@ -53,11 +53,11 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 
 // getBaseImage returns the base image given the InferenceConfig and platform.
 func getBaseImage(c *config.InferenceConfig, platform *specs.Platform) llb.State {
-	if len(c.Backends) > 0 {
-		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
-	}
 	if c.Runtime == utils.RuntimeAppleSilicon {
 		return llb.Image(utils.AppleSiliconBase, llb.Platform(*platform))
+	}
+	if len(c.Backends) > 0 {
+		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
 	}
 	return llb.Image(distrolessBase, llb.Platform(*platform))
 }
