@@ -3,6 +3,7 @@ package inference
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
@@ -119,8 +120,8 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 	// running apt-get update twice due to nvidia repo
 	s = s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y ca-certificates && apt-get update"), llb.IgnoreCache).Root()
 
-	// default llama.cpp backend is being used
-	if len(c.Backends) == 0 {
+	// install cuda libraries for llama-cpp (default) and vllm backends
+	if len(c.Backends) == 0 || slices.Contains(c.Backends, utils.BackendLlamaCpp) || slices.Contains(c.Backends, utils.BackendVLLM) {
 		// install cuda libraries and pciutils for gpu detection
 		s = s.Run(utils.Shf("apt-get install -y --no-install-recommends pciutils libcublas-%[1]s cuda-cudart-%[1]s && apt-get clean", cudaVersion)).Root()
 		// TODO: clean up /var/lib/dpkg/status

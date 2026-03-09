@@ -81,6 +81,35 @@ func Test_validateConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "valid vllm backend with cuda runtime",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    "cuda",
+				Backends:   []string{"vllm"},
+				Models: []config.Model{
+					{
+						Name:   "test",
+						Source: "foo",
+					},
+				},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "vllm backend requires cuda runtime",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{"vllm"},
+				Models: []config.Model{
+					{
+						Name:   "test",
+						Source: "foo",
+					},
+				},
+			}},
+			wantErr: true,
+		},
+		{
 			name: "invalid backend name",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
@@ -156,6 +185,17 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 				{Architecture: "arm64", OS: "linux"},
 			},
 			wantErr: false,
+		},
+		{
+			name: "vllm backend with arm64 platform - should fail",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{"vllm"},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: "arm64", OS: "linux"},
+			},
+			wantErr: true,
 		},
 	}
 	for _, tt := range tests {

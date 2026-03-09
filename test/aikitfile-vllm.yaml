@@ -1,0 +1,12 @@
+#syntax=aikit:test
+apiVersion: v1alpha1
+debug: true
+runtime: cuda
+backends:
+  - vllm
+config: |
+  - name: Qwen2.5-0.5B-Instruct
+    backend: vllm
+    parameters:
+      model: Qwen/Qwen2.5-0.5B-Instruct
+    use_tokenizer_template: true
