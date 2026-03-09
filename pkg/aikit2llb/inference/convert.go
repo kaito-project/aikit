@@ -13,7 +13,7 @@ import (
 
 const (
 	distrolessBase = "ghcr.io/kaito-project/aikit/base:latest"
-	localAIVersion = "v3.8.0"
+	localAIVersion = "v3.12.1"
 	localAIRepo    = "ghcr.io/kaito-project/aikit/localai:"
 	cudaVersion    = "12-5"
 )

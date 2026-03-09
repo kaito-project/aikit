@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	defaultBackendName    = "llama-cpp"
-	cpuLlamaCppBackend    = "cpu-llama-cpp"
-	cuda12LlamaCppBackend = "cuda12-llama-cpp"
+	defaultBackendName      = "llama-cpp"
+	cpuLlamaCppBackend      = "cpu-llama-cpp"
+	cuda12LlamaCppBackend   = "cuda12-llama-cpp"
+	vulkanLlamaCppBackend   = "gpu-vulkan-llama-cpp"
 )
 
 // getBackendTag returns the appropriate OCI tag for the given backend and runtime.
@@ -33,9 +34,9 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 		backendName = defaultBackendName
 	}
 
-	// Handle Apple Silicon - always use CPU llama-cpp
+	// Handle Apple Silicon - use Vulkan llama-cpp
 	if runtime == utils.RuntimeAppleSilicon {
-		return fmt.Sprintf("%s-cpu-llama-cpp", baseTag)
+		return fmt.Sprintf("%s-gpu-vulkan-llama-cpp", baseTag)
 	}
 
 	// Handle CUDA runtime
@@ -83,9 +84,9 @@ func getBackendAlias(backend string) string {
 
 // getBackendName returns the full backend directory name (used in metadata.json).
 func getBackendName(backend, runtime string, platform specs.Platform) string {
-	// Handle Apple Silicon - always use cpu-llama-cpp
+	// Handle Apple Silicon - use Vulkan llama-cpp
 	if runtime == utils.RuntimeAppleSilicon {
-		return cpuLlamaCppBackend
+		return vulkanLlamaCppBackend
 	}
 
 	// Handle CUDA runtime
@@ -127,14 +128,8 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 		merge = installDiffusersDependencies(s, merge)
 	}
 
-	// Use Apple Silicon specific registry for arm64 platforms
-	var ociImage string
-	if runtime := c.Runtime; runtime == utils.RuntimeAppleSilicon && platform.Architecture == utils.PlatformARM64 {
-		localAIVersion := "v3.4.0" // temp pin for now
-		ociImage = fmt.Sprintf("sertacacr.azurecr.io/llama-cpp:%s-vulkan", localAIVersion)
-	} else {
-		ociImage = fmt.Sprintf("%s:%s", utils.BackendOCIRegistry, tag)
-	}
+	// Build the OCI image reference
+	ociImage := fmt.Sprintf("%s:%s", utils.BackendOCIRegistry, tag)
 
 	// Create the backends directory
 	savedState := s
