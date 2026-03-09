@@ -11,8 +11,6 @@ on:
         options:
           - all
           - llama-cuda
-          - exllama2-gptq
-          - exllama2-exl2
           - diffusers
 
 permissions: read-all
@@ -25,7 +23,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        backend: ${{ inputs.backend == 'all' && fromJson('["llama-cuda", "exllama2-gptq", "exllama2-exl2", "diffusers"]') || fromJson(format('["{0}"]', inputs.backend)) }}
+        backend: ${{ inputs.backend == 'all' && fromJson('["llama-cuda", "diffusers"]') || fromJson(format('["{0}"]', inputs.backend)) }}
     steps:
       - name: cleanup workspace
         run: |
@@ -59,20 +57,6 @@ jobs:
         run: |
           result=$(curl --fail --retry 10 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
             "model": "llama-3.2-1b-instruct",
-            "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
-          }')
-          echo $result
-
-          choices=$(echo "$result" | jq '.choices')
-          if [ -z "$choices" ]; then
-            exit 1
-          fi
-
-      - name: run test (exl2/gptq)
-        if: matrix.backend == 'exllama2-gptq' || matrix.backend == 'exllama2-exl2'
-        run: |
-          result=$(curl --fail --retry 10 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
-            "model": "llama-2-7b-chat",
             "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
           }')
           echo $result

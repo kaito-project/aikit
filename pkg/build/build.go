@@ -481,7 +481,7 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 		}
 	}
 
-	backends := []string{utils.BackendLlamaCpp, utils.BackendExllamaV2, utils.BackendDiffusers}
+	backends := []string{utils.BackendLlamaCpp, utils.BackendDiffusers}
 	for _, b := range c.Backends {
 		if !slices.Contains(backends, b) {
 			return errors.Errorf("backend %s is not supported", b)

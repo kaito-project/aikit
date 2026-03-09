@@ -54,7 +54,6 @@ const sidebars = {
       collapsed: false,
       items: [
         'llama-cpp',
-        'exllama2',
         'diffusion',
       ],
     },

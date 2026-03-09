@@ -23,7 +23,6 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 
 	// Map backend names to their OCI tag equivalents
 	backendMap := map[string]string{
-		utils.BackendExllamaV2: "exllama2",
 		utils.BackendDiffusers: "diffusers",
 		utils.BackendLlamaCpp:  "llama-cpp",
 	}
@@ -42,8 +41,6 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 	// Handle CUDA runtime
 	if runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
 		switch backendName {
-		case "exllama2":
-			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-exllama2", baseTag)
 		case "diffusers":
 			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-diffusers", baseTag)
 		case defaultBackendName:
@@ -56,8 +53,6 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 
 	// Handle CPU runtime (default)
 	switch backendName {
-	case "exllama2":
-		return fmt.Sprintf("%s-cpu-exllama2", baseTag)
 	case "llama-cpp":
 		return fmt.Sprintf("%s-cpu-llama-cpp", baseTag)
 	default:
@@ -71,7 +66,6 @@ func getBackendAlias(backend string) string {
 	// Map backend names to their aliases
 	aliasMap := map[string]string{
 		utils.BackendDiffusers: "diffusers",
-		utils.BackendExllamaV2: "exllama2",
 		utils.BackendLlamaCpp:  "llama-cpp",
 	}
 
@@ -92,8 +86,6 @@ func getBackendName(backend, runtime string, platform specs.Platform) string {
 	// Handle CUDA runtime
 	if runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
 		switch backend {
-		case utils.BackendExllamaV2:
-			return "cuda12-exllama2"
 		case utils.BackendDiffusers:
 			return "cuda12-diffusers"
 		case utils.BackendLlamaCpp:
@@ -106,8 +98,6 @@ func getBackendName(backend, runtime string, platform specs.Platform) string {
 
 	// Handle CPU runtime (default)
 	switch backend {
-	case utils.BackendExllamaV2:
-		return "cpu-exllama2"
 	case utils.BackendLlamaCpp:
 		return cpuLlamaCppBackend
 	default:
@@ -122,8 +112,6 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 
 	// Install dependencies for Python-based backends
 	switch backend {
-	case utils.BackendExllamaV2:
-		merge = installExllamaDependencies(s, merge)
 	case utils.BackendDiffusers:
 		merge = installDiffusersDependencies(s, merge)
 	}

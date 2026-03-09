@@ -126,15 +126,6 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 		// TODO: clean up /var/lib/dpkg/status
 	}
 
-	// installing dev dependencies used for exllama
-	for b := range c.Backends {
-		if c.Backends[b] == utils.BackendExllamaV2 {
-			exllamaDeps := fmt.Sprintf("apt-get install -y --no-install-recommends cuda-cudart-dev-%[1]s cuda-crt-%[1]s libcusparse-dev-%[1]s libcublas-dev-%[1]s libcusolver-dev-%[1]s cuda-nvcc-%[1]s libcurand-dev-%[1]s && apt-get clean", cudaVersion)
-
-			s = s.Run(utils.Sh(exllamaDeps)).Root()
-		}
-	}
-
 	diff := llb.Diff(savedState, s)
 	return s, llb.Merge([]llb.State{merge, diff})
 }
