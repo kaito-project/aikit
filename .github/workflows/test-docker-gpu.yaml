@@ -19,7 +19,7 @@ permissions: read-all
 
 jobs:
   test:
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 240
     strategy:
       fail-fast: false
