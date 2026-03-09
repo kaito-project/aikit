@@ -14,6 +14,7 @@ const (
 	defaultBackendName    = "llama-cpp"
 	cpuLlamaCppBackend    = "cpu-llama-cpp"
 	cuda12LlamaCppBackend = "cuda12-llama-cpp"
+	vulkanLlamaCppBackend = "gpu-vulkan-llama-cpp"
 )
 
 // getBackendTag returns the appropriate OCI tag for the given backend and runtime.
@@ -22,7 +23,6 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 
 	// Map backend names to their OCI tag equivalents
 	backendMap := map[string]string{
-		utils.BackendExllamaV2: "exllama2",
 		utils.BackendDiffusers: "diffusers",
 		utils.BackendLlamaCpp:  "llama-cpp",
 	}
@@ -33,16 +33,14 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 		backendName = defaultBackendName
 	}
 
-	// Handle Apple Silicon - always use CPU llama-cpp
+	// Handle Apple Silicon - use Vulkan llama-cpp
 	if runtime == utils.RuntimeAppleSilicon {
-		return fmt.Sprintf("%s-cpu-llama-cpp", baseTag)
+		return fmt.Sprintf("%s-%s", baseTag, vulkanLlamaCppBackend)
 	}
 
 	// Handle CUDA runtime
 	if runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
 		switch backendName {
-		case "exllama2":
-			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-exllama2", baseTag)
 		case "diffusers":
 			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-diffusers", baseTag)
 		case defaultBackendName:
@@ -55,8 +53,6 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 
 	// Handle CPU runtime (default)
 	switch backendName {
-	case "exllama2":
-		return fmt.Sprintf("%s-cpu-exllama2", baseTag)
 	case "llama-cpp":
 		return fmt.Sprintf("%s-cpu-llama-cpp", baseTag)
 	default:
@@ -70,7 +66,6 @@ func getBackendAlias(backend string) string {
 	// Map backend names to their aliases
 	aliasMap := map[string]string{
 		utils.BackendDiffusers: "diffusers",
-		utils.BackendExllamaV2: "exllama2",
 		utils.BackendLlamaCpp:  "llama-cpp",
 	}
 
@@ -83,16 +78,14 @@ func getBackendAlias(backend string) string {
 
 // getBackendName returns the full backend directory name (used in metadata.json).
 func getBackendName(backend, runtime string, platform specs.Platform) string {
-	// Handle Apple Silicon - always use cpu-llama-cpp
+	// Handle Apple Silicon - use Vulkan llama-cpp
 	if runtime == utils.RuntimeAppleSilicon {
-		return cpuLlamaCppBackend
+		return vulkanLlamaCppBackend
 	}
 
 	// Handle CUDA runtime
 	if runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
 		switch backend {
-		case utils.BackendExllamaV2:
-			return "cuda12-exllama2"
 		case utils.BackendDiffusers:
 			return "cuda12-diffusers"
 		case utils.BackendLlamaCpp:
@@ -104,15 +97,7 @@ func getBackendName(backend, runtime string, platform specs.Platform) string {
 	}
 
 	// Handle CPU runtime (default)
-	switch backend {
-	case utils.BackendExllamaV2:
-		return "cpu-exllama2"
-	case utils.BackendLlamaCpp:
-		return cpuLlamaCppBackend
-	default:
-		// For unsupported backends, fallback to llama-cpp
-		return cpuLlamaCppBackend
-	}
+	return cpuLlamaCppBackend
 }
 
 // installBackend downloads and installs a backend from OCI registry.
@@ -120,21 +105,12 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 	tag := getBackendTag(backend, c.Runtime, platform)
 
 	// Install dependencies for Python-based backends
-	switch backend {
-	case utils.BackendExllamaV2:
-		merge = installExllamaDependencies(s, merge)
-	case utils.BackendDiffusers:
+	if backend == utils.BackendDiffusers {
 		merge = installDiffusersDependencies(s, merge)
 	}
 
-	// Use Apple Silicon specific registry for arm64 platforms
-	var ociImage string
-	if runtime := c.Runtime; runtime == utils.RuntimeAppleSilicon && platform.Architecture == utils.PlatformARM64 {
-		localAIVersion := "v3.4.0" // temp pin for now
-		ociImage = fmt.Sprintf("sertacacr.azurecr.io/llama-cpp:%s-vulkan", localAIVersion)
-	} else {
-		ociImage = fmt.Sprintf("%s:%s", utils.BackendOCIRegistry, tag)
-	}
+	// Build the OCI image reference
+	ociImage := fmt.Sprintf("%s:%s", utils.BackendOCIRegistry, tag)
 
 	// Create the backends directory
 	savedState := s

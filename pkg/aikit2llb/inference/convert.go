@@ -13,7 +13,7 @@ import (
 
 const (
 	distrolessBase = "ghcr.io/kaito-project/aikit/base:latest"
-	localAIVersion = "v3.8.0"
+	localAIVersion = "v3.12.1"
 	localAIRepo    = "ghcr.io/kaito-project/aikit/localai:"
 	cudaVersion    = "12-5"
 )
@@ -53,11 +53,11 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 
 // getBaseImage returns the base image given the InferenceConfig and platform.
 func getBaseImage(c *config.InferenceConfig, platform *specs.Platform) llb.State {
-	if len(c.Backends) > 0 {
-		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
-	}
 	if c.Runtime == utils.RuntimeAppleSilicon {
 		return llb.Image(utils.AppleSiliconBase, llb.Platform(*platform))
+	}
+	if len(c.Backends) > 0 {
+		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
 	}
 	return llb.Image(distrolessBase, llb.Platform(*platform))
 }
@@ -124,15 +124,6 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 		// install cuda libraries and pciutils for gpu detection
 		s = s.Run(utils.Shf("apt-get install -y --no-install-recommends pciutils libcublas-%[1]s cuda-cudart-%[1]s && apt-get clean", cudaVersion)).Root()
 		// TODO: clean up /var/lib/dpkg/status
-	}
-
-	// installing dev dependencies used for exllama
-	for b := range c.Backends {
-		if c.Backends[b] == utils.BackendExllamaV2 {
-			exllamaDeps := fmt.Sprintf("apt-get install -y --no-install-recommends cuda-cudart-dev-%[1]s cuda-crt-%[1]s libcusparse-dev-%[1]s libcublas-dev-%[1]s libcusolver-dev-%[1]s cuda-nvcc-%[1]s libcurand-dev-%[1]s && apt-get clean", cudaVersion)
-
-			s = s.Run(utils.Sh(exllamaDeps)).Root()
-		}
 	}
 
 	diff := llb.Diff(savedState, s)

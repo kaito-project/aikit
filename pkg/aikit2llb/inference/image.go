@@ -50,5 +50,11 @@ func emptyImage(c *config.InferenceConfig, platform *specs.Platform) *specs.Imag
 		img.Config.Env = append(img.Config.Env, cudaEnv...)
 	}
 
+	if c.Runtime == utils.RuntimeAppleSilicon {
+		img.Config.Env = append(img.Config.Env,
+			"VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/virtio_icd.aarch64.json",
+		)
+	}
+
 	return img
 }
