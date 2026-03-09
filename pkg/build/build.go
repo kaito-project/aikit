@@ -473,6 +473,10 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 		return errors.New("diffusers backend only supports nvidia cuda runtime. please add 'runtime: cuda' to your aikitfile.yaml")
 	}
 
+	if slices.Contains(c.Backends, utils.BackendVLLM) && c.Runtime != utils.RuntimeNVIDIA {
+		return errors.New("vllm backend only supports nvidia cuda runtime. please add 'runtime: cuda' to your aikitfile.yaml")
+	}
+
 	if c.Runtime == utils.RuntimeAppleSilicon && len(c.Backends) > 0 {
 		for _, backend := range c.Backends {
 			if backend != utils.BackendLlamaCpp {
@@ -481,7 +485,7 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 		}
 	}
 
-	backends := []string{utils.BackendLlamaCpp, utils.BackendDiffusers}
+	backends := []string{utils.BackendLlamaCpp, utils.BackendDiffusers, utils.BackendVLLM}
 	for _, b := range c.Backends {
 		if !slices.Contains(backends, b) {
 			return errors.Errorf("backend %s is not supported", b)

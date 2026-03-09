@@ -25,6 +25,7 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 	backendMap := map[string]string{
 		utils.BackendDiffusers: "diffusers",
 		utils.BackendLlamaCpp:  "llama-cpp",
+		utils.BackendVLLM:      "vllm",
 	}
 
 	backendName, exists := backendMap[backend]
@@ -43,6 +44,8 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 		switch backendName {
 		case "diffusers":
 			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-diffusers", baseTag)
+		case "vllm":
+			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-vllm", baseTag)
 		case defaultBackendName:
 			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-llama-cpp", baseTag)
 		default:
@@ -67,6 +70,7 @@ func getBackendAlias(backend string) string {
 	aliasMap := map[string]string{
 		utils.BackendDiffusers: "diffusers",
 		utils.BackendLlamaCpp:  "llama-cpp",
+		utils.BackendVLLM:      "vllm",
 	}
 
 	if alias, exists := aliasMap[backend]; exists {
@@ -88,6 +92,8 @@ func getBackendName(backend, runtime string, platform specs.Platform) string {
 		switch backend {
 		case utils.BackendDiffusers:
 			return "cuda12-diffusers"
+		case utils.BackendVLLM:
+			return "cuda12-vllm"
 		case utils.BackendLlamaCpp:
 			return cuda12LlamaCppBackend
 		default:
@@ -107,6 +113,9 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 	// Install dependencies for Python-based backends
 	if backend == utils.BackendDiffusers {
 		merge = installDiffusersDependencies(s, merge)
+	}
+	if backend == utils.BackendVLLM {
+		merge = installVLLMDependencies(s, merge)
 	}
 
 	// Build the OCI image reference
@@ -142,6 +151,19 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 		llb.Mkfile(fmt.Sprintf("%s/metadata.json", backendDir), 0o644, []byte(metadataContent)),
 		llb.WithCustomName(fmt.Sprintf("Creating metadata.json for backend %s", backendName)),
 	)
+
+	// Apply workarounds for the pre-built vLLM backend image.
+	if backend == utils.BackendVLLM {
+		// Remove broken flash_attn package (PyTorch ABI incompatibility).
+		// Patch backend.py to use the current vLLM AsyncLLM API
+		// (get_model_config() was replaced by the model_config property).
+		s = s.Run(utils.Shf(
+			"rm -rf %[1]s/venv/lib/python*/site-packages/flash_attn* && "+
+				"sed -i 's/await self.llm.get_model_config()/self.llm.model_config/' %[1]s/backend.py",
+			backendDir),
+			llb.WithCustomNamef("Patching vLLM backend %s for compatibility", backendName),
+		).Root()
+	}
 
 	diff := llb.Diff(savedState, s)
 	return llb.Merge([]llb.State{merge, diff})

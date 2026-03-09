@@ -12,6 +12,7 @@ on:
           - all
           - llama-cuda
           - diffusers
+          - vllm
 
 permissions: read-all
 
@@ -23,7 +24,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        backend: ${{ inputs.backend == 'all' && fromJson('["llama-cuda", "diffusers"]') || fromJson(format('["{0}"]', inputs.backend)) }}
+        backend: ${{ inputs.backend == 'all' && fromJson('["llama-cuda", "diffusers", "vllm"]') || fromJson(format('["{0}"]', inputs.backend)) }}
     steps:
       - name: cleanup workspace
         run: |
@@ -84,6 +85,20 @@ jobs:
       - name: save generated image
         if: matrix.backend == 'diffusers'
         run: docker cp testmodel:/tmp/generated/content/images /tmp
+
+      - name: run test (vllm)
+        if: matrix.backend == 'vllm'
+        run: |
+          result=$(curl --fail --retry 30 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
+            "model": "Qwen2.5-0.5B-Instruct",
+            "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
+          }')
+          echo $result
+
+          choices=$(echo "$result" | jq '.choices')
+          if [ -z "$choices" ]; then
+            exit 1
+          fi
 
       - name: save logs
         if: always()

@@ -44,6 +44,15 @@ func TestGetBackendTag(t *testing.T) {
 			want: fmt.Sprintf("%s-gpu-nvidia-cuda-12-diffusers", localAIVersion),
 		},
 		{
+			name:    "CUDA vllm",
+			backend: utils.BackendVLLM,
+			runtime: utils.RuntimeNVIDIA,
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: fmt.Sprintf("%s-gpu-nvidia-cuda-12-vllm", localAIVersion),
+		},
+		{
 			name:    "Apple Silicon llama-cpp",
 			backend: utils.BackendLlamaCpp,
 			runtime: utils.RuntimeAppleSilicon,
@@ -156,6 +165,11 @@ func TestGetBackendAlias(t *testing.T) {
 			want:    "llama-cpp",
 		},
 		{
+			name:    "vllm backend",
+			backend: utils.BackendVLLM,
+			want:    "vllm",
+		},
+		{
 			name:    "unknown backend defaults to llama-cpp",
 			backend: "unknown",
 			want:    "llama-cpp",
@@ -211,6 +225,15 @@ func TestGetBackendName(t *testing.T) {
 				Architecture: utils.PlatformAMD64,
 			},
 			want: "cuda12-diffusers",
+		},
+		{
+			name:    "CUDA vllm",
+			backend: utils.BackendVLLM,
+			runtime: utils.RuntimeNVIDIA,
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: "cuda12-vllm",
 		},
 		{
 			name:    "Apple Silicon llama-cpp",
