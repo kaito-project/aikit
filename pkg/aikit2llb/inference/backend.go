@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	defaultBackendName      = "llama-cpp"
-	cpuLlamaCppBackend      = "cpu-llama-cpp"
-	cuda12LlamaCppBackend   = "cuda12-llama-cpp"
-	vulkanLlamaCppBackend   = "gpu-vulkan-llama-cpp"
+	defaultBackendName    = "llama-cpp"
+	cpuLlamaCppBackend    = "cpu-llama-cpp"
+	cuda12LlamaCppBackend = "cuda12-llama-cpp"
+	vulkanLlamaCppBackend = "gpu-vulkan-llama-cpp"
 )
 
 // getBackendTag returns the appropriate OCI tag for the given backend and runtime.
@@ -97,13 +97,7 @@ func getBackendName(backend, runtime string, platform specs.Platform) string {
 	}
 
 	// Handle CPU runtime (default)
-	switch backend {
-	case utils.BackendLlamaCpp:
-		return cpuLlamaCppBackend
-	default:
-		// For unsupported backends, fallback to llama-cpp
-		return cpuLlamaCppBackend
-	}
+	return cpuLlamaCppBackend
 }
 
 // installBackend downloads and installs a backend from OCI registry.
@@ -111,8 +105,7 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 	tag := getBackendTag(backend, c.Runtime, platform)
 
 	// Install dependencies for Python-based backends
-	switch backend {
-	case utils.BackendDiffusers:
+	if backend == utils.BackendDiffusers {
 		merge = installDiffusersDependencies(s, merge)
 	}
 
