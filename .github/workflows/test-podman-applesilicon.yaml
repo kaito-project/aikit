@@ -7,7 +7,7 @@ permissions: read-all
 
 jobs:
   test:
-    runs-on: self-hosted
+    runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 240
     steps:
       - name: cleanup workspace
