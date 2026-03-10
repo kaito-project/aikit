@@ -87,7 +87,7 @@ func TestGenerateRunnerScript(t *testing.T) {
 				`BACKEND="llama-cpp"`,
 				".aikit-model-ref",
 				"huggingface-cli",
-				"curl -L",
+				"curl -fL",
 				"exec /usr/bin/local-ai",
 			},
 			expectMissing: []string{
@@ -175,8 +175,10 @@ func TestGenerateRunnerScriptArgParser(t *testing.T) {
 	if !strings.Contains(script, `--*=*)`) {
 		t.Error("arg parser should handle --flag=value style arguments with single shift")
 	}
-	if !strings.Contains(script, "EXTRA_ARGS+=(\"$1\" \"$2\")") {
-		t.Error("arg parser should consume both --flag and its value argument")
+
+	// Should guard against trailing flags without values
+	if !strings.Contains(script, `[[ $# -ge 2 ]]`) {
+		t.Error("arg parser should guard against trailing flags without values")
 	}
 
 	// Should strip huggingface:// URI prefix for kubeairunway compatibility
@@ -269,8 +271,8 @@ func TestGenerateHFModelConfig(t *testing.T) {
 			script := generateHFModelConfig(tt.backend)
 
 			// Should verify cached config matches the requested model
-			if !strings.Contains(script, "grep -q") {
-				t.Error("should verify cached config matches requested model")
+			if !strings.Contains(script, "grep -qF") {
+				t.Error("should use fixed-string grep to verify cached config matches requested model")
 			}
 
 			// Should contain correct backend reference

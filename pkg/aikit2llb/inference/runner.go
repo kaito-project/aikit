@@ -22,12 +22,13 @@ func isRunnerMode(c *config.InferenceConfig) bool {
 func installRunnerDependencies(_ *config.InferenceConfig, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State) {
 	savedState := s
 
-	// Install curl for HTTP/HTTPS downloads and python3 + pip for huggingface-cli.
+	// Install curl for HTTP/HTTPS downloads, ca-certificates for TLS verification,
+	// and python3 + pip for huggingface-cli.
 	// Some backends (diffusers/vllm) already install python, but llama-cpp does not,
 	// so we always install the minimal set here.
 	// Note: Runner mode is not supported for Apple Silicon (validated in build).
 	s = s.Run(
-		utils.Sh("apt-get update && apt-get install --no-install-recommends -y curl python3 python3-pip && (pip install --break-system-packages huggingface-hub[cli] 2>/dev/null || pip install huggingface-hub[cli]) && apt-get clean"),
+		utils.Sh("apt-get update && apt-get install --no-install-recommends -y curl ca-certificates python3 python3-pip && (pip install --break-system-packages huggingface-hub[cli] 2>/dev/null || pip install huggingface-hub[cli]) && apt-get clean"),
 		llb.WithCustomNamef("Installing runner dependencies for platform %s/%s", platform.OS, platform.Architecture),
 		llb.IgnoreCache,
 	).Root()
@@ -79,6 +80,7 @@ EXTRA_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model)
+      [[ $# -ge 2 ]] || { echo "Error: --model requires a value"; exit 1; }
       MODEL="$2"
       shift 2
       ;;
@@ -91,8 +93,13 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --*)
-      EXTRA_ARGS+=("$1" "$2")
-      shift 2
+      if [[ $# -ge 2 ]]; then
+        EXTRA_ARGS+=("$1" "$2")
+        shift 2
+      else
+        EXTRA_ARGS+=("$1")
+        shift
+      fi
       ;;
     *)
       if [[ -z "$MODEL" ]]; then
@@ -179,7 +186,7 @@ else
     # Direct HTTP/HTTPS download
     echo "Downloading model from URL: $MODEL"
     FILENAME=$(basename "$MODEL")
-    curl -L --progress-bar -o "/models/$FILENAME" "$MODEL"
+    curl -fL --progress-bar -o "/models/$FILENAME" "$MODEL"
   else
     # HuggingFace repo - download GGUF files
     echo "Downloading GGUF files from HuggingFace: $MODEL"
@@ -217,7 +224,7 @@ fi
 func generateHFModelConfig(backend string) string {
 	return fmt.Sprintf(`# Check if model config matches the requested model (volume mount caching)
 MODEL_NAME=$(echo "$MODEL" | tr '/' '-')
-if [[ -f "/models/aikit-model.yaml" ]] && grep -q "model: ${MODEL}$" /models/aikit-model.yaml 2>/dev/null; then
+if [[ -f "/models/aikit-model.yaml" ]] && grep -qF "model: ${MODEL}" /models/aikit-model.yaml 2>/dev/null; then
   echo "Found existing model config matching $MODEL in /models, skipping setup"
 else
   if [[ -f "/models/aikit-model.yaml" ]]; then
