@@ -87,10 +87,11 @@ jobs:
             type=semver,pattern={{raw}}
             type=raw,value=latest
 
-      - name: Build aikit frontend
+      - name: Build and push aikit frontend
         run: |
-          docker buildx build . -t aikit:release \
-            --load --provenance=false --progress plain
+          docker buildx build . \
+            --push --provenance=false --progress plain \
+            -t ghcr.io/kaito-project/aikit/aikit:${{ github.sha }}
 
       - name: Build and push
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
@@ -99,7 +100,7 @@ jobs:
           push: true
           tags: ${{ steps.docker_meta.outputs.tags }}
           file: ${{ matrix.file }}
-          build-args: BUILDKIT_SYNTAX=aikit:release
+          build-args: BUILDKIT_SYNTAX=ghcr.io/kaito-project/aikit/aikit:${{ github.sha }}
           cache-from: type=gha,scope=runner-${{ matrix.runner }}
           cache-to: type=gha,scope=runner-${{ matrix.runner }},mode=max
           sbom: true
