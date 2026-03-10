@@ -107,13 +107,13 @@ jobs:
 
       - name: run chat completion test
         run: |
-          result=$(curl -s --retry 10 --retry-all-errors --retry-max-time 600 http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
-            "model": "gemma-3-1b-it-Q2_K",
-            "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
-          }' | tail -1)
-          echo "$result"
-
-          echo "$result" | jq -e '
+          curl -s --retry 10 --retry-all-errors --retry-max-time 600 \
+            -o /tmp/response.json \
+            http://127.0.0.1:8080/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d '{"model": "gemma-3-1b-it-Q2_K", "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]}'
+          cat /tmp/response.json
+          jq -e '
             if (.error? != null) then
               error("error field present in response")
             elif (.choices | type != "array" or (.choices | length) == 0) then
@@ -121,7 +121,7 @@ jobs:
             else
               .
             end
-          ' > /dev/null
+          ' /tmp/response.json > /dev/null
 
       - name: save logs
         if: always()
