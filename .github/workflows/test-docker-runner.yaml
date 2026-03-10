@@ -107,21 +107,15 @@ jobs:
 
       - name: run chat completion test
         run: |
-          curl -s --retry 10 --retry-all-errors --retry-max-time 600 \
-            -o /tmp/response.json \
-            http://127.0.0.1:8080/v1/chat/completions \
-            -H "Content-Type: application/json" \
-            -d '{"model": "gemma-3-1b-it-Q2_K", "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]}'
-          cat /tmp/response.json
-          jq -e '
-            if (.error? != null) then
-              error("error field present in response")
-            elif (.choices | type != "array" or (.choices | length) == 0) then
-              error("choices must be a non-empty array")
-            else
-              .
-            end
-          ' /tmp/response.json > /dev/null
+          for i in $(seq 1 30); do
+            response=$(curl -sf http://127.0.0.1:8080/v1/chat/completions \
+              -H "Content-Type: application/json" \
+              -d '{"model": "gemma-3-1b-it-Q2_K", "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]}' 2>/dev/null) && break
+            echo "Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+          echo "$response"
+          echo "$response" | jq -e '.choices | length > 0'
 
       - name: save logs
         if: always()
