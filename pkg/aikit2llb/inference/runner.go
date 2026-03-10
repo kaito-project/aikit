@@ -176,14 +176,36 @@ else
     echo "Downloading model from URL: $MODEL"
     FILENAME=$(basename "$MODEL")
     curl -L --progress-bar -o "/models/$FILENAME" "$MODEL"
+  elif [[ "$MODEL" == *.gguf ]]; then
+    # Direct GGUF filename (could be a path or a specific file reference)
+    echo "Downloading specific GGUF: $MODEL"
+    FILENAME=$(basename "$MODEL")
+    curl -L --progress-bar -o "/models/$FILENAME" "$MODEL"
   else
-    # HuggingFace repo - download GGUF files
-    echo "Downloading GGUF files from HuggingFace: $MODEL"
-    HF_ARGS=("download" "$MODEL" "--local-dir" "/models" "--include" "*.gguf")
+    # HuggingFace repo - download a single GGUF file.
+    # Prefer Q4_K_M quantization for a good balance of quality and size,
+    # falling back to any available GGUF file if Q4_K_M is not found.
+    echo "Downloading GGUF from HuggingFace: $MODEL"
+    HF_ARGS=("download" "$MODEL" "--local-dir" "/models")
     if [[ -n "${HF_TOKEN:-}" ]]; then
       HF_ARGS+=("--token" "$HF_TOKEN")
     fi
-    huggingface-cli "${HF_ARGS[@]}"
+    # Try Q4_K_M first (best default), then Q4_K_S, then any single GGUF
+    if huggingface-cli "${HF_ARGS[@]}" --include "*Q4_K_M.gguf" 2>/dev/null && ls /models/*.gguf >/dev/null 2>&1; then
+      echo "Downloaded Q4_K_M quantization"
+    elif huggingface-cli "${HF_ARGS[@]}" --include "*Q4_K_S.gguf" 2>/dev/null && ls /models/*.gguf >/dev/null 2>&1; then
+      echo "Downloaded Q4_K_S quantization"
+    else
+      echo "No preferred quantization found, downloading first available GGUF"
+      # List GGUF files and download just the first one
+      FIRST_GGUF=$(huggingface-cli repo-info "$MODEL" 2>/dev/null | grep -oE '[^ ]+\.gguf' | head -1 || true)
+      if [[ -n "$FIRST_GGUF" ]]; then
+        huggingface-cli "${HF_ARGS[@]}" --include "$FIRST_GGUF"
+      else
+        # Last resort: download all GGUF files
+        huggingface-cli "${HF_ARGS[@]}" --include "*.gguf"
+      fi
+    fi
   fi
   echo "$MODEL" > "$MODEL_MARKER"
   echo "Download complete"

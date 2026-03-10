@@ -219,6 +219,16 @@ func TestGenerateLlamaCppDownload(t *testing.T) {
 		t.Error("should use huggingface-cli for HF repos")
 	}
 
+	// Should prefer Q4_K_M quantization to avoid downloading all variants
+	if !strings.Contains(script, "Q4_K_M") {
+		t.Error("should prefer Q4_K_M quantization for HF repos")
+	}
+
+	// Should NOT download all GGUF files by default
+	if strings.Contains(script, `--include "*.gguf"`) && !strings.Contains(script, "Last resort") {
+		t.Error("should not download all GGUF files as the primary strategy")
+	}
+
 	// Should respect HF_TOKEN
 	if !strings.Contains(script, "HF_TOKEN") {
 		t.Error("should respect HF_TOKEN")
