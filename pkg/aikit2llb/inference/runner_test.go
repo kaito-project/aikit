@@ -185,6 +185,25 @@ func TestGenerateRunnerScriptArgParser(t *testing.T) {
 	}
 }
 
+func TestGenerateRunnerScriptModelConfig(t *testing.T) {
+	config := &config.InferenceConfig{
+		Backends: []string{utils.BackendLlamaCpp},
+	}
+
+	script := generateRunnerScript(config)
+
+	// Should generate a model config YAML after downloading GGUF
+	if !strings.Contains(script, "backend: llama-cpp") {
+		t.Error("should generate a model config with llama-cpp backend")
+	}
+	if !strings.Contains(script, "parameters:") {
+		t.Error("should include parameters section in generated config")
+	}
+	if !strings.Contains(script, ".yaml") {
+		t.Error("should write a .yaml config file")
+	}
+}
+
 func TestGenerateRunnerScriptUsageMessage(t *testing.T) {
 	config := &config.InferenceConfig{
 		Backends: []string{utils.BackendLlamaCpp},

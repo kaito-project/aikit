@@ -31,6 +31,7 @@ const sidebars = {
       collapsed: false,
       items: [
         'create-images',
+        'runners',
         'fine-tune',
         'packaging',
         'vision',
