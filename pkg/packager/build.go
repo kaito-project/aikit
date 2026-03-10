@@ -118,7 +118,12 @@ func BuildModelpack(ctx context.Context, c client.Client) (*client.Result, error
 	)
 	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
 
-	return solveAndBuildResult(ctx, c, final, "packager:modelpack")
+	result, err := solveAndBuildResult(ctx, c, final, "packager:modelpack")
+	if err != nil {
+		return nil, err
+	}
+	result.AddMeta("containerimage.oci-layout", []byte("true"))
+	return result, nil
 }
 
 // BuildGeneric builds a generic artifact layout (target packager/generic).
@@ -153,7 +158,12 @@ func BuildGeneric(ctx context.Context, c client.Client) (*client.Result, error) 
 	)
 	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
 
-	return solveAndBuildResult(ctx, c, final, "packager:generic")
+	result, err := solveAndBuildResult(ctx, c, final, "packager:generic")
+	if err != nil {
+		return nil, err
+	}
+	result.AddMeta("containerimage.oci-layout", []byte("true"))
+	return result, nil
 }
 
 func getBuildArg(opts map[string]string, k string) string {
