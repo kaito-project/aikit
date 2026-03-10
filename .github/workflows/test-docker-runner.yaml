@@ -1,0 +1,134 @@
+name: docker-test-runner
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+      - 'website/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'website/**'
+  workflow_dispatch:
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest-16-cores
+    timeout-minutes: 240
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
+        with:
+          egress-policy: audit
+          allowed-endpoints: >
+            auth.docker.io:443
+            huggingface.co:443
+            *.huggingface.co:443
+            *.hf.co:443
+            cdn.dl.k8s.io:443
+            dl.k8s.io:443
+            download.docker.com:443
+            gcr.io:443
+            github.com:443
+            *.githubusercontent.com:443
+            production.cloudflare.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            storage.googleapis.com:443
+            *.blob.core.windows.net:443
+            *.azureedge.net:443
+            developer.download.nvidia.com:443
+            dl-cdn.alpinelinux.org:443
+            *.ubuntu.com:80
+            ghcr.io:443
+            sum.golang.org:443
+            quay.io:443
+            pypi.org:443
+            files.pythonhosted.org:443
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # need containerd image store for testing local images
+      - uses: crazy-max/ghaction-setup-docker@1a6edb0ba9ac496f6850236981f15d8f9a82254d # v5.0.0
+        with:
+          version: version=v27.5.1
+          daemon-config: |
+            {
+              "debug": true,
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+      - uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
+
+      - name: build aikit
+        run: |
+          docker buildx build . -t aikit:test \
+            --load --provenance=false --progress plain
+
+      - name: build runner image
+        run: |
+          docker buildx build . -t runner-test:test \
+            -f runners/llama-cpp-cpu.yaml \
+            --build-arg BUILDKIT_SYNTAX=aikit:test \
+            --load --provenance=false --progress plain
+
+      - name: list images
+        run: docker images
+
+      - name: run runner with model
+        run: docker run --name runner-test -d -p 8080:8080 runner-test:test https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q2_K.gguf
+
+      - name: wait for model download
+        run: |
+          echo "Waiting for runner container to download model and start..."
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/readyz 2>/dev/null | grep -q "200"; then
+              echo "Server is ready!"
+              break
+            fi
+            if ! docker ps --format '{{.Names}}' | grep -q runner-test; then
+              echo "Container exited unexpectedly!"
+              docker logs runner-test 2>&1 || true
+              exit 1
+            fi
+            if [ $((i % 10)) -eq 0 ]; then
+              echo "Still waiting... (${i}s elapsed)"
+              docker logs --tail 5 runner-test 2>&1 || true
+            fi
+            sleep 10
+          done
+
+      - name: run chat completion test
+        run: |
+          for i in $(seq 1 30); do
+            response=$(curl -sf http://127.0.0.1:8080/v1/chat/completions \
+              -H "Content-Type: application/json" \
+              -d '{"model": "gemma-3-1b-it-Q2_K", "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]}' 2>/dev/null) && break
+            echo "Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+          echo "$response"
+          echo "$response" | jq -e '.choices | length > 0'
+
+      - name: save logs
+        if: always()
+        run: docker logs runner-test > /tmp/docker-runner-llama-cpp-cpu.log 2>&1
+
+      - name: stop container
+        if: always()
+        run: docker stop runner-test || true
+
+      - name: publish test artifacts
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: test-runner-llama-cpp-cpu
+          path: |
+            /tmp/*.log
