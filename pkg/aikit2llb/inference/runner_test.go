@@ -178,6 +178,11 @@ func TestGenerateRunnerScriptArgParser(t *testing.T) {
 	if !strings.Contains(script, "EXTRA_ARGS+=(\"$1\" \"$2\")") {
 		t.Error("arg parser should consume both --flag and its value argument")
 	}
+
+	// Should strip huggingface:// URI prefix for kubeairunway compatibility
+	if !strings.Contains(script, `${MODEL#huggingface://}`) {
+		t.Error("arg parser should strip huggingface:// URI prefix")
+	}
 }
 
 func TestGenerateRunnerScriptUsageMessage(t *testing.T) {

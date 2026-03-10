@@ -120,6 +120,10 @@ fi
 
 echo "AIKit Runner: backend=$BACKEND model=$MODEL"
 
+# Strip URI scheme prefixes (e.g. huggingface://org/repo -> org/repo)
+# kubeairunway passes model IDs with the huggingface:// prefix.
+MODEL="${MODEL#huggingface://}"
+
 `)
 
 	// Backend-specific download logic
