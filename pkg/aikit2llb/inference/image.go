@@ -12,12 +12,14 @@ import (
 func NewImageConfig(c *config.InferenceConfig, platform *specs.Platform) *specs.Image {
 	img := emptyImage(c, platform)
 
-	// For CUDA images, prepend the GPU detection wrapper to the entrypoint.
-	// This wrapper detects whether an NVIDIA GPU is actually present at runtime
-	// and forces LocalAI to use CPU backends if not, working around a LocalAI
-	// v3.12.1 regression where /usr/local/cuda-12 directory presence alone
-	// causes CUDA backend selection.
-	gpuWrapper := c.Runtime == utils.RuntimeNVIDIA
+	// For CUDA images on amd64, prepend the GPU detection wrapper to the
+	// entrypoint. This wrapper detects whether an NVIDIA GPU is actually
+	// present at runtime and forces LocalAI to use CPU backends if not,
+	// working around a LocalAI v3.12.1 regression where /usr/local/cuda-12
+	// directory presence alone causes CUDA backend selection.
+	// The wrapper is only installed for amd64 (see installGPUDetectionWrapper
+	// gating in convert.go), so we must match that condition here.
+	gpuWrapper := c.Runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64
 
 	if isRunnerMode(c) {
 		// Runner mode: use the aikit-runner entrypoint script

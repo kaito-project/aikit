@@ -170,11 +170,21 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 const gpuDetectionWrapper = `#!/bin/sh
 # Detect NVIDIA GPU and set backend capability accordingly.
 # If no GPU is found, force LocalAI to use CPU backends.
-if command -v lspci >/dev/null 2>&1; then
-  if ! lspci -d 10de: 2>/dev/null | grep -qi 'nvidia\|3d controller\|vga'; then
-    export LOCALAI_FORCE_META_BACKEND_CAPABILITY=default
+# Respect any user-provided override.
+if [ -n "$LOCALAI_FORCE_META_BACKEND_CAPABILITY" ]; then
+  exec "$@"
+fi
+gpu_found=false
+if [ -e /dev/nvidiactl ]; then
+  gpu_found=true
+elif command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+  gpu_found=true
+elif command -v lspci >/dev/null 2>&1; then
+  if lspci -d 10de: 2>/dev/null | grep -qi 'nvidia\|3d controller\|vga'; then
+    gpu_found=true
   fi
-elif ! [ -e /dev/nvidiactl ]; then
+fi
+if [ "$gpu_found" = "false" ]; then
   export LOCALAI_FORCE_META_BACKEND_CAPABILITY=default
 fi
 exec "$@"
