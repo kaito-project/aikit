@@ -25,8 +25,9 @@ func installRunnerDependencies(_ *config.InferenceConfig, s llb.State, merge llb
 	// Install curl for HTTP/HTTPS downloads and python3 + pip for huggingface-cli.
 	// Some backends (diffusers/vllm) already install python, but llama-cpp does not,
 	// so we always install the minimal set here.
+	// Note: Runner mode is not supported for Apple Silicon (validated in build).
 	s = s.Run(
-		utils.Sh("apt-get update && apt-get install --no-install-recommends -y curl python3 python3-pip && pip install --break-system-packages huggingface-hub[cli] 2>/dev/null || pip install huggingface-hub[cli] && apt-get clean"),
+		utils.Sh("apt-get update && apt-get install --no-install-recommends -y curl python3 python3-pip && (pip install --break-system-packages huggingface-hub[cli] 2>/dev/null || pip install huggingface-hub[cli]) && apt-get clean"),
 		llb.WithCustomNamef("Installing runner dependencies for platform %s/%s", platform.OS, platform.Architecture),
 		llb.IgnoreCache,
 	).Root()
@@ -141,7 +142,9 @@ LOCAL_AI_ARGS=("--models-path" "/models")
 `)
 	}
 
-	sb.WriteString(`LOCAL_AI_ARGS+=("${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}")
+	sb.WriteString(`if ((${#EXTRA_ARGS[@]})); then
+  LOCAL_AI_ARGS+=("${EXTRA_ARGS[@]}")
+fi
 
 echo "Starting local-ai with args: ${LOCAL_AI_ARGS[*]}"
 exec /usr/bin/local-ai "${LOCAL_AI_ARGS[@]}"

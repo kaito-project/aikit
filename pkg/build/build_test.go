@@ -159,6 +159,15 @@ func Test_validateConfig(t *testing.T) {
 			}},
 			wantErr: false,
 		},
+		{
+			name: "runner mode not supported on apple silicon",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    "applesilicon",
+				Backends:   []string{"llama-cpp"},
+			}},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -75,8 +75,10 @@ func getBaseImage(c *config.InferenceConfig, platform *specs.Platform) llb.State
 func writeConfig(c *config.InferenceConfig, base llb.State, s llb.State, platform specs.Platform) (llb.State, llb.State) {
 	savedState := s
 	if c.Config != "" {
-		s = s.Run(utils.Shf("mkdir -p /configuration && echo -n \"%s\" > /config.yaml", c.Config),
-			llb.WithCustomName(fmt.Sprintf("Creating config for platform %s/%s", platform.OS, platform.Architecture))).Root()
+		s = s.File(
+			llb.Mkfile("/config.yaml", 0o644, []byte(c.Config)),
+			llb.WithCustomName(fmt.Sprintf("Creating config for platform %s/%s", platform.OS, platform.Architecture)),
+		)
 	}
 	diff := llb.Diff(savedState, s)
 	merge := llb.Merge([]llb.State{base, diff})

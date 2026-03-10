@@ -485,6 +485,12 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 		}
 	}
 
+	// Runner mode (backends without models) is not supported on Apple Silicon
+	// because the base image is Fedora-based and runner dependencies require apt-get.
+	if c.Runtime == utils.RuntimeAppleSilicon && len(c.Backends) > 0 && len(c.Models) == 0 {
+		return errors.New("runner mode (backends without models) is not supported on apple silicon runtime")
+	}
+
 	backends := []string{utils.BackendLlamaCpp, utils.BackendDiffusers, utils.BackendVLLM}
 	for _, b := range c.Backends {
 		if !slices.Contains(backends, b) {

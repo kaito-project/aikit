@@ -90,12 +90,17 @@ jobs:
             "model": "gemma-3-1b-it-GGUF",
             "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
           }')
-          echo $result
+          echo "$result"
 
-          choices=$(echo "$result" | jq '.choices')
-          if [ -z "$choices" ]; then
-            exit 1
-          fi
+          echo "$result" | jq -e '
+            if (.error? != null) then
+              error("error field present in response")
+            elif (.choices | type != "array" or (.choices | length) == 0) then
+              error("choices must be a non-empty array")
+            else
+              .
+            end
+          ' > /dev/null
 
       - name: save logs
         if: always()

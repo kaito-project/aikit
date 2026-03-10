@@ -69,12 +69,17 @@ jobs:
             "model": "gemma-3-1b-it-GGUF",
             "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
           }')
-          echo $result
+          echo "$result"
 
-          choices=$(echo "$result" | jq '.choices')
-          if [ -z "$choices" ]; then
-            exit 1
-          fi
+          echo "$result" | jq -e '
+            if (.error? != null) then
+              error("error field present in response")
+            elif (.choices | type != "array" or (.choices | length) == 0) then
+              error("choices must be a non-empty array")
+            else
+              .
+            end
+          ' > /dev/null
 
       - name: run test (diffusers-cuda)
         if: matrix.backend == 'diffusers-cuda'
@@ -84,12 +89,19 @@ jobs:
             "prompt": "A cute baby llama",
             "size": "256x256"
           }')
-          echo $result
+          echo "$result"
 
-          url=$(echo "$result" | jq '.data[0].url')
-          if [ -z "$url" ]; then
-            exit 1
-          fi
+          echo "$result" | jq -e '
+            if (.error? != null) then
+              error("error field present in response")
+            elif (.data | type != "array" or (.data | length) == 0) then
+              error("data must be a non-empty array")
+            elif (.data[0].url == null or .data[0].url == "") then
+              error("data[0].url must be non-empty")
+            else
+              .
+            end
+          ' > /dev/null
 
       - name: save generated image
         if: matrix.backend == 'diffusers-cuda'
@@ -102,12 +114,17 @@ jobs:
             "model": "Qwen2.5-0.5B-Instruct",
             "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
           }')
-          echo $result
+          echo "$result"
 
-          choices=$(echo "$result" | jq '.choices')
-          if [ -z "$choices" ]; then
-            exit 1
-          fi
+          echo "$result" | jq -e '
+            if (.error? != null) then
+              error("error field present in response")
+            elif (.choices | type != "array" or (.choices | length) == 0) then
+              error("choices must be a non-empty array")
+            else
+              .
+            end
+          ' > /dev/null
 
       - name: save logs
         if: always()
