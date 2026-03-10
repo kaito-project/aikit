@@ -188,6 +188,23 @@ else
   echo "$MODEL" > "$MODEL_MARKER"
   echo "Download complete"
 fi
+
+# Generate a minimal config file so LocalAI can map the model name to the GGUF file.
+# Without this, LocalAI looks for the model name as a filename (without .gguf extension).
+GGUF_FILE=$(find /models -name "*.gguf" -type f | head -1)
+if [[ -n "$GGUF_FILE" ]]; then
+  GGUF_BASENAME=$(basename "$GGUF_FILE")
+  MODEL_NAME="${GGUF_BASENAME%.gguf}"
+  if [[ ! -f "/models/${MODEL_NAME}.yaml" ]]; then
+    echo "Generating config for model: $MODEL_NAME -> $GGUF_BASENAME"
+    cat > "/models/${MODEL_NAME}.yaml" <<CFGEOF
+name: ${MODEL_NAME}
+backend: llama-cpp
+parameters:
+  model: ${GGUF_BASENAME}
+CFGEOF
+  fi
+fi
 `
 }
 
