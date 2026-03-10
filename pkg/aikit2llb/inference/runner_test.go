@@ -85,7 +85,7 @@ func TestGenerateRunnerScript(t *testing.T) {
 			},
 			expectContains: []string{
 				`BACKEND="llama-cpp"`,
-				"*.gguf",
+				".aikit-model-ref",
 				"huggingface-cli",
 				"curl -L",
 				"exec /usr/bin/local-ai",
@@ -162,6 +162,24 @@ func TestGenerateRunnerScript(t *testing.T) {
 	}
 }
 
+func TestGenerateRunnerScriptArgParser(t *testing.T) {
+	config := &config.InferenceConfig{
+		Backends: []string{utils.BackendLlamaCpp},
+	}
+
+	script := generateRunnerScript(config)
+
+	// The arg parser must handle --flag=value (single shift) differently
+	// from --flag value (shift 2, consuming the next token as the value).
+	// Without this, `docker run <image> --threads 4 model` would set MODEL=4.
+	if !strings.Contains(script, `--*=*)`) {
+		t.Error("arg parser should handle --flag=value style arguments with single shift")
+	}
+	if !strings.Contains(script, "EXTRA_ARGS+=(\"$1\" \"$2\")") {
+		t.Error("arg parser should consume both --flag and its value argument")
+	}
+}
+
 func TestGenerateRunnerScriptUsageMessage(t *testing.T) {
 	config := &config.InferenceConfig{
 		Backends: []string{utils.BackendLlamaCpp},
@@ -181,9 +199,14 @@ func TestGenerateRunnerScriptUsageMessage(t *testing.T) {
 func TestGenerateLlamaCppDownload(t *testing.T) {
 	script := generateLlamaCppDownload()
 
-	// Should check for existing models
-	if !strings.Contains(script, "find /models -name") {
-		t.Error("should check for existing model files")
+	// Should use marker file for model-aware caching
+	if !strings.Contains(script, ".aikit-model-ref") {
+		t.Error("should use marker file for model-aware caching")
+	}
+
+	// Should detect model mismatch and re-download
+	if !strings.Contains(script, "does not match requested model") {
+		t.Error("should detect and handle model mismatch on cached volume")
 	}
 
 	// Should handle HTTP URLs
@@ -221,9 +244,9 @@ func TestGenerateHFModelConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			script := generateHFModelConfig(tt.backend)
 
-			// Should check for existing config
-			if !strings.Contains(script, "aikit-model.yaml") {
-				t.Error("should check for existing model config")
+			// Should verify cached config matches the requested model
+			if !strings.Contains(script, "grep -q") {
+				t.Error("should verify cached config matches requested model")
 			}
 
 			// Should contain correct backend reference
@@ -234,6 +257,11 @@ func TestGenerateHFModelConfig(t *testing.T) {
 			// Should handle HF_TOKEN
 			if !strings.Contains(script, "HF_TOKEN") {
 				t.Error("should respect HF_TOKEN")
+			}
+
+			// Should handle model mismatch
+			if !strings.Contains(script, "does not match requested model") {
+				t.Error("should detect and handle model mismatch on cached volume")
 			}
 		})
 	}

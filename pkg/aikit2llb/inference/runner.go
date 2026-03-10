@@ -86,9 +86,13 @@ while [[ $# -gt 0 ]]; do
       MODEL="${1#*=}"
       shift
       ;;
-    --*)
+    --*=*)
       EXTRA_ARGS+=("$1")
       shift
+      ;;
+    --*)
+      EXTRA_ARGS+=("$1" "$2")
+      shift 2
       ;;
     *)
       if [[ -z "$MODEL" ]]; then
@@ -156,11 +160,17 @@ exec /usr/bin/local-ai "${LOCAL_AI_ARGS[@]}"
 // generateLlamaCppDownload generates the download logic for llama-cpp backend.
 // It handles HuggingFace repos (downloading GGUF files) and direct HTTP URLs.
 func generateLlamaCppDownload() string {
-	return `# Check if models already exist (volume mount caching)
-EXISTING_MODELS=$(find /models -name "*.gguf" -type f 2>/dev/null | head -1)
-if [[ -n "$EXISTING_MODELS" ]]; then
-  echo "Found existing model files in /models, skipping download"
+	return `# Check if the requested model already exists (volume mount caching)
+# Write a marker file so we can detect model mismatches on reuse.
+MODEL_MARKER="/models/.aikit-model-ref"
+if [[ -f "$MODEL_MARKER" ]] && [[ "$(cat "$MODEL_MARKER")" == "$MODEL" ]]; then
+  echo "Found cached model matching $MODEL in /models, skipping download"
 else
+  # Different model requested or no marker — clean and re-download
+  if [[ -f "$MODEL_MARKER" ]]; then
+    echo "Cached model ($(cat "$MODEL_MARKER")) does not match requested model ($MODEL), re-downloading"
+    rm -f /models/*.gguf "$MODEL_MARKER"
+  fi
   if [[ "$MODEL" == http://* ]] || [[ "$MODEL" == https://* ]]; then
     # Direct HTTP/HTTPS download
     echo "Downloading model from URL: $MODEL"
@@ -175,6 +185,7 @@ else
     fi
     huggingface-cli "${HF_ARGS[@]}"
   fi
+  echo "$MODEL" > "$MODEL_MARKER"
   echo "Download complete"
 fi
 `
@@ -183,12 +194,15 @@ fi
 // generateHFModelConfig generates the download and config logic for diffusers/vllm backends.
 // These backends pass the HuggingFace model ID through to LocalAI config at runtime.
 func generateHFModelConfig(backend string) string {
-	return fmt.Sprintf(`# Check if model config already exists (volume mount caching)
-if [[ -f "/models/aikit-model.yaml" ]]; then
-  echo "Found existing model config in /models, skipping setup"
+	return fmt.Sprintf(`# Check if model config matches the requested model (volume mount caching)
+MODEL_NAME=$(echo "$MODEL" | tr '/' '-')
+if [[ -f "/models/aikit-model.yaml" ]] && grep -q "model: ${MODEL}$" /models/aikit-model.yaml 2>/dev/null; then
+  echo "Found existing model config matching $MODEL in /models, skipping setup"
 else
+  if [[ -f "/models/aikit-model.yaml" ]]; then
+    echo "Cached config does not match requested model ($MODEL), regenerating"
+  fi
   # For %[1]s backend, generate a LocalAI model config pointing to the HF model
-  MODEL_NAME=$(echo "$MODEL" | tr '/' '-')
   echo "Generating LocalAI config for %[1]s backend with model: $MODEL"
   cat > /models/aikit-model.yaml <<MODELEOF
 name: ${MODEL_NAME}

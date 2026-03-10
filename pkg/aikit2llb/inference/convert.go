@@ -61,7 +61,7 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 	// causes CUDA backend selection even without a GPU.
 	// See: https://github.com/mudler/LocalAI/pull/6149
 	if c.Runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
-		state, merge = installGPUDetectionWrapper(state, merge)
+		_, merge = installGPUDetectionWrapper(state, merge)
 	}
 
 	imageCfg := NewImageConfig(c, platform)

@@ -45,6 +45,7 @@ jobs:
         run: |
           docker buildx build . -t runner-test:test \
             -f runners/${{ matrix.backend }}.yaml \
+            --build-arg BUILDKIT_SYNTAX=aikit:test \
             --load --provenance=false --progress plain
 
       - name: list images

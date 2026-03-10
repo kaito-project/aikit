@@ -87,6 +87,11 @@ jobs:
             type=semver,pattern={{raw}}
             type=raw,value=latest
 
+      - name: Build aikit frontend
+        run: |
+          docker buildx build . -t aikit:release \
+            --load --provenance=false --progress plain
+
       - name: Build and push
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         id: build-and-push
@@ -94,6 +99,7 @@ jobs:
           push: true
           tags: ${{ steps.docker_meta.outputs.tags }}
           file: ${{ matrix.file }}
+          build-args: BUILDKIT_SYNTAX=aikit:release
           cache-from: type=gha,scope=runner-${{ matrix.runner }}
           cache-to: type=gha,scope=runner-${{ matrix.runner }},mode=max
           sbom: true
