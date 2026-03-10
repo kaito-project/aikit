@@ -167,7 +167,7 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 // a LocalAI v3.12.1 regression where the existence of /usr/local/cuda-12
 // (installed by CUDA runtime packages) causes LocalAI to select the CUDA
 // backend even when no GPU hardware is present.
-const gpuDetectionWrapper = `#!/bin/sh
+const gpuDetectionWrapper = `#!/bin/bash
 # Detect NVIDIA GPU and set backend capability accordingly.
 # If no GPU is found, force LocalAI to use CPU backends.
 # Respect any user-provided override.
