@@ -10,10 +10,10 @@ Pre-built runner images are available at `ghcr.io/kaito-project/aikit/runners/`:
 
 | Image | Description |
 |---|---|
-| `ghcr.io/kaito-project/aikit/runners/llama-cpp-cpu` | CPU-only llama.cpp runner (amd64, arm64) |
-| `ghcr.io/kaito-project/aikit/runners/llama-cpp-cuda` | CUDA + CPU fallback llama.cpp runner (amd64) |
-| `ghcr.io/kaito-project/aikit/runners/diffusers-cuda` | CUDA diffusers runner (amd64) |
-| `ghcr.io/kaito-project/aikit/runners/vllm-cuda` | CUDA vLLM runner (amd64) |
+| `ghcr.io/kaito-project/aikit/runners/llama-cpp-cpu:latest` | CPU-only llama.cpp runner (amd64, arm64) |
+| `ghcr.io/kaito-project/aikit/runners/llama-cpp-cuda:latest` | CUDA + CPU fallback llama.cpp runner (amd64) |
+| `ghcr.io/kaito-project/aikit/runners/diffusers-cuda:latest` | CUDA diffusers runner (amd64) |
+| `ghcr.io/kaito-project/aikit/runners/vllm-cuda:latest` | CUDA vLLM runner (amd64) |
 
 ## Quick Start
 
