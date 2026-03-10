@@ -1,0 +1,129 @@
+name: docker-test-runner-gpu
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: 'Runner backend to test (leave empty to test all)'
+        required: false
+        type: choice
+        default: 'all'
+        options:
+          - all
+          - llama-cpp-cuda
+          - diffusers-cuda
+          - vllm-cuda
+
+permissions: read-all
+
+jobs:
+  test:
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        backend: ${{ inputs.backend == 'all' && fromJson('["llama-cpp-cuda", "diffusers-cuda", "vllm-cuda"]') || fromJson(format('["{0}"]', inputs.backend)) }}
+    steps:
+      - name: cleanup workspace
+        run: |
+          rm -rf ./* || true
+          rm -rf ./.??* || true
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+        # use default docker driver builder with containerd image store for local aikit image
+        # these must be setup before running this test
+      - run: docker buildx use default
+
+      - name: build aikit
+        run: |
+          docker buildx build . -t aikit:test \
+            --load --provenance=false --progress plain
+
+      - name: build runner image
+        run: |
+          docker buildx build . -t runner-test:test \
+            -f runners/${{ matrix.backend }}.yaml \
+            --load --provenance=false --progress plain
+
+      - name: list images
+        run: docker images
+
+      - name: run runner (llama-cpp-cuda)
+        if: matrix.backend == 'llama-cpp-cuda'
+        run: docker run --name runner-test -d --rm -p 8080:8080 --gpus all runner-test:test unsloth/gemma-3-1b-it-GGUF
+
+      - name: run runner (diffusers-cuda)
+        if: matrix.backend == 'diffusers-cuda'
+        run: docker run --name runner-test -d --rm -p 8080:8080 --gpus all runner-test:test stabilityai/stable-diffusion-2-1
+
+      - name: run runner (vllm-cuda)
+        if: matrix.backend == 'vllm-cuda'
+        run: docker run --name runner-test -d --rm -p 8080:8080 --gpus all runner-test:test Qwen/Qwen2.5-0.5B-Instruct
+
+      - name: run test (llama-cpp-cuda)
+        if: matrix.backend == 'llama-cpp-cuda'
+        run: |
+          result=$(curl --fail --retry 30 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
+            "model": "gemma-3-1b-it-GGUF",
+            "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
+          }')
+          echo $result
+
+          choices=$(echo "$result" | jq '.choices')
+          if [ -z "$choices" ]; then
+            exit 1
+          fi
+
+      - name: run test (diffusers-cuda)
+        if: matrix.backend == 'diffusers-cuda'
+        run: |
+          result=$(curl --fail --retry 30 --retry-all-errors http://127.0.0.1:8080/v1/images/generations -H "Content-Type: application/json" -d '{
+            "model": "stable-diffusion-2-1",
+            "prompt": "A cute baby llama",
+            "size": "256x256"
+          }')
+          echo $result
+
+          url=$(echo "$result" | jq '.data[0].url')
+          if [ -z "$url" ]; then
+            exit 1
+          fi
+
+      - name: save generated image
+        if: matrix.backend == 'diffusers-cuda'
+        run: docker cp runner-test:/tmp/generated/content/images /tmp || true
+
+      - name: run test (vllm-cuda)
+        if: matrix.backend == 'vllm-cuda'
+        run: |
+          result=$(curl --fail --retry 30 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
+            "model": "Qwen2.5-0.5B-Instruct",
+            "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
+          }')
+          echo $result
+
+          choices=$(echo "$result" | jq '.choices')
+          if [ -z "$choices" ]; then
+            exit 1
+          fi
+
+      - name: save logs
+        if: always()
+        run: docker logs runner-test > /tmp/docker-runner-${{ matrix.backend }}.log 2>&1
+
+      - run: docker stop runner-test
+        if: always()
+
+      - run: docker system prune -a -f --volumes || true
+        if: always()
+
+      - name: publish test artifacts
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: test-runner-${{ matrix.backend }}
+          path: |
+            /tmp/*.log
+            /tmp/images/*.png

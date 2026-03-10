@@ -1,6 +1,8 @@
 package inference
 
 import (
+	"strings"
+
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/util/system"
@@ -9,16 +11,35 @@ import (
 
 func NewImageConfig(c *config.InferenceConfig, platform *specs.Platform) *specs.Image {
 	img := emptyImage(c, platform)
-	cmd := []string{}
-	if c.Debug {
-		cmd = append(cmd, "--debug")
-	}
-	if c.Config != "" {
-		cmd = append(cmd, "--config-file=/config.yaml")
+
+	if isRunnerMode(c) {
+		// Runner mode: use the aikit-runner entrypoint script
+		img.Config.Entrypoint = []string{"/usr/local/bin/aikit-runner"}
+		img.Config.Cmd = []string{}
+
+		// Add runner labels
+		backendLabel := strings.Join(c.Backends, ",")
+		img.Config.Labels = map[string]string{
+			"ai.kaito.aikit.runner":  "true",
+			"ai.kaito.aikit.backend": backendLabel,
+		}
+		if c.Runtime != "" {
+			img.Config.Labels["ai.kaito.aikit.runtime"] = c.Runtime
+		}
+	} else {
+		// Standard mode: use local-ai directly
+		cmd := []string{}
+		if c.Debug {
+			cmd = append(cmd, "--debug")
+		}
+		if c.Config != "" {
+			cmd = append(cmd, "--config-file=/config.yaml")
+		}
+
+		img.Config.Entrypoint = []string{"local-ai"}
+		img.Config.Cmd = cmd
 	}
 
-	img.Config.Entrypoint = []string{"local-ai"}
-	img.Config.Cmd = cmd
 	return img
 }
 

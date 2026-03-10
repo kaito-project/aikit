@@ -30,9 +30,17 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 	base := getBaseImage(c, platform)
 
 	var err error
-	state, merge, err = copyModels(c, base, state, *platform)
-	if err != nil {
-		return state, nil, err
+	if isRunnerMode(c) {
+		// Runner mode: skip model downloads, write config if present, install runner deps
+		state, merge = writeConfig(c, base, state, *platform)
+		state, merge = installRunnerDependencies(c, state, merge, *platform)
+		state, merge = installRunnerEntrypoint(c, state, merge)
+	} else {
+		// Standard mode: download models + write config
+		state, merge, err = copyModels(c, base, state, *platform)
+		if err != nil {
+			return state, nil, err
+		}
 	}
 
 	state, merge, err = addLocalAI(state, merge, *platform)
@@ -63,7 +71,19 @@ func getBaseImage(c *config.InferenceConfig, platform *specs.Platform) llb.State
 	return llb.Image(distrolessBase, llb.Platform(*platform))
 }
 
-// copyModels copies models to the image.
+// writeConfig writes the /config.yaml file to the image when c.Config is set.
+func writeConfig(c *config.InferenceConfig, base llb.State, s llb.State, platform specs.Platform) (llb.State, llb.State) {
+	savedState := s
+	if c.Config != "" {
+		s = s.Run(utils.Shf("mkdir -p /configuration && echo -n \"%s\" > /config.yaml", c.Config),
+			llb.WithCustomName(fmt.Sprintf("Creating config for platform %s/%s", platform.OS, platform.Architecture))).Root()
+	}
+	diff := llb.Diff(savedState, s)
+	merge := llb.Merge([]llb.State{base, diff})
+	return s, merge
+}
+
+// copyModels copies models to the image and writes the config.
 func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, platform specs.Platform) (llb.State, llb.State, error) {
 	savedState := s
 	for _, model := range c.Models {
