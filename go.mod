@@ -1,6 +1,8 @@
 module github.com/kaito-project/aikit
 
-go 1.26
+go 1.24.3
+
+toolchain go1.26.1
 
 require (
 	github.com/containerd/platforms v1.0.0-rc.2
