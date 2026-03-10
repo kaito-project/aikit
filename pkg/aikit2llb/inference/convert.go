@@ -56,6 +56,14 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 	// install backend dependencies
 	merge = installBackends(c, *platform, state, merge)
 
+	// install GPU detection wrapper for CUDA images to work around
+	// LocalAI v3.12.1 bug where /usr/local/cuda-12 directory presence
+	// causes CUDA backend selection even without a GPU.
+	// See: https://github.com/mudler/LocalAI/pull/6149
+	if c.Runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
+		state, merge = installGPUDetectionWrapper(state, merge)
+	}
+
 	imageCfg := NewImageConfig(c, platform)
 	return merge, imageCfg, nil
 }
@@ -149,6 +157,36 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 		// TODO: clean up /var/lib/dpkg/status
 	}
 
+	diff := llb.Diff(savedState, s)
+	return s, llb.Merge([]llb.State{merge, diff})
+}
+
+// gpuDetectionWrapper is a shell script that detects GPU presence at container
+// startup. If no NVIDIA GPU is found, it forces LocalAI to use the CPU backend
+// by setting LOCALAI_FORCE_META_BACKEND_CAPABILITY=default. This works around
+// a LocalAI v3.12.1 regression where the existence of /usr/local/cuda-12
+// (installed by CUDA runtime packages) causes LocalAI to select the CUDA
+// backend even when no GPU hardware is present.
+const gpuDetectionWrapper = `#!/bin/sh
+# Detect NVIDIA GPU and set backend capability accordingly.
+# If no GPU is found, force LocalAI to use CPU backends.
+if command -v lspci >/dev/null 2>&1; then
+  if ! lspci -d 10de: 2>/dev/null | grep -qi 'nvidia\|3d controller\|vga'; then
+    export LOCALAI_FORCE_META_BACKEND_CAPABILITY=default
+  fi
+elif ! [ -e /dev/nvidiactl ]; then
+  export LOCALAI_FORCE_META_BACKEND_CAPABILITY=default
+fi
+exec "$@"
+`
+
+// installGPUDetectionWrapper writes the GPU detection entrypoint wrapper into the image.
+func installGPUDetectionWrapper(s llb.State, merge llb.State) (llb.State, llb.State) {
+	savedState := s
+	s = s.File(
+		llb.Mkfile("/usr/local/bin/gpu-detect-wrapper", 0o755, []byte(gpuDetectionWrapper)),
+		llb.WithCustomName("Installing GPU detection wrapper for CPU fallback"),
+	)
 	diff := llb.Diff(savedState, s)
 	return s, llb.Merge([]llb.State{merge, diff})
 }
