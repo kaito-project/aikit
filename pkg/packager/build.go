@@ -116,7 +116,9 @@ func BuildModelpack(ctx context.Context, c client.Client) (*client.Result, error
 		llb.Args([]string{"bash", "-c", script}),
 		llb.AddMount("/src", modelState, llb.Readonly),
 	)
-	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
+	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout", "/", &llb.CopyInfo{
+		CopyDirContentsOnly: true,
+	}))
 
 	result, err := solveAndBuildResult(ctx, c, final, "packager:modelpack")
 	if err != nil {
@@ -156,7 +158,9 @@ func BuildGeneric(ctx context.Context, c client.Client) (*client.Result, error) 
 		llb.Args([]string{"bash", "-c", script}),
 		llb.AddMount("/src", srcState, llb.Readonly),
 	)
-	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
+	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout", "/", &llb.CopyInfo{
+		CopyDirContentsOnly: true,
+	}))
 
 	result, err := solveAndBuildResult(ctx, c, final, "packager:generic")
 	if err != nil {
