@@ -14,6 +14,10 @@ import (
 )
 
 const (
+	outputModeArtifact = "artifact"
+)
+
+const (
 	localNameContext    = "context"
 	packModeRaw         = "raw"
 	defaultPlatformOS   = "linux"
@@ -29,19 +33,21 @@ type buildConfig struct {
 	refName           string
 	sessionID         string
 	genericOutputMode string
+	outputMode        string
 	debug             bool
 }
 
 // parseBuildConfig extracts and validates build configuration from BuildKit options.
 func parseBuildConfig(opts map[string]string, sessionID string, isModelpack bool) (*buildConfig, error) {
 	cfg := &buildConfig{
-		source:    getBuildArg(opts, "source"),
-		exclude:   getBuildArg(opts, "exclude"),
-		packMode:  getBuildArg(opts, "layer_packaging"),
-		name:      determineName(opts),
-		refName:   determineRefName(opts),
-		sessionID: sessionID,
-		debug:     getBuildArg(opts, "debug") == "1",
+		source:     getBuildArg(opts, "source"),
+		exclude:    getBuildArg(opts, "exclude"),
+		packMode:   getBuildArg(opts, "layer_packaging"),
+		name:       determineName(opts),
+		refName:    determineRefName(opts),
+		sessionID:  sessionID,
+		outputMode: getBuildArg(opts, "output_mode"),
+		debug:      getBuildArg(opts, "debug") == "1",
 	}
 
 	if cfg.source == "" {
@@ -94,6 +100,9 @@ func solveAndBuildResult(ctx context.Context, c client.Client, state llb.State, 
 }
 
 // BuildModelpack builds a modelpack OCI layout (target packager/modelpack).
+// When the build arg output_mode=artifact is set, it produces artifact metadata
+// instead of an OCI layout, emitting raw files and a metadata.json that the
+// BuildKit artifact processor can consume.
 func BuildModelpack(ctx context.Context, c client.Client) (*client.Result, error) {
 	opts := c.BuildOpts().Opts
 	sessionID := c.BuildOpts().SessionID
@@ -106,6 +115,11 @@ func BuildModelpack(ctx context.Context, c client.Client) (*client.Result, error
 	modelState, err := resolveSourceState(cfg.source, cfg.sessionID, true, cfg.exclude)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve modelpack source %q: %w", cfg.source, err)
+	}
+
+	// Artifact output mode: produce raw files + metadata JSON instead of OCI layout.
+	if cfg.outputMode == outputModeArtifact {
+		return buildModelpackArtifact(ctx, c, cfg, modelState)
 	}
 
 	artifactType := v1.ArtifactTypeModelManifest
@@ -123,6 +137,47 @@ func BuildModelpack(ctx context.Context, c client.Client) (*client.Result, error
 		return nil, err
 	}
 	result.AddMeta("containerimage.oci-layout", []byte("true"))
+	return result, nil
+}
+
+// buildModelpackArtifact implements the artifact output mode for modelpack builds.
+// It runs a metadata script that categorizes files and writes them to /out/files/
+// along with /out/metadata.json describing each layer. The metadata is then read
+// from the solved result and attached to the client.Result as artifact metadata.
+func buildModelpackArtifact(ctx context.Context, c client.Client, cfg *buildConfig, modelState llb.State) (*client.Result, error) {
+	script := generateModelpackMetadataScript(cfg.packMode)
+
+	run := llb.Image(bashImage).Run(
+		llb.Args([]string{"bash", "-c", script}),
+		llb.AddMount("/src", modelState, llb.Readonly),
+	)
+	final := llb.Scratch().File(llb.Copy(run.Root(), "/out/", "/"))
+
+	result, err := solveAndBuildResult(ctx, c, final, "packager:modelpack-artifact")
+	if err != nil {
+		return nil, err
+	}
+
+	// Read the metadata JSON from the build result.
+	ref, err := result.SingleRef()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get artifact result reference: %w", err)
+	}
+
+	metadataBytes, err := ref.ReadFile(ctx, client.ReadRequest{
+		Filename: "out/metadata.json",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to read metadata.json from artifact result: %w", err)
+	}
+
+	// Set artifact metadata on the result so the BuildKit artifact processor
+	// can recognize and handle this as a model artifact.
+	result.AddMeta("containerimage.artifact", []byte("true"))
+	result.AddMeta("containerimage.artifact.type", []byte(v1.ArtifactTypeModelManifest))
+	result.AddMeta("containerimage.artifact.config.mediatype", []byte(v1.MediaTypeModelConfig))
+	result.AddMeta("containerimage.artifact.layers", metadataBytes)
+
 	return result, nil
 }
 

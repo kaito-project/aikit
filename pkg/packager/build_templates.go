@@ -223,6 +223,106 @@ printf '{ "imageLayoutVersion": "1.0.0" }' > /layout/oci-layout
 	return fmt.Sprintf(tmpl, packMode, artifactType, mtManifest, name, refName, largeFileThreshold)
 }
 
+// generateModelpackMetadataScript returns a bash script used for artifact output mode.
+//
+// Instead of building an OCI layout, this script:
+//  1. Categorizes files into weights, config, docs, code, and dataset (same logic as generateModelpackScript)
+//  2. Copies all source files to /out/files/ preserving relative paths
+//  3. Creates /out/metadata.json with an array of layer descriptors containing
+//     the relative path under /out/, the media type, and annotations
+//
+// Only raw pack mode is supported in artifact mode (each file is its own layer).
+//
+// Arguments:
+//
+//	packMode: currently must be "raw" for artifact mode
+func generateModelpackMetadataScript(packMode string) string {
+	_ = packMode // reserved for future pack modes; currently only raw is supported
+	tmpl := `set -euo pipefail
+
+# Handle single file input (copy to temporary directory)
+src=/src
+if [ -f /src ]; then mkdir -p /worksrc && cp /src /worksrc/; src=/worksrc; fi
+cd "$src"
+
+# Create output directories
+mkdir -p /out/files
+
+# Initialize category lists for file classification
+> /tmp/weights.list
+> /tmp/config.list
+> /tmp/docs.list
+> /tmp/code.list
+> /tmp/dataset.list
+
+# Find all files, excluding lock files and cache, and sort deterministically
+find . -type f ! -name '*.lock' ! -path './.cache/*' -print0 | \
+	xargs -0 -P $(nproc) -I {} sh -c 'echo "{}|$(stat -c%%s "{}")"' | \
+	LC_ALL=C sort > /tmp/allfiles_with_size.list
+
+# Categorize files by extension and size into appropriate lists
+while IFS='|' read -r f sz; do
+	f=${f#./}
+	base=$(basename "$f" | tr A-Z a-z)
+	case "$base" in
+		# Model weight files
+		*.safetensors|*.bin|*.gguf|*.pt|*.ckpt) echo "$f" >> /tmp/weights.list ;;
+		# Documentation files
+		readme*|license*|license|*.md) echo "$f" >> /tmp/docs.list ;;
+		# Configuration and tokenizer files
+		config.json|tokenizer.json|*tokenizer*.json|generation_config.json|*.json|*.txt) echo "$f" >> /tmp/config.list ;;
+		# Code files
+		*.py|*.sh|*.ipynb|*.go|*.js|*.ts) echo "$f" >> /tmp/code.list ;;
+		# Dataset files
+		*.csv|*.tsv|*.jsonl|*.parquet|*.arrow|*.h5|*.npz) echo "$f" >> /tmp/dataset.list ;;
+		# Unknown files: large ones (>10MB) go to weights, small ones to config
+		*) if [ "$sz" -gt %[1]d ]; then echo "$f" >> /tmp/weights.list; else echo "$f" >> /tmp/config.list; fi ;;
+	esac
+done < /tmp/allfiles_with_size.list
+
+# Initialize JSON array for metadata
+metadata_json="["
+first=true
+
+# emit_entry: Add a file entry to the metadata JSON and copy the file
+# Args: relative path, media type
+emit_entry() {
+	relpath="$1"; mt="$2"
+	# Copy file preserving directory structure
+	dir=$(dirname "$relpath")
+	mkdir -p "/out/files/$dir"
+	cp "$relpath" "/out/files/$relpath"
+	# Build file metadata annotation
+	fsize=$(stat -c%%s "$relpath")
+	filemeta="{\\\"name\\\":\\\"$relpath\\\",\\\"mode\\\":420,\\\"uid\\\":0,\\\"gid\\\":0,\\\"size\\\":$fsize,\\\"mtime\\\":\\\"1970-01-01T00:00:00Z\\\",\\\"typeflag\\\":0}"
+	# Append JSON entry with full annotations
+	if [ "$first" = true ]; then first=false; else metadata_json="$metadata_json,"; fi
+	metadata_json="$metadata_json{\"path\":\"out/files/$relpath\",\"mediaType\":\"$mt\",\"annotations\":{\"org.opencontainers.image.title\":\"$relpath\",\"org.cncf.model.filepath\":\"$relpath\",\"org.cncf.model.file.metadata+json\":\"$filemeta\",\"org.cncf.model.file.mediatype.untested\":\"true\"}}"
+}
+
+# Process each category with raw media types
+process_list() {
+	list="$1"; mt="$2"
+	[ ! -s "$list" ] && return 0
+	while IFS= read -r f; do
+		emit_entry "$f" "$mt"
+	done < "$list"
+}
+
+process_list /tmp/weights.list "application/vnd.cncf.model.weight.v1.raw"
+process_list /tmp/config.list  "application/vnd.cncf.model.weight.config.v1.raw"
+process_list /tmp/docs.list    "application/vnd.cncf.model.doc.v1.raw"
+process_list /tmp/code.list    "application/vnd.cncf.model.code.v1.raw"
+process_list /tmp/dataset.list "application/vnd.cncf.model.dataset.v1.raw"
+
+metadata_json="$metadata_json]"
+
+# Write metadata JSON
+printf '%%s' "$metadata_json" > /out/metadata.json
+`
+	return fmt.Sprintf(tmpl, largeFileThreshold)
+}
+
 // generateGenericScript builds the generic artifact OCI layout assembly script.
 //
 // This script performs simpler packaging than modelpack:
