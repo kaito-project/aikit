@@ -8,8 +8,8 @@ title: Inference API Specifications
 apiVersion: # required. only v1alpha1 is supported at the moment
 debug: # optional. if set to true, debug logs will be printed
 runtime: # optional. defaults to avx. can be "avx", "avx2", "avx512", "cuda"
-backends: # optional. list of additional backends. can be "llama-cpp" (default), "exllama2", "diffusers"
-models: # required. list of models to build
+backends: # optional. list of additional backends. can be "llama-cpp" (default), "diffusers", "vllm"
+models: # optional. list of models to build. omit for runner mode (see runners.md)
   - name: # required. name of the model
     source: # required. source of the model. can be a url or a local file
     sha256: # optional. sha256 hash of the model file
@@ -18,6 +18,10 @@ models: # required. list of models to build
         template: # required. template string
 config: # optional. list of config files
 ```
+
+:::tip
+When `backends` is specified without `models`, a **runner image** is created that downloads models at container startup. See [Runner Images](runners.md) for details.
+:::
 
 Example:
 

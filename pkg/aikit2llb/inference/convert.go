@@ -3,6 +3,7 @@ package inference
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
@@ -13,7 +14,7 @@ import (
 
 const (
 	distrolessBase = "ghcr.io/kaito-project/aikit/base:latest"
-	localAIVersion = "v3.10.1"
+	localAIVersion = "v3.12.1"
 	localAIRepo    = "ghcr.io/kaito-project/aikit/localai:"
 	cudaVersion    = "12-5"
 )
@@ -29,9 +30,17 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 	base := getBaseImage(c, platform)
 
 	var err error
-	state, merge, err = copyModels(c, base, state, *platform)
-	if err != nil {
-		return state, nil, err
+	if isRunnerMode(c) {
+		// Runner mode: skip model downloads, write config if present, install runner deps
+		state, merge = writeConfig(c, base, state, *platform)
+		state, merge = installRunnerDependencies(c, state, merge, *platform)
+		state, merge = installRunnerEntrypoint(c, state, merge)
+	} else {
+		// Standard mode: download models + write config
+		state, merge, err = copyModels(c, base, state, *platform)
+		if err != nil {
+			return state, nil, err
+		}
 	}
 
 	state, merge, err = addLocalAI(state, merge, *platform)
@@ -47,22 +56,44 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 	// install backend dependencies
 	merge = installBackends(c, *platform, state, merge)
 
+	// install GPU detection wrapper for CUDA images to work around
+	// LocalAI v3.12.1 bug where /usr/local/cuda-12 directory presence
+	// causes CUDA backend selection even without a GPU.
+	// See: https://github.com/mudler/LocalAI/pull/6149
+	if c.Runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
+		_, merge = installGPUDetectionWrapper(state, merge)
+	}
+
 	imageCfg := NewImageConfig(c, platform)
 	return merge, imageCfg, nil
 }
 
 // getBaseImage returns the base image given the InferenceConfig and platform.
 func getBaseImage(c *config.InferenceConfig, platform *specs.Platform) llb.State {
-	if len(c.Backends) > 0 {
-		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
-	}
 	if c.Runtime == utils.RuntimeAppleSilicon {
 		return llb.Image(utils.AppleSiliconBase, llb.Platform(*platform))
+	}
+	if len(c.Backends) > 0 {
+		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
 	}
 	return llb.Image(distrolessBase, llb.Platform(*platform))
 }
 
-// copyModels copies models to the image.
+// writeConfig writes the /config.yaml file to the image when c.Config is set.
+func writeConfig(c *config.InferenceConfig, base llb.State, s llb.State, platform specs.Platform) (llb.State, llb.State) {
+	savedState := s
+	if c.Config != "" {
+		s = s.File(
+			llb.Mkfile("/config.yaml", 0o644, []byte(c.Config)),
+			llb.WithCustomName(fmt.Sprintf("Creating config for platform %s/%s", platform.OS, platform.Architecture)),
+		)
+	}
+	diff := llb.Diff(savedState, s)
+	merge := llb.Merge([]llb.State{base, diff})
+	return s, merge
+}
+
+// copyModels copies models to the image and writes the config.
 func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, platform specs.Platform) (llb.State, llb.State, error) {
 	savedState := s
 	for _, model := range c.Models {
@@ -119,22 +150,53 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 	// running apt-get update twice due to nvidia repo
 	s = s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y ca-certificates && apt-get update"), llb.IgnoreCache).Root()
 
-	// default llama.cpp backend is being used
-	if len(c.Backends) == 0 {
+	// install cuda libraries for llama-cpp (default) and vllm backends
+	if len(c.Backends) == 0 || slices.Contains(c.Backends, utils.BackendLlamaCpp) || slices.Contains(c.Backends, utils.BackendVLLM) {
 		// install cuda libraries and pciutils for gpu detection
 		s = s.Run(utils.Shf("apt-get install -y --no-install-recommends pciutils libcublas-%[1]s cuda-cudart-%[1]s && apt-get clean", cudaVersion)).Root()
 		// TODO: clean up /var/lib/dpkg/status
 	}
 
-	// installing dev dependencies used for exllama
-	for b := range c.Backends {
-		if c.Backends[b] == utils.BackendExllamaV2 {
-			exllamaDeps := fmt.Sprintf("apt-get install -y --no-install-recommends cuda-cudart-dev-%[1]s cuda-crt-%[1]s libcusparse-dev-%[1]s libcublas-dev-%[1]s libcusolver-dev-%[1]s cuda-nvcc-%[1]s libcurand-dev-%[1]s && apt-get clean", cudaVersion)
+	diff := llb.Diff(savedState, s)
+	return s, llb.Merge([]llb.State{merge, diff})
+}
 
-			s = s.Run(utils.Sh(exllamaDeps)).Root()
-		}
-	}
+// gpuDetectionWrapper is a shell script that detects GPU presence at container
+// startup. If no NVIDIA GPU is found, it forces LocalAI to use the CPU backend
+// by setting LOCALAI_FORCE_META_BACKEND_CAPABILITY=default. This works around
+// a LocalAI v3.12.1 regression where the existence of /usr/local/cuda-12
+// (installed by CUDA runtime packages) causes LocalAI to select the CUDA
+// backend even when no GPU hardware is present.
+const gpuDetectionWrapper = `#!/bin/bash
+# Detect NVIDIA GPU and set backend capability accordingly.
+# If no GPU is found, force LocalAI to use CPU backends.
+# Respect any user-provided override.
+if [ -n "$LOCALAI_FORCE_META_BACKEND_CAPABILITY" ]; then
+  exec "$@"
+fi
+gpu_found=false
+if [ -e /dev/nvidiactl ]; then
+  gpu_found=true
+elif command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+  gpu_found=true
+elif command -v lspci >/dev/null 2>&1; then
+  if lspci -d 10de: 2>/dev/null | grep -qi 'nvidia\|3d controller\|vga'; then
+    gpu_found=true
+  fi
+fi
+if [ "$gpu_found" = "false" ]; then
+  export LOCALAI_FORCE_META_BACKEND_CAPABILITY=default
+fi
+exec "$@"
+`
 
+// installGPUDetectionWrapper writes the GPU detection entrypoint wrapper into the image.
+func installGPUDetectionWrapper(s llb.State, merge llb.State) (llb.State, llb.State) {
+	savedState := s
+	s = s.File(
+		llb.Mkfile("/usr/local/bin/gpu-detect-wrapper", 0o755, []byte(gpuDetectionWrapper)),
+		llb.WithCustomName("Installing GPU detection wrapper for CPU fallback"),
+	)
 	diff := llb.Diff(savedState, s)
 	return s, llb.Merge([]llb.State{merge, diff})
 }

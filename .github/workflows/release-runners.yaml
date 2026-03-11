@@ -1,28 +1,44 @@
-name: release
+name: release-runners
 
 on:
   push:
     tags:
       - v*
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  release:
+  release-runners:
     permissions:
-      contents: write
+      contents: read
       packages: write
       id-token: write
     runs-on: ubuntu-latest-16-cores
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: llama-cpp-cpu
+            file: runners/llama-cpp-cpu.yaml
+            platforms: linux/amd64,linux/arm64
+          - runner: llama-cpp-cuda
+            file: runners/llama-cpp-cuda.yaml
+            platforms: linux/amd64
+          - runner: diffusers-cuda
+            file: runners/diffusers-cuda.yaml
+            platforms: linux/amd64
+          - runner: vllm-cuda
+            file: runners/vllm-cuda.yaml
+            platforms: linux/amd64
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
         with:
           egress-policy: audit
           allowed-endpoints: >
-            api.github.com:443
             auth.docker.io:443
             fulcio.sigstore.dev:443
             ghcr.io:443
@@ -34,7 +50,15 @@ jobs:
             rekor.sigstore.dev:443
             storage.googleapis.com:443
             tuf-repo-cdn.sigstore.dev:443
-            get.helm.sh:443
+            *.blob.core.windows.net:443
+            *.azureedge.net:443
+            developer.download.nvidia.com:443
+            dl-cdn.alpinelinux.org:443
+            *.ubuntu.com:80
+            sum.golang.org:443
+            quay.io:443
+            pypi.org:443
+            files.pythonhosted.org:443
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -58,57 +82,40 @@ jobs:
       - id: docker_meta
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
-          images: ghcr.io/kaito-project/aikit/aikit
-          tags: type=semver,pattern={{raw}}
+          images: ghcr.io/kaito-project/aikit/runners/${{ matrix.runner }}
+          tags: |
+            type=semver,pattern={{raw}}
+            type=raw,value=latest
 
-      - name: Set LDFLAGS
+      - name: Build and push aikit frontend
         run: |
-          set -x
-          GIT_COMMIT=$(git rev-list --abbrev-commit --tags --max-count=1)
-          GIT_TAG=$(git describe --abbrev=0 --tags ${GIT_COMMIT} 2>/dev/null)
-          echo LDFLAGS="-X github.com/kaito-project/aikit/pkg/version.Version=${GIT_TAG}" >> $GITHUB_ENV
+          docker buildx build . \
+            --push --provenance=false --progress plain \
+            -t ghcr.io/kaito-project/aikit/aikit:${{ github.sha }}
 
       - name: Build and push
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         id: build-and-push
         with:
           push: true
-          tags: |
-            ${{ steps.docker_meta.outputs.tags }}
-            ghcr.io/kaito-project/aikit/aikit:latest
-          cache-from: type=gha,scope=aikit
-          cache-to: type=gha,scope=aikit,mode=max
+          tags: ${{ steps.docker_meta.outputs.tags }}
+          file: ${{ matrix.file }}
+          build-args: BUILDKIT_SYNTAX=ghcr.io/kaito-project/aikit/aikit:${{ github.sha }}
+          cache-from: type=gha,scope=runner-${{ matrix.runner }}
+          cache-to: type=gha,scope=runner-${{ matrix.runner }},mode=max
           sbom: true
           provenance: true
-          build-args: |
-            LDFLAGS=${{ env.LDFLAGS }}
-          platforms: linux/amd64,linux/arm64
-        env:
-          LDFLAGS: ${{ env.LDFLAGS }}
+          platforms: ${{ matrix.platforms }}
 
       - name: Sign the images with GitHub OIDC Token
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
-        run: cosign sign --yes "ghcr.io/kaito-project/aikit/aikit@${DIGEST}"
+        run: cosign sign --yes "ghcr.io/kaito-project/aikit/runners/${{ matrix.runner }}@${DIGEST}"
 
       - name: Verify image signature
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
         run: |
-          cosign verify ghcr.io/kaito-project/aikit/aikit@${DIGEST} \
+          cosign verify "ghcr.io/kaito-project/aikit/runners/${{ matrix.runner }}@${DIGEST}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity https://github.com/kaito-project/aikit/.github/workflows/release.yaml@$GITHUB_REF
-
-      - name: Create GitHub release
-        uses: marvinpinto/action-automatic-releases@919008cf3f741b179569b7a6fb4d8860689ab7f0 # v1.2.1
-        with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          prerelease: false
-
-      - name: Publish Helm chart
-        uses: stefanprodan/helm-gh-pages@0ad2bb377311d61ac04ad9eb6f252fb68e207260 # v1.7.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          charts_dir: charts
-          target_dir: charts
-          linting: off
+            --certificate-identity https://github.com/kaito-project/aikit/.github/workflows/release-runners.yaml@$GITHUB_REF

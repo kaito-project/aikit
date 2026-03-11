@@ -30,10 +30,6 @@ low_vram: true        # for devices with low VRAM
 Make sure to customize these values based on your model and GPU specs.
 :::
 
-:::note
-For `exllama2` backend, GPU acceleration is enabled by default and cannot be disabled.
-:::
-
 After building the model, you can run it with [`--gpus all`](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/docker-specialized.html#gpu-enumeration) flag to enable GPU support:
 
 ```bash
@@ -60,6 +56,43 @@ If GPU acceleration is working, you'll see output that is similar to following i
 ### Demo
 
 https://www.youtube.com/watch?v=yFh_Zfk34PE
+
+### vLLM Backend
+
+AIKit supports the [vLLM](https://docs.vllm.ai/) backend for high-throughput GPU inference with HuggingFace safetensors models. vLLM requires NVIDIA CUDA runtime and only supports amd64 architecture.
+
+Example aikitfile:
+
+```yaml
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
+apiVersion: v1alpha1
+debug: true
+runtime: cuda
+backends:
+  - vllm
+config: |
+  - name: Qwen2.5-0.5B-Instruct
+    backend: vllm
+    parameters:
+      model: Qwen/Qwen2.5-0.5B-Instruct
+    use_tokenizer_template: true
+```
+
+vLLM will download the model from HuggingFace at container startup. You can also embed models at build time using the `models` section with a `huggingface://` source.
+
+After building, run with GPU support:
+
+```bash
+docker run --rm --gpus all -p 8080:8080 my-model
+```
+
+Test with:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen2.5-0.5B-Instruct","messages":[{"role":"user","content":"Hello"}]}'
+```
 
 ## Apple Silicon (experimental)
 

@@ -26,7 +26,7 @@ AIKit offers three main capabilities:
 - ✨ OpenAI API compatible to use with any OpenAI API compatible client
 - 📸 [Multi-modal model support](https://kaito-project.github.io/aikit/docs/vision)
 - 🖼️ [Image generation support](https://kaito-project.github.io/aikit/docs/diffusion)
-- 🦙 Support for GGUF ([`llama`](https://github.com/ggerganov/llama.cpp)), GPTQ or EXL2 ([`exllama2`](https://github.com/turboderp/exllamav2)), and GGML ([`llama-ggml`](https://github.com/ggerganov/llama.cpp)) models
+- 🦙 Support for GGUF ([`llama`](https://github.com/ggerganov/llama.cpp)) and GGML ([`llama-ggml`](https://github.com/ggerganov/llama.cpp)) models
 - 🚢 [Kubernetes deployment ready](https://kaito-project.github.io/aikit/docs/kubernetes)
 - 📚 Supports multiple models with a single image
 - 🖥️ Supports [AMD64 and ARM64](https://kaito-project.github.io/aikit/docs/create-images#multi-platform-support) CPUs and [GPU-accelerated inferencing with NVIDIA GPUs](https://kaito-project.github.io/aikit/docs/gpu)

@@ -2,12 +2,15 @@
 package inference
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
@@ -151,26 +154,89 @@ func ParseHuggingFaceURL(source string) (string, string, error) {
 }
 
 // handleHuggingFace handles Hugging Face model downloads with branch support.
+// Supports both single-file downloads (huggingface://namespace/model/file) and
+// full repo downloads (huggingface://namespace/model) by enumerating repo files
+// via the HuggingFace API and downloading each with BuildKit's llb.HTTP.
 func handleHuggingFace(source string, s llb.State) (llb.State, error) {
-	// Translate the Hugging Face URL, extracting the branch if provided
+	// Try single-file download first (3+ parts)
 	hfURL, modelName, err := ParseHuggingFaceURL(source)
-	if err != nil {
-		return llb.State{}, err
+	if err == nil {
+		opts := []llb.HTTPOption{llb.Filename(modelName)}
+		m := llb.HTTP(hfURL, opts...)
+		modelPath := fmt.Sprintf("/models/%s", modelName)
+		s = s.File(
+			llb.Copy(m, modelName, modelPath, createCopyOptions()...),
+			llb.WithCustomName("Copying "+modelName+" from Hugging Face to "+modelPath),
+		)
+		return s, nil
 	}
 
-	// Perform the HTTP download
-	opts := []llb.HTTPOption{llb.Filename(modelName)}
-	m := llb.HTTP(hfURL, opts...)
+	// Fall back to full repo download (2 parts: namespace/model)
+	spec, err := ParseHuggingFaceSpec(source)
+	if err != nil {
+		return llb.State{}, fmt.Errorf("invalid Hugging Face URL format: %w", err)
+	}
 
-	// Determine the model path in the /models directory
-	modelPath := fmt.Sprintf("/models/%s", modelName)
+	files, err := listHuggingFaceRepoFiles(spec.Namespace, spec.Model, spec.Revision)
+	if err != nil {
+		return llb.State{}, fmt.Errorf("listing HuggingFace repo files: %w", err)
+	}
 
-	// Copy the downloaded file to the desired location
-	s = s.File(
-		llb.Copy(m, modelName, modelPath, createCopyOptions()...),
-		llb.WithCustomName("Copying "+modelName+" from Hugging Face to "+modelPath),
-	)
+	modelDir := fmt.Sprintf("/models/%s/%s", spec.Namespace, spec.Model)
+	for _, file := range files {
+		fileURL := fmt.Sprintf("https://huggingface.co/%s/%s/resolve/%s/%s", spec.Namespace, spec.Model, spec.Revision, file)
+		fileName := path.Base(file)
+		opts := []llb.HTTPOption{llb.Filename(fileName)}
+		m := llb.HTTP(fileURL, opts...)
+
+		destPath := fmt.Sprintf("%s/%s", modelDir, file)
+		s = s.File(
+			llb.Copy(m, fileName, destPath, createCopyOptions()...),
+			llb.WithCustomNamef("Copying %s from HuggingFace to %s", file, destPath),
+		)
+	}
 	return s, nil
+}
+
+// listHuggingFaceRepoFiles returns the list of files in a HuggingFace repo,
+// excluding non-essential files like .gitattributes and README.md.
+func listHuggingFaceRepoFiles(namespace, model, revision string) ([]string, error) {
+	apiURL := fmt.Sprintf("https://huggingface.co/api/models/%s/%s/revision/%s", namespace, model, revision)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(apiURL) //nolint:gosec
+	if err != nil {
+		return nil, fmt.Errorf("fetching repo info: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HuggingFace API returned status %d for %s/%s", resp.StatusCode, namespace, model)
+	}
+
+	var result struct {
+		Siblings []struct {
+			RFilename string `json:"rfilename"`
+		} `json:"siblings"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding HuggingFace API response: %w", err)
+	}
+
+	skipFiles := map[string]bool{
+		".gitattributes": true,
+		"README.md":      true,
+		"LICENSE":        true,
+	}
+
+	var files []string
+	for _, s := range result.Siblings {
+		if !skipFiles[s.RFilename] {
+			files = append(files, s.RFilename)
+		}
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no downloadable files found in %s/%s", namespace, model)
+	}
+	return files, nil
 }
 
 // handleLocal handles copying from local paths.

@@ -31,6 +31,7 @@ const sidebars = {
       collapsed: false,
       items: [
         'create-images',
+        'runners',
         'fine-tune',
         'packaging',
         'vision',
@@ -54,7 +55,6 @@ const sidebars = {
       collapsed: false,
       items: [
         'llama-cpp',
-        'exllama2',
         'diffusion',
       ],
     },

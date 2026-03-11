@@ -23,7 +23,7 @@ func TestNewFromBytes(t *testing.T) {
 apiVersion: v1alpha1
 runtime: cuda
 backends:
-- exllama2
+- diffusers
 models:
 - name: test
   source: foo
@@ -32,7 +32,7 @@ models:
 				APIVersion: utils.APIv1alpha1,
 				Runtime:    utils.RuntimeNVIDIA,
 				Backends: []string{
-					utils.BackendExllamaV2,
+					utils.BackendDiffusers,
 				},
 				Models: []Model{
 					{

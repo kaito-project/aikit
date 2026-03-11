@@ -42,7 +42,7 @@ func Test_validateConfig(t *testing.T) {
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Runtime:    "cuda",
-				Backends:   []string{"exllama2"},
+				Backends:   []string{"diffusers"},
 				Models: []config.Model{
 					{
 						Name:   "test",
@@ -67,20 +67,6 @@ func Test_validateConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "valid exllama2 backend with cpu runtime",
-			args: args{c: &config.InferenceConfig{
-				APIVersion: "v1alpha1",
-				Backends:   []string{"exllama2"},
-				Models: []config.Model{
-					{
-						Name:   "test",
-						Source: "foo",
-					},
-				},
-			}},
-			wantErr: false,
-		},
-		{
 			name: "diffusers backend requires cuda runtime",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
@@ -95,7 +81,36 @@ func Test_validateConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "invalid backend combination",
+			name: "valid vllm backend with cuda runtime",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    "cuda",
+				Backends:   []string{"vllm"},
+				Models: []config.Model{
+					{
+						Name:   "test",
+						Source: "foo",
+					},
+				},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "vllm backend requires cuda runtime",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{"vllm"},
+				Models: []config.Model{
+					{
+						Name:   "test",
+						Source: "foo",
+					},
+				},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "invalid backend name",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Runtime:    "cuda",
@@ -106,6 +121,50 @@ func Test_validateConfig(t *testing.T) {
 						Source: "foo",
 					},
 				},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "valid runner mode - backends with no models (llama-cpp cpu)",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{"llama-cpp"},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "valid runner mode - backends with no models (llama-cpp cuda)",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    "cuda",
+				Backends:   []string{"llama-cpp"},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "valid runner mode - diffusers with cuda",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    "cuda",
+				Backends:   []string{"diffusers"},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "valid runner mode - vllm with cuda",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    "cuda",
+				Backends:   []string{"vllm"},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "runner mode not supported on apple silicon",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    "applesilicon",
+				Backends:   []string{"llama-cpp"},
 			}},
 			wantErr: true,
 		},
@@ -138,46 +197,12 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "exllama2 backend with arm64 platform - should fail",
-			config: &config.InferenceConfig{
-				APIVersion: "v1alpha1",
-				Backends:   []string{"exllama2"},
-			},
-			targetPlatforms: []*specs.Platform{
-				{Architecture: "arm64", OS: "linux"},
-			},
-			wantErr: true,
-		},
-		{
 			name: "diffusers backend with arm64 platform - should fail",
 			config: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Backends:   []string{"diffusers"},
 			},
 			targetPlatforms: []*specs.Platform{
-				{Architecture: "arm64", OS: "linux"},
-			},
-			wantErr: true,
-		},
-		{
-			name: "exllama2 backend with amd64 platform - should pass",
-			config: &config.InferenceConfig{
-				APIVersion: "v1alpha1",
-				Backends:   []string{"exllama2"},
-			},
-			targetPlatforms: []*specs.Platform{
-				{Architecture: "amd64", OS: "linux"},
-			},
-			wantErr: false,
-		},
-		{
-			name: "mixed platforms with exllama2 backend - should fail",
-			config: &config.InferenceConfig{
-				APIVersion: "v1alpha1",
-				Backends:   []string{"exllama2"},
-			},
-			targetPlatforms: []*specs.Platform{
-				{Architecture: "amd64", OS: "linux"},
 				{Architecture: "arm64", OS: "linux"},
 			},
 			wantErr: true,
@@ -204,6 +229,17 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 				{Architecture: "arm64", OS: "linux"},
 			},
 			wantErr: false,
+		},
+		{
+			name: "vllm backend with arm64 platform - should fail",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{"vllm"},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: "arm64", OS: "linux"},
+			},
+			wantErr: true,
 		},
 	}
 	for _, tt := range tests {

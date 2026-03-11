@@ -26,15 +26,6 @@ func TestGetBackendTag(t *testing.T) {
 			want: fmt.Sprintf("%s-cpu-llama-cpp", localAIVersion),
 		},
 		{
-			name:    "CPU exllama2",
-			backend: utils.BackendExllamaV2,
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: fmt.Sprintf("%s-cpu-exllama2", localAIVersion),
-		},
-		{
 			name:    "CUDA llama-cpp",
 			backend: utils.BackendLlamaCpp,
 			runtime: utils.RuntimeNVIDIA,
@@ -42,15 +33,6 @@ func TestGetBackendTag(t *testing.T) {
 				Architecture: utils.PlatformAMD64,
 			},
 			want: fmt.Sprintf("%s-gpu-nvidia-cuda-12-llama-cpp", localAIVersion),
-		},
-		{
-			name:    "CUDA exllama2",
-			backend: utils.BackendExllamaV2,
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: fmt.Sprintf("%s-gpu-nvidia-cuda-12-exllama2", localAIVersion),
 		},
 		{
 			name:    "CUDA diffusers",
@@ -62,13 +44,13 @@ func TestGetBackendTag(t *testing.T) {
 			want: fmt.Sprintf("%s-gpu-nvidia-cuda-12-diffusers", localAIVersion),
 		},
 		{
-			name:    "Apple Silicon always uses CPU llama-cpp",
-			backend: utils.BackendExllamaV2,
-			runtime: utils.RuntimeAppleSilicon,
+			name:    "CUDA vllm",
+			backend: utils.BackendVLLM,
+			runtime: utils.RuntimeNVIDIA,
 			platform: specs.Platform{
-				Architecture: utils.PlatformARM64,
+				Architecture: utils.PlatformAMD64,
 			},
-			want: fmt.Sprintf("%s-cpu-llama-cpp", localAIVersion),
+			want: fmt.Sprintf("%s-gpu-nvidia-cuda-12-vllm", localAIVersion),
 		},
 		{
 			name:    "Apple Silicon llama-cpp",
@@ -77,7 +59,7 @@ func TestGetBackendTag(t *testing.T) {
 			platform: specs.Platform{
 				Architecture: utils.PlatformARM64,
 			},
-			want: fmt.Sprintf("%s-cpu-llama-cpp", localAIVersion),
+			want: fmt.Sprintf("%s-gpu-vulkan-llama-cpp", localAIVersion),
 		},
 		{
 			name:    "Unsupported backend falls back to CPU llama-cpp",
@@ -96,15 +78,6 @@ func TestGetBackendTag(t *testing.T) {
 				Architecture: utils.PlatformAMD64,
 			},
 			want: fmt.Sprintf("%s-gpu-nvidia-cuda-12-llama-cpp", localAIVersion),
-		},
-		{
-			name:    "Unknown backend falls back to CPU llama-cpp",
-			backend: "unknown",
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: fmt.Sprintf("%s-cpu-llama-cpp", localAIVersion),
 		},
 		{
 			name:    "Empty backend name defaults to CPU llama-cpp",
@@ -187,14 +160,14 @@ func TestGetBackendAlias(t *testing.T) {
 			want:    "diffusers",
 		},
 		{
-			name:    "exllama2 backend",
-			backend: utils.BackendExllamaV2,
-			want:    "exllama2",
-		},
-		{
 			name:    "llama-cpp backend",
 			backend: utils.BackendLlamaCpp,
 			want:    "llama-cpp",
+		},
+		{
+			name:    "vllm backend",
+			backend: utils.BackendVLLM,
+			want:    "vllm",
 		},
 		{
 			name:    "unknown backend defaults to llama-cpp",
@@ -236,15 +209,6 @@ func TestGetBackendName(t *testing.T) {
 			want: "cpu-llama-cpp",
 		},
 		{
-			name:    "CPU exllama2",
-			backend: utils.BackendExllamaV2,
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: "cpu-exllama2",
-		},
-		{
 			name:    "CUDA llama-cpp",
 			backend: utils.BackendLlamaCpp,
 			runtime: utils.RuntimeNVIDIA,
@@ -252,15 +216,6 @@ func TestGetBackendName(t *testing.T) {
 				Architecture: utils.PlatformAMD64,
 			},
 			want: "cuda12-llama-cpp",
-		},
-		{
-			name:    "CUDA exllama2",
-			backend: utils.BackendExllamaV2,
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: "cuda12-exllama2",
 		},
 		{
 			name:    "CUDA diffusers",
@@ -272,13 +227,13 @@ func TestGetBackendName(t *testing.T) {
 			want: "cuda12-diffusers",
 		},
 		{
-			name:    "Apple Silicon always uses cpu-llama-cpp regardless of backend",
-			backend: utils.BackendExllamaV2,
-			runtime: utils.RuntimeAppleSilicon,
+			name:    "CUDA vllm",
+			backend: utils.BackendVLLM,
+			runtime: utils.RuntimeNVIDIA,
 			platform: specs.Platform{
-				Architecture: utils.PlatformARM64,
+				Architecture: utils.PlatformAMD64,
 			},
-			want: "cpu-llama-cpp",
+			want: "cuda12-vllm",
 		},
 		{
 			name:    "Apple Silicon llama-cpp",
@@ -287,7 +242,7 @@ func TestGetBackendName(t *testing.T) {
 			platform: specs.Platform{
 				Architecture: utils.PlatformARM64,
 			},
-			want: "cpu-llama-cpp",
+			want: "gpu-vulkan-llama-cpp",
 		},
 		{
 			name:    "Unknown backend on CPU defaults to cpu-llama-cpp",
@@ -306,24 +261,6 @@ func TestGetBackendName(t *testing.T) {
 				Architecture: utils.PlatformAMD64,
 			},
 			want: "cuda12-llama-cpp",
-		},
-		{
-			name:    "ARM64 with CPU runtime - exllama2 returns cpu-exllama2",
-			backend: utils.BackendExllamaV2,
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformARM64,
-			},
-			want: "cpu-exllama2",
-		},
-		{
-			name:    "ARM64 with NVIDIA runtime (edge case) - exllama2 returns cpu-exllama2",
-			backend: utils.BackendExllamaV2,
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformARM64,
-			},
-			want: "cpu-exllama2",
 		},
 	}
 

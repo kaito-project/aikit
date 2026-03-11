@@ -4,9 +4,9 @@ const (
 	RuntimeNVIDIA       = "cuda"
 	RuntimeAppleSilicon = "applesilicon" // experimental apple silicon runtime with vulkan arm64 support
 
-	BackendExllamaV2 = "exllama2"
 	BackendDiffusers = "diffusers"
 	BackendLlamaCpp  = "llama-cpp"
+	BackendVLLM      = "vllm"
 
 	BackendOCIRegistry = "quay.io/go-skynet/local-ai-backends"
 

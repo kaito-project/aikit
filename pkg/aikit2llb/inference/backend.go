@@ -14,6 +14,7 @@ const (
 	defaultBackendName    = "llama-cpp"
 	cpuLlamaCppBackend    = "cpu-llama-cpp"
 	cuda12LlamaCppBackend = "cuda12-llama-cpp"
+	vulkanLlamaCppBackend = "gpu-vulkan-llama-cpp"
 )
 
 // getBackendTag returns the appropriate OCI tag for the given backend and runtime.
@@ -22,9 +23,9 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 
 	// Map backend names to their OCI tag equivalents
 	backendMap := map[string]string{
-		utils.BackendExllamaV2: "exllama2",
 		utils.BackendDiffusers: "diffusers",
 		utils.BackendLlamaCpp:  "llama-cpp",
+		utils.BackendVLLM:      "vllm",
 	}
 
 	backendName, exists := backendMap[backend]
@@ -33,18 +34,18 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 		backendName = defaultBackendName
 	}
 
-	// Handle Apple Silicon - always use CPU llama-cpp
+	// Handle Apple Silicon - use Vulkan llama-cpp
 	if runtime == utils.RuntimeAppleSilicon {
-		return fmt.Sprintf("%s-cpu-llama-cpp", baseTag)
+		return fmt.Sprintf("%s-%s", baseTag, vulkanLlamaCppBackend)
 	}
 
 	// Handle CUDA runtime
 	if runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
 		switch backendName {
-		case "exllama2":
-			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-exllama2", baseTag)
 		case "diffusers":
 			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-diffusers", baseTag)
+		case "vllm":
+			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-vllm", baseTag)
 		case defaultBackendName:
 			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-llama-cpp", baseTag)
 		default:
@@ -55,8 +56,6 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 
 	// Handle CPU runtime (default)
 	switch backendName {
-	case "exllama2":
-		return fmt.Sprintf("%s-cpu-exllama2", baseTag)
 	case "llama-cpp":
 		return fmt.Sprintf("%s-cpu-llama-cpp", baseTag)
 	default:
@@ -70,8 +69,8 @@ func getBackendAlias(backend string) string {
 	// Map backend names to their aliases
 	aliasMap := map[string]string{
 		utils.BackendDiffusers: "diffusers",
-		utils.BackendExllamaV2: "exllama2",
 		utils.BackendLlamaCpp:  "llama-cpp",
+		utils.BackendVLLM:      "vllm",
 	}
 
 	if alias, exists := aliasMap[backend]; exists {
@@ -83,18 +82,18 @@ func getBackendAlias(backend string) string {
 
 // getBackendName returns the full backend directory name (used in metadata.json).
 func getBackendName(backend, runtime string, platform specs.Platform) string {
-	// Handle Apple Silicon - always use cpu-llama-cpp
+	// Handle Apple Silicon - use Vulkan llama-cpp
 	if runtime == utils.RuntimeAppleSilicon {
-		return cpuLlamaCppBackend
+		return vulkanLlamaCppBackend
 	}
 
 	// Handle CUDA runtime
 	if runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
 		switch backend {
-		case utils.BackendExllamaV2:
-			return "cuda12-exllama2"
 		case utils.BackendDiffusers:
 			return "cuda12-diffusers"
+		case utils.BackendVLLM:
+			return "cuda12-vllm"
 		case utils.BackendLlamaCpp:
 			return cuda12LlamaCppBackend
 		default:
@@ -104,15 +103,7 @@ func getBackendName(backend, runtime string, platform specs.Platform) string {
 	}
 
 	// Handle CPU runtime (default)
-	switch backend {
-	case utils.BackendExllamaV2:
-		return "cpu-exllama2"
-	case utils.BackendLlamaCpp:
-		return cpuLlamaCppBackend
-	default:
-		// For unsupported backends, fallback to llama-cpp
-		return cpuLlamaCppBackend
-	}
+	return cpuLlamaCppBackend
 }
 
 // installBackend downloads and installs a backend from OCI registry.
@@ -120,21 +111,16 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 	tag := getBackendTag(backend, c.Runtime, platform)
 
 	// Install dependencies for Python-based backends
-	switch backend {
-	case utils.BackendExllamaV2:
-		merge = installExllamaDependencies(s, merge)
-	case utils.BackendDiffusers:
+	if backend == utils.BackendDiffusers {
 		merge = installDiffusersDependencies(s, merge)
 	}
-
-	// Use Apple Silicon specific registry for arm64 platforms
-	var ociImage string
-	if runtime := c.Runtime; runtime == utils.RuntimeAppleSilicon && platform.Architecture == utils.PlatformARM64 {
-		localAIVersion := "v3.10.1" // temp pin for now
-		ociImage = fmt.Sprintf("sertacacr.azurecr.io/llama-cpp:%s-vulkan", localAIVersion)
-	} else {
-		ociImage = fmt.Sprintf("%s:%s", utils.BackendOCIRegistry, tag)
+	if backend == utils.BackendVLLM {
+		merge = installVLLMDependencies(s, merge)
 	}
+	}
+
+	// Build the OCI image reference
+	ociImage := fmt.Sprintf("%s:%s", utils.BackendOCIRegistry, tag)
 
 	// Create the backends directory
 	savedState := s
@@ -166,6 +152,19 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 		llb.Mkfile(fmt.Sprintf("%s/metadata.json", backendDir), 0o644, []byte(metadataContent)),
 		llb.WithCustomName(fmt.Sprintf("Creating metadata.json for backend %s", backendName)),
 	)
+
+	// Apply workarounds for the pre-built vLLM backend image.
+	if backend == utils.BackendVLLM {
+		// Remove broken flash_attn package (PyTorch ABI incompatibility).
+		// Patch backend.py to use the current vLLM AsyncLLM API
+		// (get_model_config() was replaced by the model_config property).
+		s = s.Run(utils.Shf(
+			"rm -rf %[1]s/venv/lib/python*/site-packages/flash_attn* && "+
+				"sed -i 's/await self.llm.get_model_config()/self.llm.model_config/' %[1]s/backend.py",
+			backendDir),
+			llb.WithCustomNamef("Patching vLLM backend %s for compatibility", backendName),
+		).Root()
+	}
 
 	diff := llb.Diff(savedState, s)
 	return llb.Merge([]llb.State{merge, diff})

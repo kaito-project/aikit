@@ -42,7 +42,7 @@ jobs:
             arch: arm64
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
         with:
           egress-policy: audit
           allowed-endpoints: >
@@ -72,7 +72,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       # need containerd image store for testing local images
-      - uses: crazy-max/ghaction-setup-docker@e43656e248c0bd0647d3f5c195d116aacf6fcaf4 # v4.7.0
+      - uses: crazy-max/ghaction-setup-docker@1a6edb0ba9ac496f6850236981f15d8f9a82254d # v5.0.0
         with:
           version: version=v27.5.1
           daemon-config: |
@@ -82,8 +82,8 @@ jobs:
                 "containerd-snapshotter": true
               }
             }
-      - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3.1.0
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
+      - uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
         if: ${{ matrix.arch == 'arm64' }}
 
       - name: build aikit
@@ -129,13 +129,43 @@ jobs:
             exit 1
           fi
 
+      - name: run tool calling test
+        run: |
+          result=$(curl --fail --retry 10 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
+            "model": "llama-3.2-1b-instruct",
+            "messages": [{"role": "user", "content": "What is the weather in Paris?"}],
+            "tools": [{
+              "type": "function",
+              "function": {
+                "name": "get_weather",
+                "description": "Get the current weather for a location",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "location": {"type": "string", "description": "The city name"}
+                  },
+                  "required": ["location"]
+                }
+              }
+            }]
+          }')
+          echo "$result"
+
+          tool_calls=$(echo "$result" | jq -r '.choices[0].message.tool_calls')
+          if [ "$tool_calls" = "null" ] || [ -z "$tool_calls" ]; then
+            echo "ERROR: No tool_calls in response"
+            exit 1
+          fi
+
+          echo "Tool calling test passed"
+
       - name: save logs
         if: always()
         run: docker logs testmodel > /tmp/docker-${{ matrix.backend }}-${{ matrix.arch }}.log
 
       - name: publish test artifacts
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: test-${{ matrix.arch }}-${{ matrix.backend }}
           path: |
@@ -153,7 +183,7 @@ jobs:
           - hf
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
         with:
           egress-policy: audit
           allowed-endpoints: >
@@ -185,7 +215,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       # need containerd image store for testing local images
-      - uses: crazy-max/ghaction-setup-docker@e43656e248c0bd0647d3f5c195d116aacf6fcaf4 # v4.7.0
+      - uses: crazy-max/ghaction-setup-docker@1a6edb0ba9ac496f6850236981f15d8f9a82254d # v5.0.0
         with:
           version: version=v27.5.1
           daemon-config: |
@@ -195,7 +225,7 @@ jobs:
                 "containerd-snapshotter": true
               }
             }
-      - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3.1.0
+      - uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
 
       - name: build aikit
         run: |
@@ -243,7 +273,7 @@ jobs:
 
       - name: publish test artifacts
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: test-${{ matrix.protocol }}
           path: |

@@ -11,21 +11,20 @@ on:
         options:
           - all
           - llama-cuda
-          - exllama2-gptq
-          - exllama2-exl2
           - diffusers
+          - vllm
 
 permissions: read-all
 
 jobs:
   test:
-    runs-on: self-hosted
+    runs-on: [self-hosted, gpu]
     timeout-minutes: 240
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix:
-        backend: ${{ inputs.backend == 'all' && fromJson('["llama-cuda", "exllama2-gptq", "exllama2-exl2", "diffusers"]') || fromJson(format('["{0}"]', inputs.backend)) }}
+        backend: ${{ inputs.backend == 'all' && fromJson('["llama-cuda", "diffusers", "vllm"]') || fromJson(format('["{0}"]', inputs.backend)) }}
     steps:
       - name: cleanup workspace
         run: |
@@ -68,20 +67,6 @@ jobs:
             exit 1
           fi
 
-      - name: run test (exl2/gptq)
-        if: matrix.backend == 'exllama2-gptq' || matrix.backend == 'exllama2-exl2'
-        run: |
-          result=$(curl --fail --retry 10 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
-            "model": "llama-2-7b-chat",
-            "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
-          }')
-          echo $result
-
-          choices=$(echo "$result" | jq '.choices')
-          if [ -z "$choices" ]; then
-            exit 1
-          fi
-
       - name: run test (diffusers)
         if: matrix.backend == 'diffusers'
         run: |
@@ -101,6 +86,20 @@ jobs:
         if: matrix.backend == 'diffusers'
         run: docker cp testmodel:/tmp/generated/content/images /tmp
 
+      - name: run test (vllm)
+        if: matrix.backend == 'vllm'
+        run: |
+          result=$(curl --fail --retry 30 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
+            "model": "Qwen2.5-0.5B-Instruct",
+            "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
+          }')
+          echo $result
+
+          choices=$(echo "$result" | jq '.choices')
+          if [ -z "$choices" ]; then
+            exit 1
+          fi
+
       - name: save logs
         if: always()
         run: docker logs testmodel > /tmp/docker-${{ matrix.backend }}.log
@@ -113,7 +112,7 @@ jobs:
 
       - name: publish test artifacts
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: test-${{ matrix.backend }}
           path: |
