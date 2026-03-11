@@ -52,7 +52,7 @@ func Test_generateModelpackMetadataScript_UsesArtifactRootPaths(t *testing.T) {
 	checks := []string{
 		"mkdir -p /out/files",
 		"cp \"$relpath\" \"/out/files/$relpath\"",
-		"\"path\":\"files/$relpath\"",
+		"\\\"path\\\":\\\"files/$relpath\\\"",
 		"printf '%s' \"$metadata_json\" > /out/metadata.json",
 	}
 	for _, c := range checks {
@@ -61,7 +61,7 @@ func Test_generateModelpackMetadataScript_UsesArtifactRootPaths(t *testing.T) {
 		}
 	}
 
-	if strings.Contains(script, "\"path\":\"out/files/$relpath\"") {
+	if strings.Contains(script, "\\\"path\\\":\\\"out/files/$relpath\\\"") {
 		t.Fatalf("unexpected pre-copy artifact path in script: %s", script)
 	}
 }
