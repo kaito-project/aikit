@@ -46,6 +46,26 @@ func Test_generateHFDownloadScript_WithExclude(t *testing.T) {
 	}
 }
 
+func Test_generateModelpackMetadataScript_UsesArtifactRootPaths(t *testing.T) {
+	script := generateModelpackMetadataScript(packModeRaw)
+
+	checks := []string{
+		"mkdir -p /out/files",
+		"cp \"$relpath\" \"/out/files/$relpath\"",
+		"\"path\":\"files/$relpath\"",
+		"printf '%s' \"$metadata_json\" > /out/metadata.json",
+	}
+	for _, c := range checks {
+		if !strings.Contains(script, c) {
+			t.Fatalf("expected script to contain %q; got %s", c, script)
+		}
+	}
+
+	if strings.Contains(script, "\"path\":\"out/files/$relpath\"") {
+		t.Fatalf("unexpected pre-copy artifact path in script: %s", script)
+	}
+}
+
 func Test_parseExcludePatterns(t *testing.T) {
 	tests := []struct {
 		name     string

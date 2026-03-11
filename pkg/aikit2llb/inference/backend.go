@@ -117,7 +117,6 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 	if backend == utils.BackendVLLM {
 		merge = installVLLMDependencies(s, merge)
 	}
-	}
 
 	// Build the OCI image reference
 	ociImage := fmt.Sprintf("%s:%s", utils.BackendOCIRegistry, tag)

@@ -142,8 +142,9 @@ func BuildModelpack(ctx context.Context, c client.Client) (*client.Result, error
 
 // buildModelpackArtifact implements the artifact output mode for modelpack builds.
 // It runs a metadata script that categorizes files and writes them to /out/files/
-// along with /out/metadata.json describing each layer. The metadata is then read
-// from the solved result and attached to the client.Result as artifact metadata.
+// along with /out/metadata.json describing each layer. That /out tree is then
+// copied into the solved result root, where metadata.json is read back and
+// attached to the client.Result as artifact metadata.
 func buildModelpackArtifact(ctx context.Context, c client.Client, cfg *buildConfig, modelState llb.State) (*client.Result, error) {
 	script := generateModelpackMetadataScript(cfg.packMode)
 
@@ -165,7 +166,7 @@ func buildModelpackArtifact(ctx context.Context, c client.Client, cfg *buildConf
 	}
 
 	metadataBytes, err := ref.ReadFile(ctx, client.ReadRequest{
-		Filename: "out/metadata.json",
+		Filename: "metadata.json",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to read metadata.json from artifact result: %w", err)

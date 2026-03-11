@@ -229,7 +229,7 @@ printf '{ "imageLayoutVersion": "1.0.0" }' > /layout/oci-layout
 //  1. Categorizes files into weights, config, docs, code, and dataset (same logic as generateModelpackScript)
 //  2. Copies all source files to /out/files/ preserving relative paths
 //  3. Creates /out/metadata.json with an array of layer descriptors containing
-//     the relative path under /out/, the media type, and annotations
+//     the relative path under the copied artifact root, the media type, and annotations
 //
 // Only raw pack mode is supported in artifact mode (each file is its own layer).
 //
@@ -297,7 +297,7 @@ emit_entry() {
 	filemeta="{\\\"name\\\":\\\"$relpath\\\",\\\"mode\\\":420,\\\"uid\\\":0,\\\"gid\\\":0,\\\"size\\\":$fsize,\\\"mtime\\\":\\\"1970-01-01T00:00:00Z\\\",\\\"typeflag\\\":0}"
 	# Append JSON entry with full annotations
 	if [ "$first" = true ]; then first=false; else metadata_json="$metadata_json,"; fi
-	metadata_json="$metadata_json{\"path\":\"out/files/$relpath\",\"mediaType\":\"$mt\",\"annotations\":{\"org.opencontainers.image.title\":\"$relpath\",\"org.cncf.model.filepath\":\"$relpath\",\"org.cncf.model.file.metadata+json\":\"$filemeta\",\"org.cncf.model.file.mediatype.untested\":\"true\"}}"
+	metadata_json="$metadata_json{\"path\":\"files/$relpath\",\"mediaType\":\"$mt\",\"annotations\":{\"org.opencontainers.image.title\":\"$relpath\",\"org.cncf.model.filepath\":\"$relpath\",\"org.cncf.model.file.metadata+json\":\"$filemeta\",\"org.cncf.model.file.mediatype.untested\":\"true\"}}"
 }
 
 # Process each category with raw media types
