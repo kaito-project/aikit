@@ -17,9 +17,35 @@ const (
 	vulkanLlamaCppBackend = "gpu-vulkan-llama-cpp"
 )
 
+// getBackendVersion returns the backend OCI tag version to use for the
+// requested runtime. Keep non-llama and Apple Silicon backends pinned to the
+// legacy tag until matching v4 artifacts are mirrored upstream.
+func getBackendVersion(backend, runtime string, platform specs.Platform) string {
+	if runtime == utils.RuntimeAppleSilicon {
+		return localAILegacyBackendVersion
+	}
+
+	backendMap := map[string]string{
+		utils.BackendDiffusers: "diffusers",
+		utils.BackendLlamaCpp:  defaultBackendName,
+		utils.BackendVLLM:      "vllm",
+	}
+
+	backendName, exists := backendMap[backend]
+	if !exists {
+		backendName = defaultBackendName
+	}
+
+	if backendName == defaultBackendName {
+		return localAILlamaCppBackendVersion
+	}
+
+	return localAILegacyBackendVersion
+}
+
 // getBackendTag returns the appropriate OCI tag for the given backend and runtime.
 func getBackendTag(backend, runtime string, platform specs.Platform) string {
-	baseTag := localAIVersion
+	baseTag := getBackendVersion(backend, runtime, platform)
 
 	// Map backend names to their OCI tag equivalents
 	backendMap := map[string]string{
