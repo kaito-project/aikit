@@ -157,7 +157,7 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 
 // addLocalAI adds the LocalAI binary to the image.
 func addLocalAI(c *config.InferenceConfig, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State, error) {
-	artifactVersion := getLocalAIArtifactVersion(c)
+	artifactVersion := getLocalAIArtifactVersion(c, platform)
 
 	// Map architectures to OCI artifact references & internal artifact filenames
 	artifactRefs := map[string]struct {

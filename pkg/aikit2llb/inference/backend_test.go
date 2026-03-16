@@ -27,6 +27,24 @@ func TestGetBackendTag(t *testing.T) {
 			want: fmt.Sprintf("%s-cpu-llama-cpp", localAILlamaCppBackendVersion),
 		},
 		{
+			name:    "CPU diffusers falls back to v4 CPU llama-cpp",
+			backend: utils.BackendDiffusers,
+			runtime: "",
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: fmt.Sprintf("%s-cpu-llama-cpp", localAILlamaCppBackendVersion),
+		},
+		{
+			name:    "CPU vllm falls back to v4 CPU llama-cpp",
+			backend: utils.BackendVLLM,
+			runtime: "",
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: fmt.Sprintf("%s-cpu-llama-cpp", localAILlamaCppBackendVersion),
+		},
+		{
 			name:    "CUDA llama-cpp",
 			backend: utils.BackendLlamaCpp,
 			runtime: utils.RuntimeNVIDIA,
@@ -112,40 +130,71 @@ func TestGetBackendTag(t *testing.T) {
 
 func TestGetBackendVersion(t *testing.T) {
 	tests := []struct {
-		name    string
-		backend string
-		runtime string
-		want    string
+		name     string
+		backend  string
+		runtime  string
+		platform specs.Platform
+		want     string
 	}{
 		{
 			name:    "llama-cpp defaults to v4 backend tags",
 			backend: utils.BackendLlamaCpp,
 			runtime: "",
-			want:    localAILlamaCppBackendVersion,
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: localAILlamaCppBackendVersion,
+		},
+		{
+			name:    "CPU diffusers falls back to v4 backend tags",
+			backend: utils.BackendDiffusers,
+			runtime: "",
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: localAILlamaCppBackendVersion,
+		},
+		{
+			name:    "CPU vllm falls back to v4 backend tags",
+			backend: utils.BackendVLLM,
+			runtime: "",
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: localAILlamaCppBackendVersion,
 		},
 		{
 			name:    "diffusers stays on legacy backend tags",
 			backend: utils.BackendDiffusers,
 			runtime: utils.RuntimeNVIDIA,
-			want:    localAILegacyBackendVersion,
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: localAILegacyBackendVersion,
 		},
 		{
 			name:    "vllm stays on legacy backend tags",
 			backend: utils.BackendVLLM,
 			runtime: utils.RuntimeNVIDIA,
-			want:    localAILegacyBackendVersion,
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: localAILegacyBackendVersion,
 		},
 		{
 			name:    "apple silicon stays on legacy backend tags",
 			backend: utils.BackendLlamaCpp,
 			runtime: utils.RuntimeAppleSilicon,
-			want:    localAILegacyBackendVersion,
+			platform: specs.Platform{
+				Architecture: utils.PlatformARM64,
+			},
+			want: localAILegacyBackendVersion,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := getBackendVersion(tt.backend, tt.runtime)
+			got := getBackendVersion(tt.backend, tt.runtime, tt.platform)
 			if got != tt.want {
 				t.Errorf("getBackendVersion() = %v, want %v", got, tt.want)
 			}
@@ -155,14 +204,18 @@ func TestGetBackendVersion(t *testing.T) {
 
 func TestGetLocalAIArtifactVersion(t *testing.T) {
 	tests := []struct {
-		name   string
-		config *config.InferenceConfig
-		want   string
+		name     string
+		config   *config.InferenceConfig
+		platform specs.Platform
+		want     string
 	}{
 		{
 			name: "default llama-cpp uses current LocalAI binary",
 			config: &config.InferenceConfig{
 				Runtime: "",
+			},
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
 			},
 			want: localAIBinaryVersion,
 		},
@@ -172,6 +225,9 @@ func TestGetLocalAIArtifactVersion(t *testing.T) {
 				Runtime:  utils.RuntimeNVIDIA,
 				Backends: []string{utils.BackendVLLM},
 			},
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
 			want: localAILegacyBackendVersion,
 		},
 		{
@@ -180,12 +236,40 @@ func TestGetLocalAIArtifactVersion(t *testing.T) {
 				Runtime:  utils.RuntimeNVIDIA,
 				Backends: []string{utils.BackendDiffusers},
 			},
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
 			want: localAILegacyBackendVersion,
+		},
+		{
+			name: "CPU diffusers falls back to current LocalAI binary",
+			config: &config.InferenceConfig{
+				Runtime:  "",
+				Backends: []string{utils.BackendDiffusers},
+			},
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: localAIBinaryVersion,
+		},
+		{
+			name: "CPU vllm falls back to current LocalAI binary",
+			config: &config.InferenceConfig{
+				Runtime:  "",
+				Backends: []string{utils.BackendVLLM},
+			},
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: localAIBinaryVersion,
 		},
 		{
 			name: "apple silicon stays on legacy LocalAI binary",
 			config: &config.InferenceConfig{
 				Runtime: utils.RuntimeAppleSilicon,
+			},
+			platform: specs.Platform{
+				Architecture: utils.PlatformARM64,
 			},
 			want: localAILegacyBackendVersion,
 		},
@@ -195,13 +279,16 @@ func TestGetLocalAIArtifactVersion(t *testing.T) {
 				Runtime:  utils.RuntimeNVIDIA,
 				Backends: []string{utils.BackendLlamaCpp, utils.BackendVLLM},
 			},
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
 			want: localAILegacyBackendVersion,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := getLocalAIArtifactVersion(tt.config)
+			got := getLocalAIArtifactVersion(tt.config, tt.platform)
 			if got != tt.want {
 				t.Errorf("getLocalAIArtifactVersion() = %v, want %v", got, tt.want)
 			}
