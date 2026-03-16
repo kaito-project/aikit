@@ -17,22 +17,69 @@ const (
 	vulkanLlamaCppBackend = "gpu-vulkan-llama-cpp"
 )
 
+func normalizeBackend(backend string) string {
+	switch backend {
+	case utils.BackendDiffusers, utils.BackendLlamaCpp, utils.BackendVLLM:
+		return backend
+	default:
+		return defaultBackendName
+	}
+}
+
+// getEffectiveBackend resolves the backend that will actually be installed for
+// the requested runtime/platform combination after any fallback.
+func getEffectiveBackend(backend, runtime string, platform specs.Platform) string {
+	normalizedBackend := normalizeBackend(backend)
+
+	if runtime == utils.RuntimeAppleSilicon {
+		return defaultBackendName
+	}
+
+	if runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
+		return normalizedBackend
+	}
+
+	return defaultBackendName
+}
+
+// getBackendVersion returns the backend OCI tag version to use for the
+// effective runtime/platform backend. Keep non-llama and Apple Silicon
+// backends pinned to the legacy tag until matching v4 artifacts are mirrored
+// upstream.
+func getBackendVersion(backend, runtime string, platform specs.Platform) string {
+	if runtime == utils.RuntimeAppleSilicon {
+		return localAILegacyBackendVersion
+	}
+
+	if getEffectiveBackend(backend, runtime, platform) == defaultBackendName {
+		return localAILlamaCppBackendVersion
+	}
+
+	return localAILegacyBackendVersion
+}
+
+// getLocalAIArtifactVersion returns the LocalAI artifact version to install for
+// the image. If any configured backend still requires legacy compatibility, use
+// the legacy LocalAI binary so legacy-pinned backends are not paired with v4.
+func getLocalAIArtifactVersion(c *config.InferenceConfig, platform specs.Platform) string {
+	backends := c.Backends
+	if len(backends) == 0 {
+		backends = getDefaultBackends(c.Runtime)
+	}
+
+	for _, backend := range backends {
+		if getBackendVersion(backend, c.Runtime, platform) == localAILegacyBackendVersion {
+			return localAILegacyBackendVersion
+		}
+	}
+
+	return localAIBinaryVersion
+}
+
 // getBackendTag returns the appropriate OCI tag for the given backend and runtime.
 func getBackendTag(backend, runtime string, platform specs.Platform) string {
-	baseTag := localAIVersion
-
-	// Map backend names to their OCI tag equivalents
-	backendMap := map[string]string{
-		utils.BackendDiffusers: "diffusers",
-		utils.BackendLlamaCpp:  "llama-cpp",
-		utils.BackendVLLM:      "vllm",
-	}
-
-	backendName, exists := backendMap[backend]
-	if !exists {
-		// Default to llama-cpp if backend is not recognized
-		backendName = defaultBackendName
-	}
+	baseTag := getBackendVersion(backend, runtime, platform)
+	backendName := getEffectiveBackend(backend, runtime, platform)
 
 	// Handle Apple Silicon - use Vulkan llama-cpp
 	if runtime == utils.RuntimeAppleSilicon {
@@ -54,30 +101,12 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 		}
 	}
 
-	// Handle CPU runtime (default)
-	switch backendName {
-	case "llama-cpp":
-		return fmt.Sprintf("%s-cpu-llama-cpp", baseTag)
-	default:
-		// For unsupported backends, fallback to llama-cpp
-		return fmt.Sprintf("%s-cpu-llama-cpp", baseTag)
-	}
+	return fmt.Sprintf("%s-cpu-llama-cpp", baseTag)
 }
 
 // getBackendAlias returns the alias name for the backend (used in metadata.json).
 func getBackendAlias(backend string) string {
-	// Map backend names to their aliases
-	aliasMap := map[string]string{
-		utils.BackendDiffusers: "diffusers",
-		utils.BackendLlamaCpp:  "llama-cpp",
-		utils.BackendVLLM:      "vllm",
-	}
-
-	if alias, exists := aliasMap[backend]; exists {
-		return alias
-	}
-	// Default to llama-cpp for unknown backends
-	return "llama-cpp"
+	return normalizeBackend(backend)
 }
 
 // getBackendName returns the full backend directory name (used in metadata.json).
@@ -89,12 +118,12 @@ func getBackendName(backend, runtime string, platform specs.Platform) string {
 
 	// Handle CUDA runtime
 	if runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
-		switch backend {
+		switch getEffectiveBackend(backend, runtime, platform) {
 		case utils.BackendDiffusers:
 			return "cuda12-diffusers"
 		case utils.BackendVLLM:
 			return "cuda12-vllm"
-		case utils.BackendLlamaCpp:
+		case defaultBackendName:
 			return cuda12LlamaCppBackend
 		default:
 			// Fallback to llama-cpp for unsupported backends

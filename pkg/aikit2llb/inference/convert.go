@@ -13,10 +13,12 @@ import (
 )
 
 const (
-	distrolessBase = "ghcr.io/kaito-project/aikit/base:latest"
-	localAIVersion = "v3.12.1"
-	localAIRepo    = "ghcr.io/kaito-project/aikit/localai:"
-	cudaVersion    = "12-5"
+	distrolessBase                = "ghcr.io/kaito-project/aikit/base:latest"
+	localAIBinaryVersion          = "v4.0.0"
+	localAILlamaCppBackendVersion = localAIBinaryVersion
+	localAILegacyBackendVersion   = "v3.12.1"
+	localAIRepo                   = "ghcr.io/kaito-project/aikit/localai:"
+	cudaVersion                   = "12-5"
 )
 
 // Aikit2LLB converts an InferenceConfig to an LLB state.
@@ -43,7 +45,7 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 		}
 	}
 
-	state, merge, err = addLocalAI(state, merge, *platform)
+	state, merge, err = addLocalAI(c, state, merge, *platform)
 	if err != nil {
 		return state, nil, err
 	}
@@ -55,14 +57,6 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 
 	// install backend dependencies
 	merge = installBackends(c, *platform, state, merge)
-
-	// install GPU detection wrapper for CUDA images to work around
-	// LocalAI v3.12.1 bug where /usr/local/cuda-12 directory presence
-	// causes CUDA backend selection even without a GPU.
-	// See: https://github.com/mudler/LocalAI/pull/6149
-	if c.Runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
-		_, merge = installGPUDetectionWrapper(state, merge)
-	}
 
 	imageCfg := NewImageConfig(c, platform)
 	return merge, imageCfg, nil
@@ -161,54 +155,16 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 	return s, llb.Merge([]llb.State{merge, diff})
 }
 
-// gpuDetectionWrapper is a shell script that detects GPU presence at container
-// startup. If no NVIDIA GPU is found, it forces LocalAI to use the CPU backend
-// by setting LOCALAI_FORCE_META_BACKEND_CAPABILITY=default. This works around
-// a LocalAI v3.12.1 regression where the existence of /usr/local/cuda-12
-// (installed by CUDA runtime packages) causes LocalAI to select the CUDA
-// backend even when no GPU hardware is present.
-const gpuDetectionWrapper = `#!/bin/bash
-# Detect NVIDIA GPU and set backend capability accordingly.
-# If no GPU is found, force LocalAI to use CPU backends.
-# Respect any user-provided override.
-if [ -n "$LOCALAI_FORCE_META_BACKEND_CAPABILITY" ]; then
-  exec "$@"
-fi
-gpu_found=false
-if [ -e /dev/nvidiactl ]; then
-  gpu_found=true
-elif command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
-  gpu_found=true
-elif command -v lspci >/dev/null 2>&1; then
-  if lspci -d 10de: 2>/dev/null | grep -qi 'nvidia\|3d controller\|vga'; then
-    gpu_found=true
-  fi
-fi
-if [ "$gpu_found" = "false" ]; then
-  export LOCALAI_FORCE_META_BACKEND_CAPABILITY=default
-fi
-exec "$@"
-`
-
-// installGPUDetectionWrapper writes the GPU detection entrypoint wrapper into the image.
-func installGPUDetectionWrapper(s llb.State, merge llb.State) (llb.State, llb.State) {
-	savedState := s
-	s = s.File(
-		llb.Mkfile("/usr/local/bin/gpu-detect-wrapper", 0o755, []byte(gpuDetectionWrapper)),
-		llb.WithCustomName("Installing GPU detection wrapper for CPU fallback"),
-	)
-	diff := llb.Diff(savedState, s)
-	return s, llb.Merge([]llb.State{merge, diff})
-}
-
 // addLocalAI adds the LocalAI binary to the image.
-func addLocalAI(s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State, error) {
+func addLocalAI(c *config.InferenceConfig, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State, error) {
+	artifactVersion := getLocalAIArtifactVersion(c, platform)
+
 	// Map architectures to OCI artifact references & internal artifact filenames
 	artifactRefs := map[string]struct {
 		Ref string
 	}{
-		utils.PlatformAMD64: {Ref: localAIRepo + localAIVersion + "-amd64"},
-		utils.PlatformARM64: {Ref: localAIRepo + localAIVersion + "-arm64"},
+		utils.PlatformAMD64: {Ref: localAIRepo + artifactVersion + "-amd64"},
+		utils.PlatformARM64: {Ref: localAIRepo + artifactVersion + "-arm64"},
 	}
 
 	art, ok := artifactRefs[platform.Architecture]
