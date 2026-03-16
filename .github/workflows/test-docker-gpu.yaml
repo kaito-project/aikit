@@ -51,12 +51,45 @@ jobs:
         run: docker images
 
       - name: run test model
-        run: docker run --name testmodel -d --rm -p 8080:8080 --gpus all testmodel:test
+        run: docker run --name testmodel -d -p 8080:8080 --gpus all testmodel:test
+
+      - name: wait for test model
+        timeout-minutes: 10
+        run: |
+          deadline=$((SECONDS + 600))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            if curl --silent --show-error --fail http://127.0.0.1:8080/v1/models > /tmp/testmodel-models.json; then
+              cat /tmp/testmodel-models.json
+              exit 0
+            fi
+
+            if ! docker inspect testmodel >/dev/null 2>&1; then
+              echo "testmodel container disappeared before becoming ready"
+              docker ps -a
+              exit 1
+            fi
+
+            state=$(docker inspect -f '{{.State.Status}}' testmodel)
+            if [ "$state" != "running" ]; then
+              echo "testmodel container is not running: $state"
+              docker ps -a
+              docker logs testmodel || true
+              exit 1
+            fi
+
+            sleep 5
+          done
+
+          echo "timed out waiting for testmodel to become ready on port 8080"
+          docker ps -a
+          docker logs testmodel || true
+          exit 1
 
       - name: run test (gguf)
         if: matrix.backend == 'llama-cuda'
+        timeout-minutes: 5
         run: |
-          result=$(curl --fail --retry 10 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
+          result=$(curl --fail --show-error --max-time 120 http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
             "model": "llama-3.2-1b-instruct",
             "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
           }')
@@ -69,8 +102,9 @@ jobs:
 
       - name: run test (diffusers)
         if: matrix.backend == 'diffusers'
+        timeout-minutes: 10
         run: |
-          result=$(curl --fail --retry 10 --retry-all-errors http://127.0.0.1:8080/v1/images/generations -H "Content-Type: application/json" -d '{
+          result=$(curl --fail --show-error --max-time 300 http://127.0.0.1:8080/v1/images/generations -H "Content-Type: application/json" -d '{
             "model": "dreamshaper",
             "prompt": "A cute baby llama",
             "size": "256x256"
@@ -88,8 +122,9 @@ jobs:
 
       - name: run test (vllm)
         if: matrix.backend == 'vllm'
+        timeout-minutes: 5
         run: |
-          result=$(curl --fail --retry 30 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
+          result=$(curl --fail --show-error --max-time 120 http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
             "model": "Qwen2.5-0.5B-Instruct",
             "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
           }')
@@ -102,9 +137,15 @@ jobs:
 
       - name: save logs
         if: always()
-        run: docker logs testmodel > /tmp/docker-${{ matrix.backend }}.log
+        run: |
+          if docker inspect testmodel >/dev/null 2>&1; then
+            docker logs testmodel > /tmp/docker-${{ matrix.backend }}.log || true
+          else
+            echo "testmodel container was not present during cleanup" > /tmp/docker-${{ matrix.backend }}.log
+            docker ps -a >> /tmp/docker-${{ matrix.backend }}.log || true
+          fi
 
-      - run: docker stop testmodel
+      - run: docker rm -f testmodel || true
         if: always()
 
       - run: docker system prune -a -f --volumes || true

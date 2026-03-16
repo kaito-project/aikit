@@ -43,6 +43,24 @@ func getBackendVersion(backend, runtime string) string {
 	return localAILegacyBackendVersion
 }
 
+// getLocalAIArtifactVersion returns the LocalAI artifact version to install for
+// the image. If any configured backend still requires legacy compatibility, use
+// the legacy LocalAI binary so legacy-pinned backends are not paired with v4.
+func getLocalAIArtifactVersion(c *config.InferenceConfig) string {
+	backends := c.Backends
+	if len(backends) == 0 {
+		backends = getDefaultBackends(c.Runtime)
+	}
+
+	for _, backend := range backends {
+		if getBackendVersion(backend, c.Runtime) == localAILegacyBackendVersion {
+			return localAILegacyBackendVersion
+		}
+	}
+
+	return localAIBinaryVersion
+}
+
 // getBackendTag returns the appropriate OCI tag for the given backend and runtime.
 func getBackendTag(backend, runtime string, platform specs.Platform) string {
 	baseTag := getBackendVersion(backend, runtime)

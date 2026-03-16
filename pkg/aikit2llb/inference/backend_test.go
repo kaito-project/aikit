@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/kaito-project/aikit/pkg/aikit/config"
 	"github.com/kaito-project/aikit/pkg/utils"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -147,6 +148,62 @@ func TestGetBackendVersion(t *testing.T) {
 			got := getBackendVersion(tt.backend, tt.runtime)
 			if got != tt.want {
 				t.Errorf("getBackendVersion() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetLocalAIArtifactVersion(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *config.InferenceConfig
+		want   string
+	}{
+		{
+			name: "default llama-cpp uses current LocalAI binary",
+			config: &config.InferenceConfig{
+				Runtime: "",
+			},
+			want: localAIBinaryVersion,
+		},
+		{
+			name: "vllm uses legacy LocalAI binary",
+			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
+				Backends: []string{utils.BackendVLLM},
+			},
+			want: localAILegacyBackendVersion,
+		},
+		{
+			name: "diffusers uses legacy LocalAI binary",
+			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
+				Backends: []string{utils.BackendDiffusers},
+			},
+			want: localAILegacyBackendVersion,
+		},
+		{
+			name: "apple silicon stays on legacy LocalAI binary",
+			config: &config.InferenceConfig{
+				Runtime: utils.RuntimeAppleSilicon,
+			},
+			want: localAILegacyBackendVersion,
+		},
+		{
+			name: "mixed backends choose legacy LocalAI binary when needed",
+			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
+				Backends: []string{utils.BackendLlamaCpp, utils.BackendVLLM},
+			},
+			want: localAILegacyBackendVersion,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := getLocalAIArtifactVersion(tt.config)
+			if got != tt.want {
+				t.Errorf("getLocalAIArtifactVersion() = %v, want %v", got, tt.want)
 			}
 		})
 	}

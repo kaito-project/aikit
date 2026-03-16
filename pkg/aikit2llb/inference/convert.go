@@ -45,7 +45,7 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 		}
 	}
 
-	state, merge, err = addLocalAI(state, merge, *platform)
+	state, merge, err = addLocalAI(c, state, merge, *platform)
 	if err != nil {
 		return state, nil, err
 	}
@@ -156,13 +156,15 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 }
 
 // addLocalAI adds the LocalAI binary to the image.
-func addLocalAI(s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State, error) {
+func addLocalAI(c *config.InferenceConfig, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State, error) {
+	artifactVersion := getLocalAIArtifactVersion(c)
+
 	// Map architectures to OCI artifact references & internal artifact filenames
 	artifactRefs := map[string]struct {
 		Ref string
 	}{
-		utils.PlatformAMD64: {Ref: localAIRepo + localAIBinaryVersion + "-amd64"},
-		utils.PlatformARM64: {Ref: localAIRepo + localAIBinaryVersion + "-arm64"},
+		utils.PlatformAMD64: {Ref: localAIRepo + artifactVersion + "-amd64"},
+		utils.PlatformARM64: {Ref: localAIRepo + artifactVersion + "-arm64"},
 	}
 
 	art, ok := artifactRefs[platform.Architecture]
