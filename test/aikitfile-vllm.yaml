@@ -4,6 +4,9 @@ debug: true
 runtime: cuda
 backends:
   - vllm
+models:
+  - name: Qwen/Qwen2.5-0.5B-Instruct
+    source: huggingface://Qwen/Qwen2.5-0.5B-Instruct
 config: |
   - name: Qwen2.5-0.5B-Instruct
     backend: vllm
