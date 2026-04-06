@@ -5,7 +5,7 @@ go 1.25.5
 toolchain go1.26.1
 
 require (
-	github.com/containerd/platforms v1.0.0-rc.3
+	github.com/containerd/platforms v1.0.0-rc.4
 	github.com/moby/buildkit v0.29.0
 	github.com/modelpack/model-spec v0.0.7
 	github.com/opencontainers/go-digest v1.0.0
