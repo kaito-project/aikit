@@ -3,7 +3,7 @@ title: GPU Acceleration
 ---
 
 :::note
-At this time, only NVIDIA GPU acceleration is supported, with experimental support for Apple Silicon. Please open an issue if you'd like to see support for other GPU vendors.
+AIKit supports NVIDIA GPU acceleration, AMD GPU acceleration via ROCm, and experimental support for Apple Silicon. Please open an issue if you'd like to see support for other GPU vendors.
 :::
 
 ## NVIDIA
@@ -93,6 +93,151 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"Qwen2.5-0.5B-Instruct","messages":[{"role":"user","content":"Hello"}]}'
 ```
+
+## AMD GPU (ROCm - Experimental)
+
+AIKit supports AMD GPU acceleration using [ROCm 7.2](https://rocm.docs.amd.com/en/latest/) with primary focus on **Strix Halo APUs (gfx1151)** and broader support for RDNA3, RDNA2, and RDNA1 architectures. This implementation leverages LocalAI's `hipblas` backend for ROCm acceleration with automatic architecture detection and build optimization.
+
+**Supported AMD GPUs:**
+- **AMD Ryzen AI Max+ (Strix Halo)** - gfx1151 (primary target)
+- **RDNA3/RDNA2/RDNA1 GPUs** - gfx900, gfx906, gfx908, gfx940, gfx941, gfx942, gfx90a, gfx1030, gfx1031, gfx1100, gfx1101
+
+Currently, only the `llama-cpp` backend supports ROCm acceleration.
+
+### Prerequisites
+
+1. Install ROCm 7.2+ on your host system following the [official ROCm installation guide](https://rocm.docs.amd.com/en/latest/deploy/linux/quick_start.html)
+2. Ensure your GPU target architecture is supported. AIKit specifically targets **gfx1151** for Strix Halo APUs, with fallback support for other architectures (gfx900,gfx906,gfx908,gfx940,gfx941,gfx942,gfx90a,gfx1030,gfx1031,gfx1100,gfx1101)
+3. Ensure your user is in the `render` and `video` groups:
+   ```bash
+   sudo usermod -a -G render,video $USER
+   ```
+4. Verify ROCm installation:
+   ```bash
+   rocm-smi
+   ```
+
+### Configuration
+
+To enable ROCm GPU acceleration, set the following in your `aikitfile`:
+
+```yaml
+runtime: rocm         # use AMD ROCm runtime
+backends:
+  - llama-cpp        # only llama-cpp backend supports ROCm
+```
+
+For the `llama-cpp` backend, configure GPU acceleration in your `config`:
+
+```yaml
+f16: true             # use float16 precision
+gpu_layers: 35        # number of layers to offload to GPU
+low_vram: true        # recommended for APUs with shared memory
+```
+
+:::tip Strix Halo Optimization
+For Strix Halo APUs, start with `gpu_layers: 20-30` and `low_vram: true` since these APUs use shared system memory rather than dedicated VRAM.
+:::
+
+:::note
+AIKit automatically configures Strix Halo-specific optimizations including `HSA_OVERRIDE_GFX_VERSION=11.5.1` and `GPU_TARGETS=gfx1151` during build.
+:::
+
+### Building and Testing ROCm Models
+
+Build your ROCm-accelerated model:
+
+```bash
+# Build with ROCm runtime
+make build-test-model TEST_FILE=test/aikitfile-llama-rocm.yaml RUNTIME=rocm
+
+# Or build a custom model
+docker buildx build -f my-aikitfile-rocm.yaml -t my-rocm-model --build-arg runtime=rocm .
+```
+
+### Running ROCm-accelerated Models
+
+After building your model with `runtime: rocm`, run it with the ROCm device access flags:
+
+```bash
+# for pre-made models, replace "my-model" with the image name
+docker run --rm --device /dev/kfd --device /dev/dri -p 8080:8080 my-model
+
+# or use the make target for testing
+make run-test-model-rocm
+```
+
+### Example aikitfile for ROCm
+
+```yaml
+apiVersion: v1alpha1
+runtime: rocm
+backends:
+  - llama-cpp
+models:
+  - name: llama-3.2-1b-instruct
+    source: https://huggingface.co/MaziyarPanahi/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct.Q4_K_M.gguf
+    sha256: "e4650dd6b45ef456066b11e4927f775eef4dd1e0e8473c3c0f27dd19ee13cc4e"
+config: |
+  backend: llama
+  parameters:
+    model: llama-3.2-1b-instruct
+  name: llama-3.2-1b-instruct
+  f16: true
+  context_size: 8192
+  gpu_layers: 35
+```
+
+If ROCm acceleration is working correctly, you'll see output similar to:
+
+**For Strix Halo APUs:**
+```bash
+5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr ggml_init_rocm: found 1 ROCm devices:
+5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr   Device 0: AMD Ryzen AI Max+ Graphics, compute capability gfx1151
+5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr llm_load_tensors: using ROCm for GPU acceleration
+5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr llm_load_tensors: offloading 25 repeating layers to GPU
+5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr llm_load_tensors: offloaded 25/33 layers to GPU
+5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr llm_load_tensors: VRAM used: 1536 MB (shared system memory)
+```
+
+**For discrete AMD GPUs:**
+```bash
+5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr ggml_init_rocm: found 1 ROCm devices:
+5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr   Device 0: AMD Radeon RX 7900 XT, compute capability gfx1100
+5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr llm_load_tensors: using ROCm for GPU acceleration
+5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr llm_load_tensors: offloading 35 repeating layers to GPU
+5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr llm_load_tensors: offloaded 35/35 layers to GPU
+5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr llm_load_tensors: VRAM used: 4096 MB
+```
+
+### Troubleshooting
+
+#### Common Issues and Solutions:
+
+- **Permission denied errors**: Ensure user is in `render` and `video` groups and reboot after adding
+- **Device not found**: Verify ROCm installation with `rocm-smi` and check `/dev/kfd` and `/dev/dri` exist
+- **Strix Halo APU not detected**:
+  - Verify you're running ROCm 7.2+ which supports gfx1151
+  - AIKit automatically sets `HSA_OVERRIDE_GFX_VERSION=11.5.1` and `GPU_TARGETS=gfx1151`
+  - Check `dmesg | grep amdgpu` for hardware detection issues
+- **Performance issues**:
+  - For Strix Halo APUs: Start with `gpu_layers: 20-30` and enable `low_vram: true`
+  - For discrete GPUs: Gradually increase `gpu_layers` based on VRAM capacity
+  - Monitor memory usage with `rocm-smi`
+- **Memory errors**:
+  - Enable `low_vram: true` especially for APUs
+  - Reduce `gpu_layers` or `context_size`
+  - For Strix Halo: Ensure adequate system RAM (models use shared memory)
+- **Build issues**:
+  - LocalAI rebuilds backends for gfx1151 during first container startup (may take 10-15 minutes)
+  - Check logs for compilation errors related to ROCm/HIP
+  - Ensure Docker has sufficient disk space for backend compilation
+
+#### Strix Halo Specific Notes:
+
+- **Memory Architecture**: Strix Halo uses unified memory architecture (UMA) - models consume system RAM, not dedicated VRAM
+- **Expected Performance**: Expect 15-30 tokens/sec for 7B models depending on RAM speed and GPU clocks
+- **First Run**: Initial container startup will rebuild llama.cpp backend for gfx1151 (one-time ~10-15 min process)
 
 ## Apple Silicon (experimental)
 

@@ -51,6 +51,10 @@ run-test-model:
 run-test-model-gpu:
 	docker run --rm -p 8080:8080 --gpus all ${REGISTRY}${REPOSITORY}/${TEST_IMAGE_NAME}:${TAG}
 
+.PHONY: run-test-model-rocm
+run-test-model-rocm:
+	docker run --rm -p 8080:8080 --device /dev/kfd --device /dev/dri ${REGISTRY}${REPOSITORY}/${TEST_IMAGE_NAME}:${TAG}
+
 .PHONY: run-test-model-applesilicon
 run-test-model-applesilicon:
 	podman run --rm -p 8080:8080 --device /dev/dri ${REGISTRY}${REPOSITORY}/${TEST_IMAGE_NAME}:${TAG}

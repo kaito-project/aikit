@@ -491,6 +491,14 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 		return errors.New("runner mode (backends without models) is not supported on apple silicon runtime")
 	}
 
+	if c.Runtime == utils.RuntimeROCm && len(c.Backends) > 0 {
+		for _, backend := range c.Backends {
+			if backend != utils.BackendLlamaCpp {
+				return errors.New("rocm runtime only supports llama-cpp backend")
+			}
+		}
+	}
+
 	backends := []string{utils.BackendLlamaCpp, utils.BackendDiffusers, utils.BackendVLLM}
 	for _, b := range c.Backends {
 		if !slices.Contains(backends, b) {
@@ -498,7 +506,7 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 		}
 	}
 
-	runtimes := []string{"", utils.RuntimeNVIDIA, utils.RuntimeAppleSilicon}
+	runtimes := []string{"", utils.RuntimeNVIDIA, utils.RuntimeROCm, utils.RuntimeAppleSilicon}
 	if !slices.Contains(runtimes, c.Runtime) {
 		return errors.Errorf("runtime %s is not supported", c.Runtime)
 	}

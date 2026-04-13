@@ -1,0 +1,27 @@
+FROM rocm/dev-ubuntu-22.04:7.2
+
+# Set ROCm-specific environment variables
+ENV PATH="/usr/local/bin:/usr/bin:/bin:/opt/rocm/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/opt/rocm/lib:${LD_LIBRARY_PATH}"
+ENV HIP_VISIBLE_DEVICES="all"
+ENV HSA_ENABLE_SDMA="0"
+ENV ROC_ENABLE_PRE_VEGA="1"
+
+# LocalAI-specific environment variables for ROCm/HIP acceleration
+ENV BUILD_TYPE="hipblas"
+ENV REBUILD="true"
+ENV GPU_TARGETS="gfx1151"
+ENV HSA_OVERRIDE_GFX_VERSION="11.5.1"
+ENV LOCALAI_FORCE_META_BACKEND_CAPABILITY="amd"
+
+# Install additional dependencies for AIKit
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create necessary directories
+RUN mkdir -p /tmp/model
+
+WORKDIR /tmp

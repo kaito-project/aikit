@@ -101,6 +101,12 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 		}
 	}
 
+	// Handle ROCm runtime.
+	if runtime == utils.RuntimeROCm && platform.Architecture == utils.PlatformAMD64 {
+		return fmt.Sprintf("%s-gpu-rocm-hipblas-llama-cpp", localAIROCmBackendVersion)
+	}
+
+	// Handle CPU runtime (default).
 	return fmt.Sprintf("%s-cpu-llama-cpp", baseTag)
 }
 
@@ -129,6 +135,12 @@ func getBackendName(backend, runtime string, platform specs.Platform) string {
 			// Fallback to llama-cpp for unsupported backends
 			return cuda12LlamaCppBackend
 		}
+	}
+
+	// Handle ROCm runtime
+	if runtime == utils.RuntimeROCm && platform.Architecture == utils.PlatformAMD64 {
+		// Only llama-cpp backend is supported for ROCm
+		return "hipblas-llama-cpp"
 	}
 
 	// Handle CPU runtime (default)
@@ -215,6 +227,14 @@ func installBackends(c *config.InferenceConfig, platform specs.Platform, s llb.S
 
 		// For llama-cpp backend with CUDA runtime, also install the CPU version for fallback
 		if backend == utils.BackendLlamaCpp && c.Runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
+			// Create a modified config with CPU runtime to install the CPU version
+			cpuConfig := *c
+			cpuConfig.Runtime = "cpu" // Use CPU runtime to force CPU backend installation
+			merge = installBackend(backend, &cpuConfig, platform, s, merge)
+		}
+
+		// For llama-cpp backend with ROCm runtime, also install the CPU version for fallback
+		if backend == utils.BackendLlamaCpp && c.Runtime == utils.RuntimeROCm && platform.Architecture == utils.PlatformAMD64 {
 			// Create a modified config with CPU runtime to install the CPU version
 			cpuConfig := *c
 			cpuConfig.Runtime = "cpu" // Use CPU runtime to force CPU backend installation

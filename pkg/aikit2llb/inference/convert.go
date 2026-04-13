@@ -17,8 +17,10 @@ const (
 	localAIBinaryVersion          = "v4.0.0"
 	localAILlamaCppBackendVersion = localAIBinaryVersion
 	localAILegacyBackendVersion   = "v3.12.1"
+	localAIROCmBackendVersion     = "v3.10.1"
 	localAIRepo                   = "ghcr.io/kaito-project/aikit/localai:"
 	cudaVersion                   = "12-5"
+	rocmVersion                   = "7.2"
 )
 
 // Aikit2LLB converts an InferenceConfig to an LLB state.
@@ -26,6 +28,9 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 	var merge, state llb.State
 	if c.Runtime == utils.RuntimeAppleSilicon {
 		state = llb.Image(utils.AppleSiliconBase, llb.Platform(*platform))
+	} else if c.Runtime == utils.RuntimeROCm {
+		// Use Ubuntu 24.04 for ROCm to match noble repository
+		state = llb.Image(utils.Ubuntu24Base, llb.Platform(*platform))
 	} else {
 		state = llb.Image(utils.UbuntuBase, llb.Platform(*platform))
 	}
@@ -55,6 +60,11 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 		state, merge = installCuda(c, state, merge)
 	}
 
+	// install rocm if runtime is rocm and architecture is amd64
+	if c.Runtime == utils.RuntimeROCm && platform.Architecture == utils.PlatformAMD64 {
+		state, merge = installRocm(c, state, merge)
+	}
+
 	// install backend dependencies
 	merge = installBackends(c, *platform, state, merge)
 
@@ -66,6 +76,10 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 func getBaseImage(c *config.InferenceConfig, platform *specs.Platform) llb.State {
 	if c.Runtime == utils.RuntimeAppleSilicon {
 		return llb.Image(utils.AppleSiliconBase, llb.Platform(*platform))
+	}
+	if c.Runtime == utils.RuntimeROCm {
+		// Use Ubuntu 24.04 for ROCm to match noble repository.
+		return llb.Image(utils.Ubuntu24Base, llb.Platform(*platform))
 	}
 	if len(c.Backends) > 0 {
 		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
@@ -150,6 +164,50 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 		s = s.Run(utils.Shf("apt-get install -y --no-install-recommends pciutils libcublas-%[1]s cuda-cudart-%[1]s && apt-get clean", cudaVersion)).Root()
 		// TODO: clean up /var/lib/dpkg/status
 	}
+
+	diff := llb.Diff(savedState, s)
+	return s, llb.Merge([]llb.State{merge, diff})
+}
+
+func installRocm(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.State, llb.State) {
+	savedState := s
+
+	// Set up ROCm repository
+	s = s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y ca-certificates curl gnupg"), llb.IgnoreCache).Root()
+
+	// Add ROCm GPG key and repository
+	s = s.Run(utils.Sh("curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/rocm.gpg")).Root()
+	s = s.Run(utils.Shf("echo 'deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/rocm.gpg] https://repo.radeon.com/rocm/apt/%s/ noble main' >> /etc/apt/sources.list.d/rocm.list", rocmVersion)).Root()
+	s = s.Run(utils.Shf("echo 'deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/rocm.gpg] https://repo.radeon.com/graphics/%s/ubuntu noble main' >> /etc/apt/sources.list.d/rocm.list", rocmVersion)).Root()
+	rocmPinning := `
+Package: *
+Pin: release o=repo.radeon.com
+Pin-Priority: 600
+`
+	s = s.Run(utils.Shf("echo '%s' > /etc/apt/preferences.d/repo-radeon-pin-600", rocmPinning)).Root()
+	s = s.Run(utils.Sh("apt-get update"), llb.IgnoreCache).Root()
+
+	// default llama.cpp backend is being used
+	if len(c.Backends) == 0 {
+		// install rocm libraries and pciutils for gpu detection
+		s = s.Run(utils.Sh("apt-get install -y pciutils rocm && apt-get clean")).Root()
+	}
+
+	// For backends that specify llama-cpp explicitly
+	for b := range c.Backends {
+		if c.Backends[b] == utils.BackendLlamaCpp {
+			// Install ROCm libraries needed for llama-cpp ROCm acceleration
+			rocmDeps := "apt-get install -y rocm && apt-get clean"
+			s = s.Run(utils.Sh(rocmDeps)).Root()
+		}
+	}
+
+	// Set Strix Halo specific environment variables
+	s = s.AddEnv("GPU_TARGETS", "gfx1151")
+	s = s.AddEnv("HSA_OVERRIDE_GFX_VERSION", "11.5.1")
+	s = s.AddEnv("BUILD_TYPE", "hipblas")
+	s = s.AddEnv("REBUILD", "true")
+	s = s.AddEnv("LOCALAI_FORCE_META_BACKEND_CAPABILITY", "amd")
 
 	diff := llb.Diff(savedState, s)
 	return s, llb.Merge([]llb.State{merge, diff})
