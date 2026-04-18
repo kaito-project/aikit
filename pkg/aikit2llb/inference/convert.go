@@ -17,7 +17,7 @@ const (
 	localAIBinaryVersion          = "v4.0.0"
 	localAILlamaCppBackendVersion = localAIBinaryVersion
 	localAILegacyBackendVersion   = "v3.12.1"
-	localAIROCmBackendVersion     = "v3.10.1"
+	localAIROCmBackendVersion     = "rocm7"
 	localAIRepo                   = "ghcr.io/kaito-project/aikit/localai:"
 	cudaVersion                   = "12-5"
 	rocmVersion                   = "7.2"
@@ -26,12 +26,13 @@ const (
 // Aikit2LLB converts an InferenceConfig to an LLB state.
 func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, *specs.Image, error) {
 	var merge, state llb.State
-	if c.Runtime == utils.RuntimeAppleSilicon {
+	switch c.Runtime {
+	case utils.RuntimeAppleSilicon:
 		state = llb.Image(utils.AppleSiliconBase, llb.Platform(*platform))
-	} else if c.Runtime == utils.RuntimeROCm {
+	case utils.RuntimeROCm:
 		// Use Ubuntu 24.04 for ROCm to match noble repository
 		state = llb.Image(utils.Ubuntu24Base, llb.Platform(*platform))
-	} else {
+	default:
 		state = llb.Image(utils.UbuntuBase, llb.Platform(*platform))
 	}
 	base := getBaseImage(c, platform)
@@ -202,12 +203,21 @@ Pin-Priority: 600
 		}
 	}
 
-	// Set Strix Halo specific environment variables
-	s = s.AddEnv("GPU_TARGETS", "gfx1151")
+	// hipblaslt soname compatibility: backend may be linked against .so.0 while ROCm 7.2 ships .so.1
+	s = s.Run(utils.Sh("set -e; cd /opt/rocm/lib; [ -e libhipblaslt.so.0 ] || ln -sf libhipblaslt.so.1 libhipblaslt.so.0")).Root()
+
+	// Set ROCm runtime environment variables
 	s = s.AddEnv("HSA_OVERRIDE_GFX_VERSION", "11.5.1")
-	s = s.AddEnv("BUILD_TYPE", "hipblas")
-	s = s.AddEnv("REBUILD", "true")
 	s = s.AddEnv("LOCALAI_FORCE_META_BACKEND_CAPABILITY", "amd")
+	// Select device 0 explicitly — required for APU single-GPU systems
+	s = s.AddEnv("ROCR_VISIBLE_DEVICES", "0")
+	s = s.AddEnv("HIP_VISIBLE_DEVICES", "0")
+	// APU/UMA: tell ROCm to use system RAM as GPU heap so VRAM is not reported as 0
+	s = s.AddEnv("GPU_MAX_HEAP_SIZE", "100")
+	s = s.AddEnv("GPU_MAX_ALLOC_PERCENT", "100")
+	s = s.AddEnv("GPU_SINGLE_ALLOC_PERCENT", "100")
+	// Enable XNACK for unified memory paging on APUs
+	s = s.AddEnv("HSA_XNACK", "1")
 
 	diff := llb.Diff(savedState, s)
 	return s, llb.Merge([]llb.State{merge, diff})

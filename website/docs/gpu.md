@@ -131,16 +131,18 @@ For the `llama-cpp` backend, configure GPU acceleration in your `config`:
 
 ```yaml
 f16: true             # use float16 precision
-gpu_layers: 35        # number of layers to offload to GPU
-low_vram: true        # recommended for APUs with shared memory
+mmap: true            # memory-mapped I/O for efficient model loading
+gpu_layers: 99        # offload all layers to GPU (use lower values for large models)
+context_size: 4096    # adjust based on model and available memory
+threads: 1            # single thread is sufficient for GPU-accelerated inference
 ```
 
 :::tip Strix Halo Optimization
-For Strix Halo APUs, start with `gpu_layers: 20-30` and `low_vram: true` since these APUs use shared system memory rather than dedicated VRAM.
+For Strix Halo APUs with sufficient BIOS VRAM (8 GB+), `gpu_layers: 99` with `mmap: true` works well for small models (1-3B). For larger models, reduce `gpu_layers` and `context_size` based on available memory.
 :::
 
 :::note
-AIKit automatically configures Strix Halo-specific optimizations including `HSA_OVERRIDE_GFX_VERSION=11.5.1` and `GPU_TARGETS=gfx1151` during build.
+AIKit automatically configures Strix Halo-specific runtime optimizations including `HSA_OVERRIDE_GFX_VERSION=11.5.1` during the image build. The ROCm backend is pre-compiled with gfx1151 support, so no runtime recompilation is needed.
 :::
 
 ### Building and Testing ROCm Models
@@ -149,7 +151,7 @@ Build your ROCm-accelerated model:
 
 ```bash
 # Build with ROCm runtime
-make build-test-model TEST_FILE=test/aikitfile-llama-rocm.yaml RUNTIME=rocm
+make build-test-model TEST_FILE=test/aikitfile-llama-rocm.yaml PLATFORMS=linux/amd64
 
 # Or build a custom model
 docker buildx build -f my-aikitfile-rocm.yaml -t my-rocm-model --build-arg runtime=rocm .
@@ -161,54 +163,67 @@ After building your model with `runtime: rocm`, run it with the ROCm device acce
 
 ```bash
 # for pre-made models, replace "my-model" with the image name
-docker run --rm --device /dev/kfd --device /dev/dri -p 8080:8080 my-model
+docker run --rm --device /dev/kfd --device /dev/dri \
+  --group-add video --group-add $(stat -c '%g' /dev/dri/renderD128) \
+  -p 8080:8080 my-model
 
 # or use the make target for testing
 make run-test-model-rocm
 ```
 
+:::note
+`--group-add` must use the numeric GID of the render device (not the name `render`) because the group name may not exist inside the container. `stat -c '%g' /dev/dri/renderD128` reads the GID from the host device node.
+:::
+
 ### Example aikitfile for ROCm
 
-```yaml
-apiVersion: v1alpha1
-runtime: rocm
-backends:
-  - llama-cpp
-models:
-  - name: llama-3.2-1b-instruct
-    source: https://huggingface.co/MaziyarPanahi/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct.Q4_K_M.gguf
-    sha256: "e4650dd6b45ef456066b11e4927f775eef4dd1e0e8473c3c0f27dd19ee13cc4e"
-config: |
-  backend: llama
-  parameters:
-    model: llama-3.2-1b-instruct
-  name: llama-3.2-1b-instruct
-  f16: true
-  context_size: 8192
-  gpu_layers: 35
-```
+https://github.com/kaito-project/aikit/blob/main/test/aikitfile-llama-rocm.yaml
 
 If ROCm acceleration is working correctly, you'll see output similar to:
 
-**For Strix Halo APUs:**
+**For Strix Halo APUs (gfx1151):**
 ```bash
-5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr ggml_init_rocm: found 1 ROCm devices:
-5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr   Device 0: AMD Ryzen AI Max+ Graphics, compute capability gfx1151
-5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr llm_load_tensors: using ROCm for GPU acceleration
-5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr llm_load_tensors: offloading 25 repeating layers to GPU
-5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr llm_load_tensors: offloaded 25/33 layers to GPU
-5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr llm_load_tensors: VRAM used: 1536 MB (shared system memory)
+ggml_cuda_init: found 1 ROCm devices (Total VRAM: 131072 MiB):
+  Device 0: AMD Radeon Graphics, gfx1151 (0x1151), VMM: no, Wave Size: 32, VRAM: 131072 MiB
+llama_model_load_from_file_impl: using device ROCm0 (AMD Radeon Graphics) - 91589 MiB free
+load_tensors: offloading output layer to GPU
+load_tensors: offloading 25 repeating layers to GPU
+load_tensors: offloaded 27/27 layers to GPU
+prompt eval time =      64.75 ms /    21 tokens (    3.08 ms per token,   324.31 tokens per second)
+       eval time =      13.15 ms /     3 tokens (    4.38 ms per token,   228.12 tokens per second)
 ```
 
-**For discrete AMD GPUs:**
-```bash
-5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr ggml_init_rocm: found 1 ROCm devices:
-5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr   Device 0: AMD Radeon RX 7900 XT, compute capability gfx1100
-5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr llm_load_tensors: using ROCm for GPU acceleration
-5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr llm_load_tensors: offloading 35 repeating layers to GPU
-5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr llm_load_tensors: offloaded 35/35 layers to GPU
-5:32AM DBG GRPC(llama-3.2-1b-instruct): stderr llm_load_tensors: VRAM used: 4096 MB
-```
+### Minimum VRAM Requirements for APUs
+
+AMD APUs (like Strix Halo) share system RAM with the GPU but expose a small portion as "dedicated VRAM" controlled by a BIOS setting (typically called "UMA Frame Buffer Size"). The ROCm HIP runtime allocates pinned host buffers from this dedicated VRAM pool, so it **must** be large enough to hold the model's `ROCm_Host` buffer plus display overhead.
+
+| Model Size | Example | ROCm_Host Buffer | Display Overhead | **Minimum VRAM (BIOS)** |
+|---|---|---|---|---|
+| Tiny (≤1B, Q2) | GLM-4.7-distill-1b Q2_K | ~560 MiB | ~160 MiB | **1 GB** |
+| Small (≤1B, Q4) | GLM-4.7-distill-1b Q4_K_M | ~900 MiB | ~160 MiB | **2 GB** |
+| Medium (7B, Q4) | Llama-3.2-7B Q4_K_M | ~4 GiB | ~160 MiB | **6 GB** |
+| Large (20B, Q4) | GPT-OSS-20B mxfp4 | ~12 GiB | ~160 MiB | **16 GB** |
+
+:::warning
+The default BIOS setting on most APU systems is **512 MiB**, which is too small for any model. If you see `ROCm error: out of memory` at `hipStreamCreateWithFlags`, increase VRAM in BIOS.
+:::
+
+#### How to increase dedicated VRAM on AMD APUs
+
+1. Reboot and enter BIOS/UEFI setup (typically **F2** or **Del** during POST)
+2. Navigate to **Advanced** → **AMD CBS** → **NBIO Common Options** → **GFX Configuration**
+   (path varies by vendor — look for "UMA Frame Buffer Size", "VRAM Size", or "iGPU Memory")
+3. Change the value from **512M** to at least **8G** (or **16G** for larger models)
+4. Save and exit (F10)
+5. After reboot, verify:
+   ```bash
+   cat /sys/class/drm/card*/device/mem_info_vram_total
+   # 8589934592 = 8 GiB, 17179869184 = 16 GiB
+   ```
+
+:::tip
+AMD recommends setting VRAM to the minimum needed and using the `amd-ttm` tool to configure shared memory (GTT) for the remaining system RAM. See the [ROCm on Ryzen install guide](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/install/installryz/native_linux/install-ryzen.html) for details.
+:::
 
 ### Troubleshooting
 
@@ -221,23 +236,23 @@ If ROCm acceleration is working correctly, you'll see output similar to:
   - AIKit automatically sets `HSA_OVERRIDE_GFX_VERSION=11.5.1` and `GPU_TARGETS=gfx1151`
   - Check `dmesg | grep amdgpu` for hardware detection issues
 - **Performance issues**:
-  - For Strix Halo APUs: Start with `gpu_layers: 20-30` and enable `low_vram: true`
+  - For Strix Halo APUs: Use `gpu_layers: 99` with `mmap: true` for small models (1-3B); reduce for larger models
   - For discrete GPUs: Gradually increase `gpu_layers` based on VRAM capacity
   - Monitor memory usage with `rocm-smi`
 - **Memory errors**:
-  - Enable `low_vram: true` especially for APUs
-  - Reduce `gpu_layers` or `context_size`
-  - For Strix Halo: Ensure adequate system RAM (models use shared memory)
+  - Reduce `gpu_layers` and `context_size` if you see out-of-memory errors
+  - For Strix Halo: Ensure adequate BIOS VRAM setting (8 GB+) and system RAM
+  - Enable `low_vram: true` if running close to memory limits
 - **Build issues**:
-  - LocalAI rebuilds backends for gfx1151 during first container startup (may take 10-15 minutes)
-  - Check logs for compilation errors related to ROCm/HIP
-  - Ensure Docker has sufficient disk space for backend compilation
+  - Backends are pre-compiled with gfx1151 support — no runtime recompilation is needed
+  - If you see `hip_fatbin.cpp: No compatible code objects found`, the backend was not compiled for your GPU architecture
+  - Ensure Docker has sufficient disk space for the ROCm image layers (~15 GB)
 
 #### Strix Halo Specific Notes:
 
 - **Memory Architecture**: Strix Halo uses unified memory architecture (UMA) - models consume system RAM, not dedicated VRAM
-- **Expected Performance**: Expect 15-30 tokens/sec for 7B models depending on RAM speed and GPU clocks
-- **First Run**: Initial container startup will rebuild llama.cpp backend for gfx1151 (one-time ~10-15 min process)
+- **Expected Performance**: ~320 tok/s prompt eval, ~230 tok/s generation for 1B Q4 models; expect 15-30 tok/s generation for 7B models depending on RAM speed and GPU clocks
+- **Startup**: Backends are pre-compiled — container starts inference-ready in seconds, no rebuild needed
 
 ## Apple Silicon (experimental)
 

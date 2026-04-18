@@ -53,7 +53,8 @@ run-test-model-gpu:
 
 .PHONY: run-test-model-rocm
 run-test-model-rocm:
-	docker run --rm -p 8080:8080 --device /dev/kfd --device /dev/dri ${REGISTRY}${REPOSITORY}/${TEST_IMAGE_NAME}:${TAG}
+	docker run --rm -p 8080:8080 --device /dev/kfd --device /dev/dri --group-add video --group-add $$(stat -c '%g' /dev/dri/renderD128) \
+		${REGISTRY}${REPOSITORY}/${TEST_IMAGE_NAME}:${TAG}
 
 .PHONY: run-test-model-applesilicon
 run-test-model-applesilicon:

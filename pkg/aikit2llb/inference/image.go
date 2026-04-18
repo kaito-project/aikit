@@ -77,5 +77,21 @@ func emptyImage(c *config.InferenceConfig, platform *specs.Platform) *specs.Imag
 		)
 	}
 
+	rocmEnv := []string{
+		"PATH=" + system.DefaultPathEnv(utils.PlatformLinux) + ":/opt/rocm/bin",
+		"LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64:/opt/rocm/llvm/lib",
+		"LOCALAI_FORCE_META_BACKEND_CAPABILITY=amd",
+		"HSA_OVERRIDE_GFX_VERSION=11.5.1",
+		"ROCR_VISIBLE_DEVICES=0",
+		"HIP_VISIBLE_DEVICES=0",
+		"GPU_MAX_HEAP_SIZE=100",
+		"GPU_MAX_ALLOC_PERCENT=100",
+		"GPU_SINGLE_ALLOC_PERCENT=100",
+		"HSA_XNACK=1",
+	}
+	if c.Runtime == utils.RuntimeROCm {
+		img.Config.Env = append(img.Config.Env, rocmEnv...)
+	}
+
 	return img
 }

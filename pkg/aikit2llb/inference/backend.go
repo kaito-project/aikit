@@ -81,7 +81,7 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 	baseTag := getBackendVersion(backend, runtime, platform)
 	backendName := getEffectiveBackend(backend, runtime, platform)
 
-	// Handle Apple Silicon - use Vulkan llama-cpp
+	// Handle Apple Silicon - use Vulkan llama-cpp.
 	if runtime == utils.RuntimeAppleSilicon {
 		return fmt.Sprintf("%s-%s", baseTag, vulkanLlamaCppBackend)
 	}
