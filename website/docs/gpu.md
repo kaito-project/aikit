@@ -100,7 +100,8 @@ AIKit supports AMD GPU acceleration using [ROCm 7.2](https://rocm.docs.amd.com/e
 
 **Supported AMD GPUs:**
 - **AMD Instinct** - MI250, MI300 series (gfx90a, gfx940, gfx941, gfx942)
-- **AMD Radeon RX 7000 series (RDNA3)** - gfx1100, gfx1101, gfx1030, gfx1031
+- **AMD Radeon RX 7000 series (RDNA3)** - gfx1100, gfx1101
+- **AMD Radeon RX 6000 series (RDNA2)** - gfx1030, gfx1031
 - **AMD Ryzen AI Max+ (Strix Halo)** - gfx1151
 - Other architectures listed in the [ROCm compatibility matrix](https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html)
 
