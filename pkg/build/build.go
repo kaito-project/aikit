@@ -525,6 +525,11 @@ func validateBackendPlatformCompatibility(c *config.InferenceConfig, targetPlatf
 		}
 	}
 
+	// ROCm runtime only supports amd64.
+	if c.Runtime == utils.RuntimeROCm && hasARM64Platform {
+		return errors.New("rocm runtime is only supported on linux/amd64 platform")
+	}
+
 	// If we have ARM64 platforms, validate backend compatibility
 	if hasARM64Platform {
 		for _, backend := range c.Backends {
