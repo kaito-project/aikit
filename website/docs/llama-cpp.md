@@ -8,7 +8,7 @@ This is the default backend for `aikit`. No additional configuration is required
 
 This backend:
 - provides support for GGUF (recommended) and GGML models
-- supports both CPU (`avx2`, `avx` or `fallback`) and CUDA runtimes
+- supports both CPU (`avx2`, `avx` or `fallback`), CUDA, and ROCm runtimes
 
 ## Example
 
@@ -21,3 +21,6 @@ https://github.com/kaito-project/aikit/blob/main/test/aikitfile-llama.yaml
 
 ### GPU (CUDA)
 https://github.com/kaito-project/aikit/blob/main/test/aikitfile-llama-cuda.yaml
+
+### GPU (ROCm)
+https://github.com/kaito-project/aikit/blob/main/test/aikitfile-llama-rocm.yaml
