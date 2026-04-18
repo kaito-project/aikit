@@ -206,19 +206,6 @@ Pin-Priority: 600
 	// hipblaslt soname compatibility: backend may be linked against .so.0 while ROCm 7.2 ships .so.1
 	s = s.Run(utils.Sh("set -e; cd /opt/rocm/lib; [ -e libhipblaslt.so.0 ] || ln -sf libhipblaslt.so.1 libhipblaslt.so.0")).Root()
 
-	// Set ROCm runtime environment variables
-	s = s.AddEnv("HSA_OVERRIDE_GFX_VERSION", "11.5.1")
-	s = s.AddEnv("LOCALAI_FORCE_META_BACKEND_CAPABILITY", "amd")
-	// Select device 0 explicitly — required for APU single-GPU systems
-	s = s.AddEnv("ROCR_VISIBLE_DEVICES", "0")
-	s = s.AddEnv("HIP_VISIBLE_DEVICES", "0")
-	// APU/UMA: tell ROCm to use system RAM as GPU heap so VRAM is not reported as 0
-	s = s.AddEnv("GPU_MAX_HEAP_SIZE", "100")
-	s = s.AddEnv("GPU_MAX_ALLOC_PERCENT", "100")
-	s = s.AddEnv("GPU_SINGLE_ALLOC_PERCENT", "100")
-	// Enable XNACK for unified memory paging on APUs
-	s = s.AddEnv("HSA_XNACK", "1")
-
 	diff := llb.Diff(savedState, s)
 	return s, llb.Merge([]llb.State{merge, diff})
 }

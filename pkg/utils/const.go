@@ -9,7 +9,7 @@ const (
 	BackendLlamaCpp  = "llama-cpp"
 	BackendVLLM      = "vllm"
 
-	BackendOCIRegistry = "localai/localai-backends"
+	BackendOCIRegistry = "quay.io/go-skynet/local-ai-backends"
 
 	TargetUnsloth = "unsloth"
 
