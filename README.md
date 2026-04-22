@@ -29,7 +29,7 @@ AIKit offers three main capabilities:
 - 🦙 Support for GGUF ([`llama`](https://github.com/ggerganov/llama.cpp)) and GGML ([`llama-ggml`](https://github.com/ggerganov/llama.cpp)) models
 - 🚢 [Kubernetes deployment ready](https://kaito-project.github.io/aikit/docs/kubernetes)
 - 📚 Supports multiple models with a single image
-- 🖥️ Supports [AMD64 and ARM64](https://kaito-project.github.io/aikit/docs/create-images#multi-platform-support) CPUs and [GPU-accelerated inferencing with NVIDIA GPUs](https://kaito-project.github.io/aikit/docs/gpu)
+- 🖥️ Supports [AMD64 and ARM64](https://kaito-project.github.io/aikit/docs/create-images#multi-platform-support) CPUs and [GPU-accelerated inferencing with NVIDIA CUDA and AMD ROCm support](https://kaito-project.github.io/aikit/docs/gpu)
 - 🔐 Ensure [supply chain security](https://kaito-project.github.io/aikit/docs/security) with SBOMs, Provenance attestations, and signed images
 - 🌈 Supports air-gapped environments with self-hosted, local, or any remote container registries to store model images for inference on the edge.
 
@@ -107,9 +107,9 @@ If it doesn't include a specific model, you can always [create your own images](
 ### NVIDIA CUDA
 
 > [!NOTE]
-> To enable GPU acceleration, please see [GPU Acceleration](https://kaito-project.github.io/aikit/docs/gpu).
+> To enable NVIDIA GPU acceleration, please see [GPU Acceleration](https://kaito-project.github.io/aikit/docs/gpu).
 >
-> Please note that only difference between CPU and GPU section is the `--gpus all` flag in the command to enable GPU acceleration.
+> Published pre-made GPU images include NVIDIA CUDA libraries. For the NVIDIA CUDA commands below, the only difference from the CPU section is the `--gpus all` flag.
 
 | Model           | Optimization  | Parameters | Command                                                                                | Model Name               | License                                                                                                                     |
 | --------------- | ------------- | ---------- | -------------------------------------------------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
@@ -125,6 +125,14 @@ If it doesn't include a specific model, you can always [create your own images](
 | 📸 Flux 1 Dev    | Text to image | 12B        | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/flux1:dev`     | `flux-1-dev`             | [FLUX.1 [dev] Non-Commercial License](https://github.com/black-forest-labs/flux/blob/main/model_licenses/LICENSE-FLUX1-dev) |
 | 🤖 GPT-OSS       |               | 20B        | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/gpt-oss:20b`   | `gpt-oss-20b`            | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/)                                                               |
 | 🤖 GPT-OSS       |               | 120B       | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/gpt-oss:120b`  | `gpt-oss-120b`           | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/)                                                               |
+
+
+### AMD ROCm (experimental)
+
+> [!NOTE]
+> AMD GPU acceleration is currently available for custom `llama-cpp` images built with `runtime: rocm`. Published pre-made model images are currently CUDA-based, so for AMD GPUs please [create your own image](https://kaito-project.github.io/aikit/docs/create-images) and follow the ROCm instructions in [GPU Acceleration](https://kaito-project.github.io/aikit/docs/gpu).
+>
+> ROCm support currently applies to the `llama-cpp` backend on `linux/amd64`.
 
 
 ### Apple Silicon (experimental)

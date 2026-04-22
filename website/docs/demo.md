@@ -6,7 +6,7 @@ Below are various demos to help you get started with AIKit.
 
 ## Inference
 
-### Running inference with CUDA
+### Running inference with NVIDIA CUDA
 
 https://www.youtube.com/watch?v=yFh_Zfk34PE
 

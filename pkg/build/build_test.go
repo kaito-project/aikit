@@ -241,6 +241,43 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "rocm runtime with amd64 platform - should pass",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    "rocm",
+				Backends:   []string{"llama-cpp"},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: "amd64", OS: "linux"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "rocm runtime with arm64 platform - should fail",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    "rocm",
+				Backends:   []string{"llama-cpp"},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: "arm64", OS: "linux"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "rocm runtime with mixed platforms - should fail",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    "rocm",
+				Backends:   []string{"llama-cpp"},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: "amd64", OS: "linux"},
+				{Architecture: "arm64", OS: "linux"},
+			},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

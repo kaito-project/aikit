@@ -4,7 +4,7 @@ title: Pre-made Models
 
 AIKit comes with pre-made models that you can use out-of-the-box!
 
-If it doesn't include a specific model, you can always [create your own images](https://kaito-project.github.io/aikit/premade-models/), and host in a container registry of your choice!
+If it doesn't include a specific model, you can always [create your own images](./create-images.md), and host in a container registry of your choice!
 
 ## CPU
 
@@ -49,7 +49,17 @@ Please see [models folder](https://github.com/kaito-project/aikit/tree/main/mode
 
 If not being offloaded to GPU VRAM, minimum of 8GB of RAM is required for 7B models, 16GB of RAM to run 13B models, and 32GB of RAM to run 8x7B models.
 
-All pre-made models include CUDA v12 libraries. They are used with [NVIDIA GPU acceleration](gpu.md). If a supported NVIDIA GPU is not found in your system, AIKit will automatically fallback to CPU with the most optimized runtime (`avx2`, `avx`, or `fallback`).
+The published model images in the NVIDIA CUDA section above include CUDA v12 libraries. If a supported NVIDIA GPU is not found in your system, AIKit will automatically fallback to CPU with the most optimized runtime (`avx2`, `avx`, or `fallback`).
+:::
+
+## AMD ROCm (experimental)
+
+:::note
+Published pre-made model images are currently CUDA-based, so ROCm-accelerated images are not published yet.
+
+To use AMD GPUs, create your own `llama-cpp` image with `runtime: rocm`, then run it with the ROCm device flags described in [GPU Acceleration](gpu.md). See [Creating Model Images](./create-images.md) for build examples.
+
+ROCm support currently applies to `llama-cpp` on `linux/amd64`.
 :::
 
 ## Apple Silicon (experimental)

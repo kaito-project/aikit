@@ -7,7 +7,7 @@ title: Inference API Specifications
 ```yaml
 apiVersion: # required. only v1alpha1 is supported at the moment
 debug: # optional. if set to true, debug logs will be printed
-runtime: # optional. defaults to avx. can be "avx", "avx2", "avx512", "cuda"
+runtime: # optional. omit for the default CPU runtime. can be "cuda", "rocm", or "applesilicon"
 backends: # optional. list of additional backends. can be "llama-cpp" (default), "diffusers", "vllm"
 models: # optional. list of models to build. omit for runner mode (see runners.md)
   - name: # required. name of the model
@@ -18,6 +18,10 @@ models: # optional. list of models to build. omit for runner mode (see runners.m
         template: # required. template string
 config: # optional. list of config files
 ```
+
+:::note
+If omitted, `runtime` uses the default CPU runtime. `rocm` currently supports only the `llama-cpp` backend on `linux/amd64`.
+:::
 
 :::tip
 When `backends` is specified without `models`, a **runner image** is created that downloads models at container startup. See [Runner Images](runners.md) for details.

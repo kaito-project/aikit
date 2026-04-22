@@ -57,6 +57,9 @@ This will automatically run linting and formatting checks before each commit.
 
 ## Building AIKit
 
+> [!TIP]
+> Build targets default to multi-platform (`linux/amd64,linux/arm64`). For local development, pass your host architecture to speed up builds and avoid multi-platform issues — e.g. `make build-aikit PLATFORMS=linux/amd64`. You should also use the `default` buildx builder (`docker buildx use default`) so that locally built images are available to subsequent builds via the `#syntax=` directive.
+
 ### Build the AIKit Binary
 
 ```bash
