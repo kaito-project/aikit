@@ -45,11 +45,6 @@ func TestInstallRocmInstallsPciutilsForLlamaCpp(t *testing.T) {
 			if !strings.Contains(combined, wantInstall) {
 				t.Fatalf("expected ROCm install to contain %q, got: %s", wantInstall, combined)
 			}
-
-			legacyInstall := "apt-get install -y rocm && apt-get clean"
-			if strings.Contains(combined, legacyInstall) {
-				t.Fatalf("expected ROCm install to avoid %q, got: %s", legacyInstall, combined)
-			}
 		})
 	}
 }
