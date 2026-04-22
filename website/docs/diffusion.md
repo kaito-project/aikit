@@ -6,7 +6,7 @@ AIKit supports [`diffusers`](#diffusers) backend.
 
 ## diffusers
 
-`diffusers` backend uses the huggingface [`diffusers`](https://huggingface.co/docs/diffusers/en/index) library to generate images. This backend only supports CUDA runtime.
+`diffusers` backend uses the huggingface [`diffusers`](https://huggingface.co/docs/diffusers/en/index) library to generate images. This backend only supports the NVIDIA CUDA runtime today; AMD ROCm is not supported.
 
 ### Example
 
