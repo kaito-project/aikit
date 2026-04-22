@@ -188,19 +188,10 @@ Pin-Priority: 600
 	s = s.Run(utils.Shf("echo '%s' > /etc/apt/preferences.d/repo-radeon-pin-600", rocmPinning)).Root()
 	s = s.Run(utils.Sh("apt-get update"), llb.IgnoreCache).Root()
 
-	// default llama.cpp backend is being used
-	if len(c.Backends) == 0 {
-		// install rocm libraries and pciutils for gpu detection
+	// install rocm libraries and pciutils for gpu detection when using the default
+	// llama-cpp backend or when it is configured explicitly
+	if len(c.Backends) == 0 || slices.Contains(c.Backends, utils.BackendLlamaCpp) {
 		s = s.Run(utils.Sh("apt-get install -y pciutils rocm && apt-get clean")).Root()
-	}
-
-	// For backends that specify llama-cpp explicitly
-	for b := range c.Backends {
-		if c.Backends[b] == utils.BackendLlamaCpp {
-			// Install ROCm libraries needed for llama-cpp ROCm acceleration
-			rocmDeps := "apt-get install -y rocm && apt-get clean"
-			s = s.Run(utils.Sh(rocmDeps)).Root()
-		}
 	}
 
 	// hipblaslt soname compatibility: backend may be linked against .so.0 while ROCm 7.2 ships .so.1
