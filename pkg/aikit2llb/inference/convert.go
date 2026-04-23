@@ -14,7 +14,7 @@ import (
 
 const (
 	distrolessBase                = "ghcr.io/kaito-project/aikit/base:latest"
-	localAIBinaryVersion          = "v4.0.0"
+	localAIBinaryVersion          = "v4.1.3"
 	localAILlamaCppBackendVersion = localAIBinaryVersion
 	localAILegacyBackendVersion   = "v3.12.1"
 	localAIRepo                   = "ghcr.io/kaito-project/aikit/localai:"
