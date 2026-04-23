@@ -82,7 +82,11 @@ You can use `cuda` to include NVIDIA CUDA runtime libraries. For example:
 
 `--build-arg="runtime=cuda"`.
 
-or `applesilicon` to include Apple Silicon runtime libraries. For example:
+You can use `rocm` to include AMD ROCm runtime libraries for the `llama-cpp` backend on Linux AMD64. For example:
+
+`--build-arg="runtime=rocm"`.
+
+Or use `applesilicon` to include Apple Silicon runtime libraries. For example:
 
 `--build-arg="runtime=applesilicon"`.
 
@@ -100,7 +104,7 @@ docker buildx build -t my-model --load \
 [Pre-made models](https://kaito-project.github.io/aikit/docs/premade-models) are offered with multi-platform support. Docker runtime will automatically choose the correct platform to run the image. For more information, please see [multi-platform images documentation](https://docs.docker.com/build/building/multi-platform/).
 
 :::note
-Please note that ARM64 support only applies to the `llama.cpp` backend with CPU inference. NVIDIA CUDA is not supported on ARM64 at this time.
+Please note that ARM64 support only applies to the `llama.cpp` backend with CPU inference. NVIDIA CUDA and AMD ROCm are not supported on ARM64 at this time.
 :::
 
 ## Advanced Usage

@@ -11,9 +11,13 @@ Pre-built runner images are available at `ghcr.io/kaito-project/aikit/runners/`:
 | Image | Description |
 |---|---|
 | `ghcr.io/kaito-project/aikit/runners/llama-cpp-cpu:latest` | CPU-only llama.cpp runner (amd64, arm64) |
-| `ghcr.io/kaito-project/aikit/runners/llama-cpp-cuda:latest` | CUDA + CPU fallback llama.cpp runner (amd64) |
-| `ghcr.io/kaito-project/aikit/runners/diffusers-cuda:latest` | CUDA diffusers runner (amd64) |
-| `ghcr.io/kaito-project/aikit/runners/vllm-cuda:latest` | CUDA vLLM runner (amd64) |
+| `ghcr.io/kaito-project/aikit/runners/llama-cpp-cuda:latest` | NVIDIA CUDA + CPU fallback llama.cpp runner (amd64) |
+| `ghcr.io/kaito-project/aikit/runners/diffusers-cuda:latest` | NVIDIA CUDA diffusers runner (amd64) |
+| `ghcr.io/kaito-project/aikit/runners/vllm-cuda:latest` | NVIDIA CUDA vLLM runner (amd64) |
+
+:::note
+Pre-built runner images are currently published for CPU and NVIDIA CUDA only. For AMD GPUs, build a custom `llama-cpp` runner with `runtime: rocm`.
+:::
 
 ## Quick Start
 
@@ -51,7 +55,7 @@ The model name in the API request is the GGUF filename without the `.gguf` exten
 
 ## GPU Support
 
-CUDA runner images automatically detect whether an NVIDIA GPU is present at runtime. If no GPU is found, they fall back to CPU inference — no configuration needed.
+NVIDIA CUDA runner images automatically detect whether an NVIDIA GPU is present at runtime. If no GPU is found, they fall back to CPU inference — no configuration needed. ROCm runner images are not published yet.
 
 ```bash
 # With GPU
@@ -116,12 +120,22 @@ backends:
   - llama-cpp
 ```
 
-For CUDA:
+For NVIDIA CUDA:
 
 ```yaml
 #syntax=ghcr.io/kaito-project/aikit/aikit:latest
 apiVersion: v1alpha1
 runtime: cuda
+backends:
+  - llama-cpp
+```
+
+For ROCm (`llama-cpp` only):
+
+```yaml
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
+apiVersion: v1alpha1
+runtime: rocm
 backends:
   - llama-cpp
 ```
@@ -132,10 +146,12 @@ Build:
 docker buildx build -t my-runner -f runner.yaml .
 ```
 
+For AMD GPUs, run the resulting image with the ROCm device flags described in [GPU Acceleration](gpu.md).
+
 ### Supported Backends
 
 | Backend | Description |
 |---|---|
-| `llama-cpp` | GGUF models via llama.cpp (CPU or CUDA) |
-| `diffusers` | HuggingFace diffusers models (requires CUDA) |
-| `vllm` | HuggingFace safetensors models via vLLM (requires CUDA) |
+| `llama-cpp` | GGUF models via llama.cpp (CPU, NVIDIA CUDA, or ROCm) |
+| `diffusers` | HuggingFace diffusers models (requires NVIDIA CUDA) |
+| `vllm` | HuggingFace safetensors models via vLLM (requires NVIDIA CUDA) |

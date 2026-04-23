@@ -77,5 +77,14 @@ func emptyImage(c *config.InferenceConfig, platform *specs.Platform) *specs.Imag
 		)
 	}
 
+	rocmEnv := []string{
+		"PATH=" + system.DefaultPathEnv(utils.PlatformLinux) + ":/opt/rocm/bin",
+		"LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64:/opt/rocm/llvm/lib",
+		"LOCALAI_FORCE_META_BACKEND_CAPABILITY=amd",
+	}
+	if c.Runtime == utils.RuntimeROCm && platform.Architecture == "amd64" {
+		img.Config.Env = append(img.Config.Env, rocmEnv...)
+	}
+
 	return img
 }

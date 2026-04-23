@@ -99,6 +99,15 @@ func TestGetBackendTag(t *testing.T) {
 			want: fmt.Sprintf("%s-gpu-nvidia-cuda-12-llama-cpp", localAILlamaCppBackendVersion),
 		},
 		{
+			name:    "ROCm llama-cpp",
+			backend: utils.BackendLlamaCpp,
+			runtime: utils.RuntimeROCm,
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: fmt.Sprintf("%s-gpu-rocm-hipblas-llama-cpp", localAIROCmBackendVersion),
+		},
+		{
 			name:    "Empty backend name defaults to CPU llama-cpp",
 			backend: "",
 			runtime: "",

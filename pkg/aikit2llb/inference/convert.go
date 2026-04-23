@@ -17,16 +17,22 @@ const (
 	localAIBinaryVersion          = "v4.0.0"
 	localAILlamaCppBackendVersion = localAIBinaryVersion
 	localAILegacyBackendVersion   = "v3.12.1"
+	localAIROCmBackendVersion     = "rocm7"
 	localAIRepo                   = "ghcr.io/kaito-project/aikit/localai:"
 	cudaVersion                   = "12-5"
+	rocmVersion                   = "7.2"
 )
 
 // Aikit2LLB converts an InferenceConfig to an LLB state.
 func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, *specs.Image, error) {
 	var merge, state llb.State
-	if c.Runtime == utils.RuntimeAppleSilicon {
+	switch c.Runtime {
+	case utils.RuntimeAppleSilicon:
 		state = llb.Image(utils.AppleSiliconBase, llb.Platform(*platform))
-	} else {
+	case utils.RuntimeROCm:
+		// Use Ubuntu 24.04 for ROCm to match noble repository
+		state = llb.Image(utils.Ubuntu24Base, llb.Platform(*platform))
+	default:
 		state = llb.Image(utils.UbuntuBase, llb.Platform(*platform))
 	}
 	base := getBaseImage(c, platform)
@@ -55,6 +61,11 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 		state, merge = installCuda(c, state, merge)
 	}
 
+	// install rocm if runtime is rocm and architecture is amd64
+	if c.Runtime == utils.RuntimeROCm && platform.Architecture == utils.PlatformAMD64 {
+		state, merge = installRocm(c, state, merge)
+	}
+
 	// install backend dependencies
 	merge = installBackends(c, *platform, state, merge)
 
@@ -66,6 +77,10 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 func getBaseImage(c *config.InferenceConfig, platform *specs.Platform) llb.State {
 	if c.Runtime == utils.RuntimeAppleSilicon {
 		return llb.Image(utils.AppleSiliconBase, llb.Platform(*platform))
+	}
+	if c.Runtime == utils.RuntimeROCm {
+		// Use Ubuntu 24.04 for ROCm to match noble repository.
+		return llb.Image(utils.Ubuntu24Base, llb.Platform(*platform))
 	}
 	if len(c.Backends) > 0 {
 		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
@@ -150,6 +165,37 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 		s = s.Run(utils.Shf("apt-get install -y --no-install-recommends pciutils libcublas-%[1]s cuda-cudart-%[1]s && apt-get clean", cudaVersion)).Root()
 		// TODO: clean up /var/lib/dpkg/status
 	}
+
+	diff := llb.Diff(savedState, s)
+	return s, llb.Merge([]llb.State{merge, diff})
+}
+
+func installRocm(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.State, llb.State) {
+	savedState := s
+
+	// Set up ROCm repository
+	s = s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y ca-certificates curl gnupg"), llb.IgnoreCache).Root()
+
+	// Add ROCm GPG key and repository
+	s = s.Run(utils.Sh("curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/rocm.gpg")).Root()
+	s = s.Run(utils.Shf("echo 'deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/rocm.gpg] https://repo.radeon.com/rocm/apt/%s/ noble main' >> /etc/apt/sources.list.d/rocm.list", rocmVersion)).Root()
+	s = s.Run(utils.Shf("echo 'deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/rocm.gpg] https://repo.radeon.com/graphics/%s/ubuntu noble main' >> /etc/apt/sources.list.d/rocm.list", rocmVersion)).Root()
+	rocmPinning := `
+Package: *
+Pin: release o=repo.radeon.com
+Pin-Priority: 600
+`
+	s = s.Run(utils.Shf("echo '%s' > /etc/apt/preferences.d/repo-radeon-pin-600", rocmPinning)).Root()
+	s = s.Run(utils.Sh("apt-get update"), llb.IgnoreCache).Root()
+
+	// install rocm libraries and pciutils for gpu detection when using the default
+	// llama-cpp backend or when it is configured explicitly
+	if len(c.Backends) == 0 || slices.Contains(c.Backends, utils.BackendLlamaCpp) {
+		s = s.Run(utils.Sh("apt-get install -y pciutils rocm && apt-get clean")).Root()
+	}
+
+	// hipblaslt soname compatibility: backend may be linked against .so.0 while ROCm 7.2 ships .so.1
+	s = s.Run(utils.Sh("set -e; cd /opt/rocm/lib; [ -e libhipblaslt.so.0 ] || ln -sf libhipblaslt.so.1 libhipblaslt.so.0")).Root()
 
 	diff := llb.Diff(savedState, s)
 	return s, llb.Merge([]llb.State{merge, diff})
