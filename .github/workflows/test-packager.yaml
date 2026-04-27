@@ -52,7 +52,7 @@ jobs:
             expect_artifact: skip
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@6c3c2f2c1c457b00c10c4848d6f5491db3b629df # v2.18.0
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
         with:
           egress-policy: audit
           allowed-endpoints: >
@@ -70,7 +70,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Docker (containerd + insecure local registry)
-        uses: crazy-max/ghaction-setup-docker@1a6edb0ba9ac496f6850236981f15d8f9a82254d # v5.0.0
+        uses: crazy-max/ghaction-setup-docker@b2189fbf2a6592b51fee7cdd93ee2bfaeba733db # v5.1.0
         with:
           daemon-config: |
             {
