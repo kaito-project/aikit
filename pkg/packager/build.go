@@ -116,9 +116,16 @@ func BuildModelpack(ctx context.Context, c client.Client) (*client.Result, error
 		llb.Args([]string{"bash", "-c", script}),
 		llb.AddMount("/src", modelState, llb.Readonly),
 	)
-	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
+	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout", "/", &llb.CopyInfo{
+		CopyDirContentsOnly: true,
+	}))
 
-	return solveAndBuildResult(ctx, c, final, "packager:modelpack")
+	result, err := solveAndBuildResult(ctx, c, final, "packager:modelpack")
+	if err != nil {
+		return nil, err
+	}
+	result.AddMeta("containerimage.oci-layout", []byte("true"))
+	return result, nil
 }
 
 // BuildGeneric builds a generic artifact layout (target packager/generic).
@@ -151,9 +158,16 @@ func BuildGeneric(ctx context.Context, c client.Client) (*client.Result, error) 
 		llb.Args([]string{"bash", "-c", script}),
 		llb.AddMount("/src", srcState, llb.Readonly),
 	)
-	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
+	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout", "/", &llb.CopyInfo{
+		CopyDirContentsOnly: true,
+	}))
 
-	return solveAndBuildResult(ctx, c, final, "packager:generic")
+	result, err := solveAndBuildResult(ctx, c, final, "packager:generic")
+	if err != nil {
+		return nil, err
+	}
+	result.AddMeta("containerimage.oci-layout", []byte("true"))
+	return result, nil
 }
 
 func getBuildArg(opts map[string]string, k string) string {

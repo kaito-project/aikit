@@ -60,14 +60,22 @@ jobs:
             --build-arg name=llama-3.2-1b-instruct \
             --build-arg layer_packaging=raw \
             --output type=local,dest=modelpack-out
-          test -f modelpack-out/layout/index.json
+          layout_root=modelpack-out
+          if [ ! -f "$layout_root/index.json" ] && [ -f modelpack-out/layout/index.json ]; then
+            layout_root=modelpack-out/layout
+          fi
+          test -f "$layout_root/index.json"
           echo 'Modelpack layout:'
           find modelpack-out -maxdepth 2 -type f | head -50
 
       - name: Push modelpack to local registry
         run: |
           set -euo pipefail
-          skopeo copy --dest-tls-verify=false oci:modelpack-out/layout docker://localhost:5000/aikit/llama-3.2-1b-instruct:modelpack
+          layout_root=modelpack-out
+          if [ ! -f "$layout_root/index.json" ] && [ -f modelpack-out/layout/index.json ]; then
+            layout_root=modelpack-out/layout
+          fi
+          skopeo copy --dest-tls-verify=false oci:$layout_root docker://localhost:5000/aikit/llama-3.2-1b-instruct:modelpack
           skopeo inspect --tls-verify=false --raw docker://localhost:5000/aikit/llama-3.2-1b-instruct:modelpack > pushed-manifest.json
           sha=sha256:$(sha256sum pushed-manifest.json | awk '{print $1}')
           echo "Pushed manifest digest: $sha"
