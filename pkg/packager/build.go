@@ -6,6 +6,7 @@ package packager
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
@@ -111,12 +112,14 @@ func BuildModelpack(ctx context.Context, c client.Client) (*client.Result, error
 
 	artifactType := v1.ArtifactTypeModelManifest
 	mtManifest := v1.MediaTypeModelConfig
-	script := generateModelpackScript(cfg.packMode, artifactType, mtManifest, cfg.name, cfg.refName)
+	env := modelpackScriptEnv(cfg.packMode, artifactType, mtManifest, cfg.name, cfg.refName)
 
-	run := llb.Image(bashImage).Run(
-		llb.Args([]string{"bash", "-c", script}),
+	runOpts := []llb.RunOption{
+		llb.Args([]string{"bash", "-c", modelpackScript}),
 		llb.AddMount("/src", modelState, llb.Readonly),
-	)
+	}
+	runOpts = append(runOpts, envRunOptions(env)...)
+	run := llb.Image(bashImage).Run(runOpts...)
 	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
 
 	return solveAndBuildResult(ctx, c, final, "packager:modelpack")
@@ -146,15 +149,32 @@ func BuildGeneric(ctx context.Context, c client.Client) (*client.Result, error) 
 	}
 
 	artifactType := "application/vnd.unknown.artifact.v1"
-	script := generateGenericScript(cfg.packMode, artifactType, cfg.name, cfg.refName, cfg.debug)
+	env := genericScriptEnv(cfg.packMode, artifactType, cfg.name, cfg.refName, cfg.debug)
 
-	run := llb.Image(bashImage).Run(
-		llb.Args([]string{"bash", "-c", script}),
+	runOpts := []llb.RunOption{
+		llb.Args([]string{"bash", "-c", genericScript}),
 		llb.AddMount("/src", srcState, llb.Readonly),
-	)
+	}
+	runOpts = append(runOpts, envRunOptions(env)...)
+	run := llb.Image(bashImage).Run(runOpts...)
 	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
 
 	return solveAndBuildResult(ctx, c, final, "packager:generic")
+}
+
+// envRunOptions converts an environment map into a deterministically ordered
+// slice of llb.RunOption values (sorted by key so the produced LLB is stable).
+func envRunOptions(env map[string]string) []llb.RunOption {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	opts := make([]llb.RunOption, 0, len(keys))
+	for _, k := range keys {
+		opts = append(opts, llb.AddEnv(k, env[k]))
+	}
+	return opts
 }
 
 func getBuildArg(opts map[string]string, k string) string {
