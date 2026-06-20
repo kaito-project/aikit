@@ -10,11 +10,10 @@ import (
 func installVLLMDependencies(s llb.State, merge llb.State) llb.State {
 	merge = installPythonBaseDependencies(s, merge)
 
-	savedState := s
-	s = s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y gcc libc6-dev && apt-get clean"),
-		llb.WithCustomName("Installing C compiler for vLLM Triton JIT"),
-	).Root()
-
-	diff := llb.Diff(savedState, s)
-	return llb.Merge([]llb.State{merge, diff})
+	_, merge = applyAndMerge(s, merge, func(s llb.State) llb.State {
+		return s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y gcc libc6-dev && apt-get clean"),
+			llb.WithCustomName("Installing C compiler for vLLM Triton JIT"),
+		).Root()
+	})
+	return merge
 }

@@ -2,6 +2,7 @@
 package inference
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -200,10 +201,20 @@ func handleHuggingFace(source string, s llb.State) (llb.State, error) {
 
 // listHuggingFaceRepoFiles returns the list of files in a HuggingFace repo,
 // excluding non-essential files like .gitattributes and README.md.
+//
+// This performs a live HTTP request during LLB graph construction. The request
+// is context-aware so it can be canceled, but a cancelable context is not yet
+// threaded all the way from the solve: Aikit2LLB has a frozen signature without
+// a context parameter, so context.TODO is used here. Fully threading the solve
+// context (or moving this enumeration into the build graph) is a follow-up.
 func listHuggingFaceRepoFiles(namespace, model, revision string) ([]string, error) {
 	apiURL := fmt.Sprintf("https://huggingface.co/api/models/%s/%s/revision/%s", namespace, model, revision)
+	req, err := http.NewRequestWithContext(context.TODO(), http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building HuggingFace API request: %w", err)
+	}
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(apiURL) //nolint:gosec
+	resp, err := client.Do(req) //nolint:gosec
 	if err != nil {
 		return nil, fmt.Errorf("fetching repo info: %w", err)
 	}

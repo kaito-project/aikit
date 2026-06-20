@@ -8,6 +8,7 @@ import (
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
+	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func TestInstallRocmInstallsPciutilsForLlamaCpp(t *testing.T) {
@@ -60,4 +61,29 @@ func marshalDefinitionToString(def *llb.Definition) string {
 	}
 
 	return combined.String()
+}
+
+// TestCopyModelsAbsoluteLocalPath guards the scheme-dispatch fix: an absolute
+// local model path (no URI scheme) must be treated as a local file, not
+// rejected. The previous url.ParseRequestURI guard caused absolute paths to
+// fall through to a hard "unsupported URL scheme" error.
+func TestCopyModelsAbsoluteLocalPath(t *testing.T) {
+	cfg := &config.InferenceConfig{
+		Runtime: "",
+		Models: []config.Model{
+			{Name: "local", Source: "/models/local.gguf"},
+		},
+	}
+
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	base := llb.Image(utils.UbuntuBase)
+	state, merged, err := copyModels(cfg, base, base, platform)
+	if err != nil {
+		t.Fatalf("copyModels returned error for absolute local path: %v", err)
+	}
+
+	if _, err := merged.Marshal(context.Background()); err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	_ = state
 }

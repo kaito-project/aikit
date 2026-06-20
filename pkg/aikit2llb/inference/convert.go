@@ -2,7 +2,6 @@ package inference
 
 import (
 	"fmt"
-	"net/url"
 	"slices"
 	"strings"
 
@@ -90,39 +89,37 @@ func getBaseImage(c *config.InferenceConfig, platform *specs.Platform) llb.State
 
 // writeConfig writes the /config.yaml file to the image when c.Config is set.
 func writeConfig(c *config.InferenceConfig, base llb.State, s llb.State, platform specs.Platform) (llb.State, llb.State) {
-	savedState := s
-	if c.Config != "" {
-		s = s.File(
-			llb.Mkfile("/config.yaml", 0o644, []byte(c.Config)),
-			llb.WithCustomName(fmt.Sprintf("Creating config for platform %s/%s", platform.OS, platform.Architecture)),
-		)
-	}
-	diff := llb.Diff(savedState, s)
-	merge := llb.Merge([]llb.State{base, diff})
-	return s, merge
+	return applyAndMerge(s, base, func(s llb.State) llb.State {
+		if c.Config != "" {
+			s = s.File(
+				llb.Mkfile("/config.yaml", 0o644, []byte(c.Config)),
+				llb.WithCustomName(fmt.Sprintf("Creating config for platform %s/%s", platform.OS, platform.Architecture)),
+			)
+		}
+		return s
+	})
 }
 
 // copyModels copies models to the image and writes the config.
 func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, platform specs.Platform) (llb.State, llb.State, error) {
 	savedState := s
 	for _, model := range c.Models {
-		// Check if the model source is a URL
-		if _, err := url.ParseRequestURI(model.Source); err == nil {
-			switch {
-			case strings.HasPrefix(model.Source, "oci://"):
-				s = handleOCI(model.Source, s, platform)
-			case strings.HasPrefix(model.Source, "http://"), strings.HasPrefix(model.Source, "https://"):
-				s = handleHTTP(model.Source, model.Name, model.SHA256, s)
-			case strings.HasPrefix(model.Source, "huggingface://"):
-				s, err = handleHuggingFace(model.Source, s)
-				if err != nil {
-					return llb.State{}, llb.State{}, err
-				}
-			default:
-				return llb.State{}, llb.State{}, fmt.Errorf("unsupported URL scheme: %s", model.Source)
+		// Dispatch on the source's URI scheme. Anything without a recognized
+		// scheme (including absolute local paths like /models/foo.gguf) is treated
+		// as a local file. The previous url.ParseRequestURI guard incorrectly
+		// rejected absolute local paths, which parse as URIs with an empty scheme.
+		var err error
+		switch {
+		case strings.HasPrefix(model.Source, "oci://"):
+			s = handleOCI(model.Source, s, platform)
+		case strings.HasPrefix(model.Source, "http://"), strings.HasPrefix(model.Source, "https://"):
+			s = handleHTTP(model.Source, model.Name, model.SHA256, s)
+		case strings.HasPrefix(model.Source, "huggingface://"):
+			s, err = handleHuggingFace(model.Source, s)
+			if err != nil {
+				return llb.State{}, llb.State{}, err
 			}
-		} else {
-			// Handle local paths
+		default:
 			s = handleLocal(model.Source, s)
 		}
 
@@ -155,50 +152,47 @@ func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.S
 	)
 	s = s.Run(utils.Sh("dpkg -i cuda-keyring_1.1-1_all.deb && rm cuda-keyring_1.1-1_all.deb")).Root()
 
-	savedState := s
-	// running apt-get update twice due to nvidia repo
-	s = s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y ca-certificates && apt-get update"), llb.IgnoreCache).Root()
+	return applyAndMerge(s, merge, func(s llb.State) llb.State {
+		// running apt-get update twice due to nvidia repo
+		s = s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y ca-certificates && apt-get update"), llb.IgnoreCache).Root()
 
-	// install cuda libraries for llama-cpp (default) and vllm backends
-	if len(c.Backends) == 0 || slices.Contains(c.Backends, utils.BackendLlamaCpp) || slices.Contains(c.Backends, utils.BackendVLLM) {
-		// install cuda libraries and pciutils for gpu detection
-		s = s.Run(utils.Shf("apt-get install -y --no-install-recommends pciutils libcublas-%[1]s cuda-cudart-%[1]s && apt-get clean", cudaVersion)).Root()
-		// TODO: clean up /var/lib/dpkg/status
-	}
-
-	diff := llb.Diff(savedState, s)
-	return s, llb.Merge([]llb.State{merge, diff})
+		// install cuda libraries for llama-cpp (default) and vllm backends
+		if len(c.Backends) == 0 || slices.Contains(c.Backends, utils.BackendLlamaCpp) || slices.Contains(c.Backends, utils.BackendVLLM) {
+			// install cuda libraries and pciutils for gpu detection
+			s = s.Run(utils.Shf("apt-get install -y --no-install-recommends pciutils libcublas-%[1]s cuda-cudart-%[1]s && apt-get clean", cudaVersion)).Root()
+			// TODO: clean up /var/lib/dpkg/status
+		}
+		return s
+	})
 }
 
 func installRocm(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.State, llb.State) {
-	savedState := s
+	return applyAndMerge(s, merge, func(s llb.State) llb.State {
+		// Set up ROCm repository
+		s = s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y ca-certificates curl gnupg"), llb.IgnoreCache).Root()
 
-	// Set up ROCm repository
-	s = s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y ca-certificates curl gnupg"), llb.IgnoreCache).Root()
-
-	// Add ROCm GPG key and repository
-	s = s.Run(utils.Sh("curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/rocm.gpg")).Root()
-	s = s.Run(utils.Shf("echo 'deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/rocm.gpg] https://repo.radeon.com/rocm/apt/%s/ noble main' >> /etc/apt/sources.list.d/rocm.list", rocmVersion)).Root()
-	s = s.Run(utils.Shf("echo 'deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/rocm.gpg] https://repo.radeon.com/graphics/%s/ubuntu noble main' >> /etc/apt/sources.list.d/rocm.list", rocmVersion)).Root()
-	rocmPinning := `
+		// Add ROCm GPG key and repository
+		s = s.Run(utils.Sh("curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/rocm.gpg")).Root()
+		s = s.Run(utils.Shf("echo 'deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/rocm.gpg] https://repo.radeon.com/rocm/apt/%s/ noble main' >> /etc/apt/sources.list.d/rocm.list", rocmVersion)).Root()
+		s = s.Run(utils.Shf("echo 'deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/rocm.gpg] https://repo.radeon.com/graphics/%s/ubuntu noble main' >> /etc/apt/sources.list.d/rocm.list", rocmVersion)).Root()
+		rocmPinning := `
 Package: *
 Pin: release o=repo.radeon.com
 Pin-Priority: 600
 `
-	s = s.Run(utils.Shf("echo '%s' > /etc/apt/preferences.d/repo-radeon-pin-600", rocmPinning)).Root()
-	s = s.Run(utils.Sh("apt-get update"), llb.IgnoreCache).Root()
+		s = s.Run(utils.Shf("echo '%s' > /etc/apt/preferences.d/repo-radeon-pin-600", rocmPinning)).Root()
+		s = s.Run(utils.Sh("apt-get update"), llb.IgnoreCache).Root()
 
-	// install rocm libraries and pciutils for gpu detection when using the default
-	// llama-cpp backend or when it is configured explicitly
-	if len(c.Backends) == 0 || slices.Contains(c.Backends, utils.BackendLlamaCpp) {
-		s = s.Run(utils.Sh("apt-get install -y pciutils rocm && apt-get clean")).Root()
-	}
+		// install rocm libraries and pciutils for gpu detection when using the default
+		// llama-cpp backend or when it is configured explicitly
+		if len(c.Backends) == 0 || slices.Contains(c.Backends, utils.BackendLlamaCpp) {
+			s = s.Run(utils.Sh("apt-get install -y pciutils rocm && apt-get clean")).Root()
+		}
 
-	// hipblaslt soname compatibility: backend may be linked against .so.0 while ROCm 7.2 ships .so.1
-	s = s.Run(utils.Sh("set -e; cd /opt/rocm/lib; [ -e libhipblaslt.so.0 ] || ln -sf libhipblaslt.so.1 libhipblaslt.so.0")).Root()
-
-	diff := llb.Diff(savedState, s)
-	return s, llb.Merge([]llb.State{merge, diff})
+		// hipblaslt soname compatibility: backend may be linked against .so.0 while ROCm 7.2 ships .so.1
+		s = s.Run(utils.Sh("set -e; cd /opt/rocm/lib; [ -e libhipblaslt.so.0 ] || ln -sf libhipblaslt.so.1 libhipblaslt.so.0")).Root()
+		return s
+	})
 }
 
 // addLocalAI adds the LocalAI binary to the image.
@@ -218,8 +212,6 @@ func addLocalAI(c *config.InferenceConfig, s llb.State, merge llb.State, platfor
 		return s, merge, fmt.Errorf("unsupported architecture %s", platform.Architecture)
 	}
 
-	savedState := s
-
 	// Use the oras CLI image to pull the artifact containing the LocalAI binary
 	tooling := llb.Image(orasImage, llb.Platform(platform)).Run(
 		utils.Shf("set -e\noras pull %[1]s\nchmod +x local-ai\nchmod 755 local-ai", art.Ref),
@@ -227,11 +219,11 @@ func addLocalAI(c *config.InferenceConfig, s llb.State, merge llb.State, platfor
 	).Root()
 
 	// Copy the prepared binary into /usr/bin/local-ai
-	s = s.File(
-		llb.Copy(tooling, "local-ai", "/usr/bin/local-ai"),
-		llb.WithCustomName("Copying local-ai from OCI artifact to /usr/bin"),
-	)
-
-	diff := llb.Diff(savedState, s)
-	return s, llb.Merge([]llb.State{merge, diff}), nil
+	s, merge = applyAndMerge(s, merge, func(s llb.State) llb.State {
+		return s.File(
+			llb.Copy(tooling, "local-ai", "/usr/bin/local-ai"),
+			llb.WithCustomName("Copying local-ai from OCI artifact to /usr/bin"),
+		)
+	})
+	return s, merge, nil
 }

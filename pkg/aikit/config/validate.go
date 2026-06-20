@@ -2,11 +2,15 @@ package config
 
 import (
 	"errors"
+	"regexp"
 	"slices"
 
 	"github.com/kaito-project/aikit/pkg/utils"
 	pkgerrors "github.com/pkg/errors"
 )
+
+// sha256HexPattern matches a bare 64-character lowercase hex SHA256 checksum.
+var sha256HexPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 // Validate checks that the inference config is internally consistent and only
 // references supported backends and runtimes. Membership errors (unknown
@@ -68,6 +72,15 @@ func (c *InferenceConfig) Validate() error {
 			if backend != utils.BackendLlamaCpp {
 				return errors.New("rocm runtime only supports llama-cpp backend")
 			}
+		}
+	}
+
+	// Validate any provided model checksums up front so a malformed value fails
+	// the build immediately with a clear message rather than producing a broken
+	// digest deep in LLB construction.
+	for _, m := range c.Models {
+		if m.SHA256 != "" && !sha256HexPattern.MatchString(m.SHA256) {
+			return pkgerrors.Errorf("model %q has an invalid sha256 checksum %q: expected 64 lowercase hex characters", m.Name, m.SHA256)
 		}
 	}
 
