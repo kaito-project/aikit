@@ -1,5 +1,7 @@
 package config
 
+//go:generate go run github.com/kaito-project/aikit/cmd/gen-jsonschema
+
 import (
 	"github.com/pkg/errors"
 	yaml "gopkg.in/yaml.v2"
