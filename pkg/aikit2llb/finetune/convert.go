@@ -8,6 +8,7 @@ import (
 	"github.com/kaito-project/aikit/pkg/version"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/util/system"
+	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
 )
 
@@ -17,7 +18,7 @@ const (
 	sourceVenv         = ". .venv/bin/activate"
 )
 
-func Aikit2LLB(c *config.FineTuneConfig) llb.State {
+func Aikit2LLB(c *config.FineTuneConfig) (llb.State, error) {
 	env := map[string]string{
 		"PATH":                       system.DefaultPathEnv("linux") + ":/usr/local/cuda/bin",
 		"NVIDIA_REQUIRE_CUDA":        "cuda>=12.0",
@@ -38,7 +39,7 @@ func Aikit2LLB(c *config.FineTuneConfig) llb.State {
 	// write config to /config.yaml
 	cfg, err := yaml.Marshal(c)
 	if err != nil {
-		panic(err)
+		return llb.State{}, errors.Wrap(err, "failed to marshal finetune config")
 	}
 	state = state.Run(utils.Shf("echo -n \"%s\" > /config.yaml", string(cfg))).Root()
 
@@ -73,5 +74,5 @@ func Aikit2LLB(c *config.FineTuneConfig) llb.State {
 		scratch = llb.Scratch().File(llb.Copy(state, inputFile, outputFile, copyOpts...))
 	}
 
-	return scratch
+	return scratch, nil
 }

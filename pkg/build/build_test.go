@@ -171,7 +171,7 @@ func Test_validateConfig(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := validateInferenceConfig(tt.args.c); (err != nil) != tt.wantErr {
+			if err := tt.args.c.Validate(); (err != nil) != tt.wantErr {
 				t.Errorf("validateConfig() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
@@ -374,7 +374,7 @@ func Test_validateFineTuneConfig(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := validateFinetuneConfig(tt.args.c); (err != nil) != tt.wantErr {
+			if err := tt.args.c.Validate(); (err != nil) != tt.wantErr {
 				t.Errorf("validateFineTuneConfig() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
@@ -457,7 +457,10 @@ func Test_defaultsUnslothConfig(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			defaultsUnslothConfig(tt.args.c)
+			tt.args.c.Target = "unsloth"
+			tt.args.c.FillDefaults()
+			tt.want.Target = "unsloth"
+			tt.want.Output = config.FineTuneOutputSpec{Quantize: "q4_k_m", Name: "aikit-model"}
 			if !reflect.DeepEqual(tt.args.c, tt.want) {
 				t.Errorf("defaultsUnslothConfig() = %v, want %v", tt.args.c, tt.want)
 			}
