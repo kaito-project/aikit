@@ -6,7 +6,9 @@ package packager
 import (
 	"context"
 	"fmt"
+	"sort"
 
+	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/exporter/containerimage/exptypes"
 	"github.com/moby/buildkit/frontend/gateway/client"
@@ -35,13 +37,13 @@ type buildConfig struct {
 // parseBuildConfig extracts and validates build configuration from BuildKit options.
 func parseBuildConfig(opts map[string]string, sessionID string, isModelpack bool) (*buildConfig, error) {
 	cfg := &buildConfig{
-		source:    getBuildArg(opts, "source"),
-		exclude:   getBuildArg(opts, "exclude"),
-		packMode:  getBuildArg(opts, "layer_packaging"),
+		source:    utils.GetBuildArg(opts, "source"),
+		exclude:   utils.GetBuildArg(opts, "exclude"),
+		packMode:  utils.GetBuildArg(opts, "layer_packaging"),
 		name:      determineName(opts),
 		refName:   determineRefName(opts),
 		sessionID: sessionID,
-		debug:     getBuildArg(opts, "debug") == "1",
+		debug:     utils.GetBuildArg(opts, "debug") == "1",
 	}
 
 	if cfg.source == "" {
@@ -57,7 +59,7 @@ func parseBuildConfig(opts map[string]string, sessionID string, isModelpack bool
 	}
 
 	if !isModelpack {
-		cfg.genericOutputMode = getBuildArg(opts, "generic_output_mode")
+		cfg.genericOutputMode = utils.GetBuildArg(opts, "generic_output_mode")
 	}
 
 	return cfg, nil
@@ -110,12 +112,14 @@ func BuildModelpack(ctx context.Context, c client.Client) (*client.Result, error
 
 	artifactType := v1.ArtifactTypeModelManifest
 	mtManifest := v1.MediaTypeModelConfig
-	script := generateModelpackScript(cfg.packMode, artifactType, mtManifest, cfg.name, cfg.refName)
+	env := modelpackScriptEnv(cfg.packMode, artifactType, mtManifest, cfg.name, cfg.refName)
 
-	run := llb.Image(bashImage).Run(
-		llb.Args([]string{"bash", "-c", script}),
+	runOpts := []llb.RunOption{
+		llb.Args([]string{"bash", "-c", modelpackScript}),
 		llb.AddMount("/src", modelState, llb.Readonly),
-	)
+	}
+	runOpts = append(runOpts, envRunOptions(env)...)
+	run := llb.Image(bashImage).Run(runOpts...)
 	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
 
 	return solveAndBuildResult(ctx, c, final, "packager:modelpack")
@@ -145,30 +149,42 @@ func BuildGeneric(ctx context.Context, c client.Client) (*client.Result, error) 
 	}
 
 	artifactType := "application/vnd.unknown.artifact.v1"
-	script := generateGenericScript(cfg.packMode, artifactType, cfg.name, cfg.refName, cfg.debug)
+	env := genericScriptEnv(cfg.packMode, artifactType, cfg.name, cfg.refName, cfg.debug)
 
-	run := llb.Image(bashImage).Run(
-		llb.Args([]string{"bash", "-c", script}),
+	runOpts := []llb.RunOption{
+		llb.Args([]string{"bash", "-c", genericScript}),
 		llb.AddMount("/src", srcState, llb.Readonly),
-	)
+	}
+	runOpts = append(runOpts, envRunOptions(env)...)
+	run := llb.Image(bashImage).Run(runOpts...)
 	final := llb.Scratch().File(llb.Copy(run.Root(), "/layout/", "/"))
 
 	return solveAndBuildResult(ctx, c, final, "packager:generic")
 }
 
-func getBuildArg(opts map[string]string, k string) string {
-	if opts != nil {
-		if v, ok := opts["build-arg:"+k]; ok {
-			return v
-		}
+// envRunOptions converts an environment map into a deterministically ordered
+// slice of llb.RunOption values (sorted by key so the produced LLB is stable).
+func envRunOptions(env map[string]string) []llb.RunOption {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
 	}
-	return ""
+	sort.Strings(keys)
+	opts := make([]llb.RunOption, 0, len(keys))
+	for _, k := range keys {
+		opts = append(opts, llb.AddEnv(k, env[k]))
+	}
+	return opts
+}
+
+func getBuildArg(opts map[string]string, k string) string {
+	return utils.GetBuildArg(opts, k)
 }
 
 // determineRefName returns the reference name to use for index annotations.
 // Only uses build-arg:name if present; otherwise returns "latest".
 func determineRefName(opts map[string]string) string {
-	if n := getBuildArg(opts, "name"); n != "" {
+	if n := utils.GetBuildArg(opts, "name"); n != "" {
 		return n
 	}
 	// If name not supplied, ref name still "latest" (different semantic than title fallback)
@@ -178,7 +194,7 @@ func determineRefName(opts map[string]string) string {
 // determineName returns the provided model name (build-arg name) or a fallback.
 // Fallback is "aikitmodel" to ensure title annotation isn't empty.
 func determineName(opts map[string]string) string {
-	if n := getBuildArg(opts, "name"); n != "" {
+	if n := utils.GetBuildArg(opts, "name"); n != "" {
 		return n
 	}
 	return "aikitmodel"

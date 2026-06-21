@@ -4,10 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
+	"runtime"
 	"strings"
 
-	"github.com/containerd/platforms"
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	"github.com/kaito-project/aikit/pkg/aikit2llb/finetune"
 	"github.com/kaito-project/aikit/pkg/aikit2llb/inference"
@@ -15,13 +14,11 @@ import (
 	"github.com/kaito-project/aikit/pkg/utils"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"github.com/moby/buildkit/client/llb"
-	"github.com/moby/buildkit/exporter/containerimage/exptypes"
-	d2llb "github.com/moby/buildkit/frontend/dockerfile/dockerfile2llb"
 	"github.com/moby/buildkit/frontend/dockerui"
 	"github.com/moby/buildkit/frontend/gateway/client"
+	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
-	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -34,16 +31,32 @@ const (
 	keyOutput         = "output"
 	keyTargetPlatform = "platform"
 	keyCacheImports   = "cache-imports"
+
+	packagerTargetPrefix = "packager/"
 )
 
-func Build(ctx context.Context, c client.Client) (*client.Result, error) {
+// Build is the BuildKit frontend entrypoint. It recovers from panics in build
+// logic so that a programming error surfaces as a build failure with a stack
+// trace rather than crashing the frontend process.
+func Build(ctx context.Context, c client.Client) (_ *client.Result, retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = errors.Errorf("recovered from panic in frontend: %+v\n%s", r, getPanicStack())
+		}
+	}()
+
 	opts := c.BuildOpts().Opts
-	if t, ok := opts[keyTarget]; ok {
+
+	// Packager targets are dispatched directly. An unknown packager/* target is
+	// an explicit error rather than a silent fall-through to aikitfile loading.
+	if t := opts[keyTarget]; strings.HasPrefix(t, packagerTargetPrefix) {
 		switch t {
 		case "packager/modelpack":
 			return packager.BuildModelpack(ctx, c)
 		case "packager/generic":
 			return packager.BuildGeneric(ctx, c)
+		default:
+			return nil, errors.Errorf("unknown target %q", t)
 		}
 	}
 
@@ -52,41 +65,55 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 		return nil, errors.Wrap(err, "getting aikitfile")
 	}
 
-	if finetuneCfg != nil {
+	switch {
+	case finetuneCfg != nil:
 		return buildFineTune(ctx, c, finetuneCfg)
-	} else if inferenceCfg != nil {
+	case inferenceCfg != nil:
 		return buildInference(ctx, c, inferenceCfg)
+	default:
+		return nil, errors.New("aikitfile did not contain a valid inference or finetune configuration")
 	}
+}
 
-	return nil, nil
+// getPanicStack captures the current goroutine's stack as an error-friendly string.
+func getPanicStack() string {
+	stackBuf := make([]uintptr, 32)
+	n := runtime.Callers(3, stackBuf) // Skip runtime.Callers, getPanicStack, and the deferred closure.
+	stackBuf = stackBuf[:n]
+	frames := runtime.CallersFrames(stackBuf)
+	var sb strings.Builder
+	for {
+		frame, more := frames.Next()
+		fmt.Fprintf(&sb, "%s\n\t%s:%d\n", frame.Function, frame.File, frame.Line)
+		if !more {
+			break
+		}
+	}
+	return sb.String()
 }
 
 func buildFineTune(ctx context.Context, c client.Client, cfg *config.FineTuneConfig) (*client.Result, error) {
-	err := validateFinetuneConfig(cfg)
-	if err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, errors.Wrap(err, "validating aikitfile")
 	}
 
-	// set defaults for unsloth and finetune config
-	if cfg.Target == utils.TargetUnsloth {
-		cfg = defaultsUnslothConfig(cfg)
-	}
-	cfg = defaultsFineTune(cfg)
+	cfg.FillDefaults()
 
-	buildOpts := c.BuildOpts()
-	opts := buildOpts.Opts
+	opts := c.BuildOpts().Opts
 
-	// Parse cache imports
 	cacheImports, err := parseCacheOptions(opts)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to parse cache import options")
 	}
 
-	st := finetune.Aikit2LLB(cfg)
+	st, err := finetune.Aikit2LLB(cfg)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to build finetune llb")
+	}
 
 	def, err := st.Marshal(ctx)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to marshal local source")
+		return nil, errors.Wrap(err, "failed to marshal local source")
 	}
 	res, err := c.Solve(ctx, client.SolveRequest{
 		Definition:   def.ToPB(),
@@ -99,43 +126,38 @@ func buildFineTune(ctx context.Context, c client.Client, cfg *config.FineTuneCon
 }
 
 func buildInference(ctx context.Context, c client.Client, cfg *config.InferenceConfig) (*client.Result, error) {
-	err := validateInferenceConfig(cfg)
-	if err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, errors.Wrap(err, "validating aikitfile")
 	}
 
-	buildOpts := c.BuildOpts()
-	opts := buildOpts.Opts
+	opts := c.BuildOpts().Opts
 
-	// Parse cache imports
 	cacheImports, err := parseCacheOptions(opts)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to parse cache import options")
 	}
 
-	// Default the build platform to the buildkit host's os/arch
-	defaultBuildPlatform := platforms.DefaultSpec()
-
-	// But prefer the first worker's platform
-	if workers := c.BuildOpts().Workers; len(workers) > 0 && len(workers[0].Platforms) > 0 {
-		defaultBuildPlatform = workers[0].Platforms[0]
-	}
-
-	buildPlatforms := []specs.Platform{defaultBuildPlatform}
-
-	targetPlatforms := []*specs.Platform{nil}
-	if platform, exists := opts[keyTargetPlatform]; exists && platform != "" {
-		targetPlatforms, err = parsePlatforms(platform)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to parse target platforms %s", platform)
-		}
-	} else if platform == "" {
-		targetPlatforms = []*specs.Platform{&defaultBuildPlatform}
-	}
-
-	// Validate backends against target platforms
-	err = validateBackendPlatformCompatibility(cfg, targetPlatforms)
+	// dockerui.NewClient resolves the build platform (preferring the first
+	// worker's platform) and parses requested target platforms from opts,
+	// replacing the previously hand-rolled platform handling.
+	dc, err := dockerui.NewClient(c)
 	if err != nil {
+		return nil, errors.Wrap(err, "failed to create dockerui client")
+	}
+
+	// When no target platform is requested, build for the build platform so the
+	// exported image targets the worker/host platform (prior behavior).
+	if len(dc.TargetPlatforms) == 0 {
+		dc.TargetPlatforms = dc.BuildPlatforms
+	}
+
+	targetPlatforms := make([]*specs.Platform, len(dc.TargetPlatforms))
+	for i := range dc.TargetPlatforms {
+		p := dc.TargetPlatforms[i]
+		targetPlatforms[i] = &p
+	}
+
+	if err := validateBackendPlatformCompatibility(cfg, targetPlatforms); err != nil {
 		return nil, errors.Wrap(err, "validating backend platform compatibility")
 	}
 
@@ -147,101 +169,21 @@ func buildInference(ctx context.Context, c client.Client, cfg *config.InferenceC
 		}
 	}
 
-	isMultiPlatform := len(targetPlatforms) > 1
-	exportPlatforms := &exptypes.Platforms{
-		Platforms: make([]exptypes.Platform, len(targetPlatforms)),
-	}
-	finalResult := client.NewResult()
-
-	eg, ctx := errgroup.WithContext(ctx)
-
-	// Solve for all target platforms in parallel
-	for i, tp := range targetPlatforms {
-		func(i int, platform *specs.Platform) {
-			eg.Go(func() (err error) {
-				result, err := buildImage(ctx, c, cfg, &d2llb.ConvertOpt{
-					MetaResolver:   c,
-					TargetPlatform: platform,
-					Config: dockerui.Config{
-						BuildPlatforms:         buildPlatforms,
-						MultiPlatformRequested: isMultiPlatform,
-						CacheImports:           cacheImports,
-					},
-				})
-				if err != nil {
-					return errors.Wrap(err, "failed to build image")
-				}
-
-				result.AddToClientResult(finalResult)
-				exportPlatforms.Platforms[i] = result.ExportPlatform
-
-				return nil
-			})
-		}(i, tp)
-	}
-
-	if err := eg.Wait(); err != nil {
-		return nil, err
-	}
-
-	if isMultiPlatform {
-		dt, err := json.Marshal(exportPlatforms)
-		if err != nil {
-			return nil, err
-		}
-		finalResult.AddMeta(exptypes.ExporterPlatformsKey, dt)
-	}
-
-	return finalResult, nil
-}
-
-// Represents the result of a single image build.
-type buildResult struct {
-	// Reference to built image
-	Reference client.Reference
-
-	// Image configuration
-	ImageConfig []byte
-
-	// Target platform
-	Platform *specs.Platform
-
-	// Whether this is a result for a multi-platform build
-	MultiPlatform bool
-
-	// Exportable platform information (platform and platform ID)
-	ExportPlatform exptypes.Platform
-}
-
-// AddToClientResult adds the build result to a client result.
-func (br *buildResult) AddToClientResult(cr *client.Result) {
-	if br.MultiPlatform {
-		cr.AddMeta(
-			fmt.Sprintf("%s/%s", exptypes.ExporterImageConfigKey, br.ExportPlatform.ID),
-			br.ImageConfig,
-		)
-		cr.AddRef(br.ExportPlatform.ID, br.Reference)
-	} else {
-		cr.AddMeta(exptypes.ExporterImageConfigKey, br.ImageConfig)
-		cr.SetRef(br.Reference)
-	}
-}
-
-// buildImage builds an image from the given aikitfile config.
-func buildImage(ctx context.Context, c client.Client, cfg *config.InferenceConfig, convertOpts *d2llb.ConvertOpt) (*buildResult, error) {
-	result := buildResult{
-		Platform:      convertOpts.TargetPlatform,
-		MultiPlatform: convertOpts.MultiPlatformRequested,
-	}
-
-	state, image, err := inference.Aikit2LLB(cfg, convertOpts.TargetPlatform)
+	rb, err := dc.Build(ctx, func(ctx context.Context, platform *specs.Platform, _ int) (*dockerui.BuildResult, error) {
+		return buildImage(ctx, c, cfg, platform, cacheImports)
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	result.ImageConfig, err = json.Marshal(image)
+	return rb.Finalize()
+}
+
+// buildImage builds an image from the given aikitfile config for one platform.
+func buildImage(ctx context.Context, c client.Client, cfg *config.InferenceConfig, platform *specs.Platform, cacheImports []client.CacheOptionsEntry) (*dockerui.BuildResult, error) {
+	state, image, err := inference.Aikit2LLB(cfg, platform)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to marshal image config")
+		return nil, err
 	}
 
 	def, err := state.Marshal(ctx)
@@ -251,30 +193,38 @@ func buildImage(ctx context.Context, c client.Client, cfg *config.InferenceConfi
 
 	res, err := c.Solve(ctx, client.SolveRequest{
 		Definition:   def.ToPB(),
-		CacheImports: convertOpts.CacheImports,
+		CacheImports: cacheImports,
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to solve")
 	}
 
-	result.Reference, err = res.SingleRef()
+	ref, err := res.SingleRef()
 	if err != nil {
 		return nil, err
 	}
 
-	// Add platform-specific export info for the result that can later be used
-	// in multi-platform results
-	result.ExportPlatform = exptypes.Platform{
-		Platform: platforms.DefaultSpec(),
+	return &dockerui.BuildResult{
+		Reference: ref,
+		Image:     toDockerImage(image),
+	}, nil
+}
+
+// toDockerImage converts an OCI image spec into the Docker-extended image spec
+// expected by dockerui. The Docker-specific extension fields are all omitempty
+// and left unset by aikit, so the marshaled config is byte-identical to the OCI
+// image config. The outer Config field must be set explicitly because it shadows
+// the embedded ocispec.Image.Config at JSON-marshal time.
+func toDockerImage(img *specs.Image) *dockerspec.DockerOCIImage {
+	if img == nil {
+		return nil
 	}
-
-	if result.Platform != nil {
-		result.ExportPlatform.Platform = *result.Platform
+	return &dockerspec.DockerOCIImage{
+		Image: *img,
+		Config: dockerspec.DockerOCIImageConfig{
+			ImageConfig: img.Config,
+		},
 	}
-
-	result.ExportPlatform.ID = platforms.Format(result.ExportPlatform.Platform)
-
-	return &result, nil
 }
 
 func getAikitfileConfig(ctx context.Context, c client.Client) (*config.InferenceConfig, *config.FineTuneConfig, error) {
@@ -317,14 +267,14 @@ func getAikitfileConfig(ctx context.Context, c client.Client) (*config.Inference
 
 	def, err := st.Marshal(ctx)
 	if err != nil {
-		return nil, nil, errors.Wrapf(err, "failed to marshal local source")
+		return nil, nil, errors.Wrap(err, "failed to marshal local source")
 	}
 
 	res, err := c.Solve(ctx, client.SolveRequest{
 		Definition: def.ToPB(),
 	})
 	if err != nil {
-		return nil, nil, errors.Wrapf(err, "failed to resolve aikitfile")
+		return nil, nil, errors.Wrap(err, "failed to resolve aikitfile")
 	}
 
 	ref, err := res.SingleRef()
@@ -336,7 +286,7 @@ func getAikitfileConfig(ctx context.Context, c client.Client) (*config.Inference
 		Filename: filename,
 	})
 	if err != nil {
-		return nil, nil, errors.Wrapf(err, "failed to read aikitfile")
+		return nil, nil, errors.Wrap(err, "failed to read aikitfile")
 	}
 
 	inferenceCfg, finetuneCfg, err := config.NewFromBytes(dtAikitfile)
@@ -355,163 +305,11 @@ func getAikitfileConfig(ctx context.Context, c client.Client) (*config.Inference
 		}
 	}
 
-	err = parseBuildArgs(opts, inferenceCfg)
-	if err != nil {
+	if err := parseBuildArgs(opts, inferenceCfg); err != nil {
 		return nil, nil, errors.Wrap(err, "parsing build args")
 	}
 
 	return inferenceCfg, finetuneCfg, nil
-}
-
-// getBuildArg returns the value of the build arg with the given key.
-func getBuildArg(opts map[string]string, k string) string {
-	if opts != nil {
-		if v, ok := opts["build-arg:"+k]; ok {
-			return v
-		}
-	}
-	return ""
-}
-
-// validateFinetuneConfig validates the finetune config.
-func validateFinetuneConfig(c *config.FineTuneConfig) error {
-	supportedFineTuneTargets := []string{utils.TargetUnsloth}
-
-	if c.APIVersion == "" {
-		return errors.New("apiVersion is not defined")
-	}
-
-	if c.APIVersion != utils.APIv1alpha1 {
-		return errors.Errorf("apiVersion %s is not supported", c.APIVersion)
-	}
-
-	if !slices.Contains(supportedFineTuneTargets, c.Target) {
-		return errors.Errorf("target %s is not supported", c.Target)
-	}
-
-	if len(c.Datasets) == 0 {
-		return errors.New("no datasets defined")
-	}
-
-	if len(c.Datasets) > 1 {
-		return errors.New("only one dataset is supported at this time")
-	}
-
-	// only alpaca dataset is supported at this time
-	for _, d := range c.Datasets {
-		if d.Type != utils.DatasetAlpaca {
-			return errors.Errorf("dataset type %s is not supported", d.Type)
-		}
-	}
-	return nil
-}
-
-// defaultsUnslothConfig sets default values for the unsloth config.
-func defaultsUnslothConfig(c *config.FineTuneConfig) *config.FineTuneConfig {
-	if c.Config.Unsloth.MaxSeqLength == 0 {
-		c.Config.Unsloth.MaxSeqLength = 2048
-	}
-	if c.Config.Unsloth.BatchSize == 0 {
-		c.Config.Unsloth.BatchSize = 2
-	}
-	if c.Config.Unsloth.GradientAccumulationSteps == 0 {
-		c.Config.Unsloth.GradientAccumulationSteps = 4
-	}
-	if c.Config.Unsloth.WarmupSteps == 0 {
-		c.Config.Unsloth.WarmupSteps = 10
-	}
-	if c.Config.Unsloth.MaxSteps == 0 {
-		c.Config.Unsloth.MaxSteps = 60
-	}
-	if c.Config.Unsloth.LearningRate == 0 {
-		c.Config.Unsloth.LearningRate = 0.0002
-	}
-	if c.Config.Unsloth.LoggingSteps == 0 {
-		c.Config.Unsloth.LoggingSteps = 1
-	}
-	if c.Config.Unsloth.Optimizer == "" {
-		c.Config.Unsloth.Optimizer = "adamw_8bit"
-	}
-	if c.Config.Unsloth.WeightDecay == 0 {
-		c.Config.Unsloth.WeightDecay = 0.01
-	}
-	if c.Config.Unsloth.LrSchedulerType == "" {
-		c.Config.Unsloth.LrSchedulerType = "linear"
-	}
-	if c.Config.Unsloth.Seed == 0 {
-		c.Config.Unsloth.Seed = 42
-	}
-	return c
-}
-
-// defaultsFineTune sets default values for the fine-tune config.
-func defaultsFineTune(c *config.FineTuneConfig) *config.FineTuneConfig {
-	if c.Output.Quantize == "" {
-		c.Output.Quantize = "q4_k_m"
-	}
-	if c.Output.Name == "" {
-		c.Output.Name = "aikit-model"
-	}
-	return c
-}
-
-// validateInferenceConfig validates the inference config.
-func validateInferenceConfig(c *config.InferenceConfig) error {
-	if c.APIVersion == "" {
-		return errors.New("apiVersion is not defined")
-	}
-
-	if c.APIVersion != utils.APIv1alpha1 {
-		return errors.Errorf("apiVersion %s is not supported", c.APIVersion)
-	}
-
-	if len(c.Backends) > 1 {
-		return errors.New("only one backend is supported at this time")
-	}
-
-	if slices.Contains(c.Backends, utils.BackendDiffusers) && c.Runtime != utils.RuntimeNVIDIA {
-		return errors.New("diffusers backend only supports nvidia cuda runtime. please add 'runtime: cuda' to your aikitfile.yaml")
-	}
-
-	if slices.Contains(c.Backends, utils.BackendVLLM) && c.Runtime != utils.RuntimeNVIDIA {
-		return errors.New("vllm backend only supports nvidia cuda runtime. please add 'runtime: cuda' to your aikitfile.yaml")
-	}
-
-	if c.Runtime == utils.RuntimeAppleSilicon && len(c.Backends) > 0 {
-		for _, backend := range c.Backends {
-			if backend != utils.BackendLlamaCpp {
-				return errors.New("apple silicon runtime only supports llama-cpp backend")
-			}
-		}
-	}
-
-	// Runner mode (backends without models) is not supported on Apple Silicon
-	// because the base image is Fedora-based and runner dependencies require apt-get.
-	if c.Runtime == utils.RuntimeAppleSilicon && len(c.Backends) > 0 && len(c.Models) == 0 {
-		return errors.New("runner mode (backends without models) is not supported on apple silicon runtime")
-	}
-
-	if c.Runtime == utils.RuntimeROCm && len(c.Backends) > 0 {
-		for _, backend := range c.Backends {
-			if backend != utils.BackendLlamaCpp {
-				return errors.New("rocm runtime only supports llama-cpp backend")
-			}
-		}
-	}
-
-	backends := []string{utils.BackendLlamaCpp, utils.BackendDiffusers, utils.BackendVLLM}
-	for _, b := range c.Backends {
-		if !slices.Contains(backends, b) {
-			return errors.Errorf("backend %s is not supported", b)
-		}
-	}
-
-	runtimes := []string{"", utils.RuntimeNVIDIA, utils.RuntimeROCm, utils.RuntimeAppleSilicon}
-	if !slices.Contains(runtimes, c.Runtime) {
-		return errors.Errorf("runtime %s is not supported", c.Runtime)
-	}
-
-	return nil
 }
 
 // validateBackendPlatformCompatibility validates that backends are compatible with target platforms.
@@ -540,20 +338,6 @@ func validateBackendPlatformCompatibility(c *config.InferenceConfig, targetPlatf
 	}
 
 	return nil
-}
-
-// parsePlatforms parses a comma-separated list of platforms.
-func parsePlatforms(v string) ([]*specs.Platform, error) {
-	var pp []*specs.Platform
-	for _, v := range strings.Split(v, ",") {
-		p, err := platforms.Parse(v)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to parse target platform %s", v)
-		}
-		p = platforms.Normalize(p)
-		pp = append(pp, &p)
-	}
-	return pp, nil
 }
 
 // parseCacheOptions handles given cache imports.

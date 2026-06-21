@@ -1,0 +1,249 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Dataset": {
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Source is the URL or dataset reference the training data is loaded from."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "alpaca"
+          ],
+          "description": "Type is the dataset format (e.g. alpaca)."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "Dataset describes a single training dataset for a fine-tuning job."
+    },
+    "FineTuneConfig": {
+      "properties": {
+        "apiVersion": {
+          "type": "string",
+          "enum": [
+            "v1alpha1"
+          ],
+          "description": "APIVersion is the aikitfile schema version. Must be v1alpha1."
+        },
+        "target": {
+          "type": "string",
+          "enum": [
+            "unsloth"
+          ],
+          "description": "Target selects the fine-tuning implementation to use (e.g. unsloth)."
+        },
+        "baseModel": {
+          "type": "string",
+          "description": "BaseModel is the model the fine-tuning job starts from."
+        },
+        "datasets": {
+          "items": {
+            "$ref": "#/$defs/Dataset"
+          },
+          "type": "array",
+          "description": "Datasets lists the training datasets used to fine-tune the base model."
+        },
+        "config": {
+          "$ref": "#/$defs/FineTuneConfigSpec",
+          "description": "Config holds the target-specific fine-tuning hyperparameters."
+        },
+        "output": {
+          "$ref": "#/$defs/FineTuneOutputSpec",
+          "description": "Output controls the format and name of the produced model."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "FineTuneConfig is the root aikitfile schema for a fine-tuning job that produces a customized model from a base model and datasets."
+    },
+    "FineTuneConfigSpec": {
+      "properties": {
+        "unsloth": {
+          "$ref": "#/$defs/FineTuneConfigUnslothSpec",
+          "description": "Unsloth holds hyperparameters for the unsloth fine-tuning target."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "FineTuneConfigSpec groups the per-target fine-tuning configuration blocks."
+    },
+    "FineTuneConfigUnslothSpec": {
+      "properties": {
+        "packing": {
+          "type": "boolean",
+          "description": "Packing enables sequence packing to pack multiple short samples into one sequence."
+        },
+        "maxSeqLength": {
+          "type": "integer",
+          "description": "MaxSeqLength is the maximum token sequence length for training (default 2048)."
+        },
+        "loadIn4bit": {
+          "type": "boolean",
+          "description": "LoadIn4bit enables 4-bit quantized loading of the base model to reduce memory use."
+        },
+        "batchSize": {
+          "type": "integer",
+          "description": "BatchSize is the per-device training batch size (default 2)."
+        },
+        "gradientAccumulationSteps": {
+          "type": "integer",
+          "description": "GradientAccumulationSteps is the number of steps to accumulate gradients before an update (default 4)."
+        },
+        "warmupSteps": {
+          "type": "integer",
+          "description": "WarmupSteps is the number of learning-rate warmup steps (default 10)."
+        },
+        "maxSteps": {
+          "type": "integer",
+          "description": "MaxSteps is the total number of training steps to run (default 60)."
+        },
+        "learningRate": {
+          "type": "number",
+          "description": "LearningRate is the optimizer learning rate (default 0.0002)."
+        },
+        "loggingSteps": {
+          "type": "integer",
+          "description": "LoggingSteps is how often, in steps, training metrics are logged (default 1)."
+        },
+        "optimizer": {
+          "type": "string",
+          "description": "Optimizer is the optimizer algorithm to use (default adamw_8bit)."
+        },
+        "weightDecay": {
+          "type": "number",
+          "description": "WeightDecay is the weight-decay regularization factor (default 0.01)."
+        },
+        "lrSchedulerType": {
+          "type": "string",
+          "description": "LrSchedulerType is the learning-rate scheduler type (default linear)."
+        },
+        "seed": {
+          "type": "integer",
+          "description": "Seed is the random seed used for reproducible training (default 42)."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "FineTuneConfigUnslothSpec holds the unsloth fine-tuning hyperparameters."
+    },
+    "FineTuneOutputSpec": {
+      "properties": {
+        "quantize": {
+          "type": "string",
+          "description": "Quantize is the GGUF quantization format applied to the output model (default q4_k_m)."
+        },
+        "name": {
+          "type": "string",
+          "description": "Name is the file name of the produced model (default aikit-model)."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "FineTuneOutputSpec controls how the fine-tuned model is exported."
+    },
+    "InferenceConfig": {
+      "properties": {
+        "apiVersion": {
+          "type": "string",
+          "enum": [
+            "v1alpha1"
+          ],
+          "description": "APIVersion is the aikitfile schema version. Must be v1alpha1."
+        },
+        "debug": {
+          "type": "boolean",
+          "description": "Debug enables verbose debug logging in the built image."
+        },
+        "runtime": {
+          "type": "string",
+          "enum": [
+            "",
+            "cuda",
+            "rocm",
+            "applesilicon"
+          ],
+          "description": "Runtime selects the hardware acceleration runtime (e.g. cuda, rocm, applesilicon). Empty means CPU."
+        },
+        "backends": {
+          "items": {
+            "type": "string",
+            "enum": [
+              "llama-cpp",
+              "diffusers",
+              "vllm"
+            ]
+          },
+          "type": "array",
+          "description": "Backends lists the inference backends to install (e.g. llama-cpp, diffusers, vllm)."
+        },
+        "models": {
+          "items": {
+            "$ref": "#/$defs/Model"
+          },
+          "type": "array",
+          "description": "Models lists the models to embed in or download into the image."
+        },
+        "config": {
+          "type": "string",
+          "description": "Config is the raw LocalAI model configuration appended verbatim to the image."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "InferenceConfig is the root aikitfile schema for building an inference image that serves one or more models."
+    },
+    "Model": {
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name is the model identifier clients use to select this model."
+        },
+        "source": {
+          "type": "string",
+          "description": "Source is the URL or OCI reference the model is downloaded from."
+        },
+        "sha256": {
+          "type": "string",
+          "description": "SHA256 is the optional checksum used to verify the downloaded model."
+        },
+        "promptTemplates": {
+          "items": {
+            "$ref": "#/$defs/PromptTemplate"
+          },
+          "type": "array",
+          "description": "PromptTemplates are the named chat/prompt templates registered for this model."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "Model describes a single model to make available in the inference image."
+    },
+    "PromptTemplate": {
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name is the template identifier referenced by the model configuration."
+        },
+        "template": {
+          "type": "string",
+          "description": "Template is the Go text/template body used to render the prompt."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "PromptTemplate is a named Go text/template used to format prompts for a model."
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/InferenceConfig"
+    },
+    {
+      "$ref": "#/$defs/FineTuneConfig"
+    }
+  ],
+  "title": "aikitfile"
+}

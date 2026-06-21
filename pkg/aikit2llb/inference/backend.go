@@ -163,51 +163,51 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 	ociImage := fmt.Sprintf("%s:%s", utils.BackendOCIRegistry, tag)
 
 	// Create the backends directory
-	savedState := s
 	backendName := getBackendName(backend, c.Runtime, platform)
 	backendDir := fmt.Sprintf("/backends/%s", backendName)
 
 	// Download the backend from OCI registry and extract to specific backend directory
 	backendState := llb.Image(ociImage, llb.Platform(platform))
 
-	// Copy the backend files to the specific backend directory
-	s = s.File(
-		llb.Copy(backendState, "/", backendDir+"/", &llb.CopyInfo{
-			CreateDestPath: true,
-			AllowWildcard:  true,
-		}),
-		llb.WithCustomName(fmt.Sprintf("Installing backend %s from %s", backend, ociImage)),
-	)
+	_, merge = applyAndMerge(s, merge, func(s llb.State) llb.State {
+		// Copy the backend files to the specific backend directory
+		s = s.File(
+			llb.Copy(backendState, "/", backendDir+"/", &llb.CopyInfo{
+				CreateDestPath: true,
+				AllowWildcard:  true,
+			}),
+			llb.WithCustomName(fmt.Sprintf("Installing backend %s from %s", backend, ociImage)),
+		)
 
-	// Ensure the directory exists and create metadata.json for the backend
-	backendAlias := getBackendAlias(backend)
-	metadataContent := fmt.Sprintf(`{
+		// Ensure the directory exists and create metadata.json for the backend
+		backendAlias := getBackendAlias(backend)
+		metadataContent := fmt.Sprintf(`{
   "alias": "%s",
   "name": "%s",
   "gallery_url": "github:mudler/LocalAI/backend/index.yaml@master",
   "installed_at": "%s"
 }`, backendAlias, backendName, time.Now().UTC().Format(time.RFC3339))
 
-	s = s.File(
-		llb.Mkfile(fmt.Sprintf("%s/metadata.json", backendDir), 0o644, []byte(metadataContent)),
-		llb.WithCustomName(fmt.Sprintf("Creating metadata.json for backend %s", backendName)),
-	)
+		s = s.File(
+			llb.Mkfile(fmt.Sprintf("%s/metadata.json", backendDir), 0o644, []byte(metadataContent)),
+			llb.WithCustomName(fmt.Sprintf("Creating metadata.json for backend %s", backendName)),
+		)
 
-	// Apply workarounds for the pre-built vLLM backend image.
-	if backend == utils.BackendVLLM {
-		// Remove broken flash_attn package (PyTorch ABI incompatibility).
-		// Patch backend.py to use the current vLLM AsyncLLM API
-		// (get_model_config() was replaced by the model_config property).
-		s = s.Run(utils.Shf(
-			"rm -rf %[1]s/venv/lib/python*/site-packages/flash_attn* && "+
-				"sed -i 's/await self.llm.get_model_config()/self.llm.model_config/' %[1]s/backend.py",
-			backendDir),
-			llb.WithCustomNamef("Patching vLLM backend %s for compatibility", backendName),
-		).Root()
-	}
-
-	diff := llb.Diff(savedState, s)
-	return llb.Merge([]llb.State{merge, diff})
+		// Apply workarounds for the pre-built vLLM backend image.
+		if backend == utils.BackendVLLM {
+			// Remove broken flash_attn package (PyTorch ABI incompatibility).
+			// Patch backend.py to use the current vLLM AsyncLLM API
+			// (get_model_config() was replaced by the model_config property).
+			s = s.Run(utils.Shf(
+				"rm -rf %[1]s/venv/lib/python*/site-packages/flash_attn* && "+
+					"sed -i 's/await self.llm.get_model_config()/self.llm.model_config/' %[1]s/backend.py",
+				backendDir),
+				llb.WithCustomNamef("Patching vLLM backend %s for compatibility", backendName),
+			).Root()
+		}
+		return s
+	})
+	return merge
 }
 
 // getDefaultBackends returns the default backends based on runtime if no backends are specified.

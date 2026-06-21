@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kaito-project/aikit/internal/testutil"
 	"github.com/moby/buildkit/client/llb"
 )
 
@@ -241,10 +242,7 @@ func Test_buildHuggingFaceState_ScriptContent(t *testing.T) {
 			if err != nil {
 				t.Fatalf("marshal failed: %v", err)
 			}
-			var combined string
-			for _, d := range def.ToPB().Def {
-				combined += string(d)
-			}
+			combined := marshalToString(def)
 
 			for _, expect := range tt.mustContain {
 				if !strings.Contains(combined, expect) {
@@ -278,56 +276,78 @@ func Test_resolveSourceState_Variants(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal failed: %v", err)
 		}
-		var combined string
-		for _, d := range def.ToPB().Def {
-			combined += string(d)
-		}
+		combined := marshalToString(def)
 		if !strings.Contains(combined, cse.expect) {
 			t.Fatalf("expected def for %s to contain %q (got %s)", cse.src, cse.expect, combined)
 		}
 	}
 }
 
-func Test_generateModelpackScript(t *testing.T) {
-	script := generateModelpackScript("raw", "art.type", "mt.conf", "myname", "refy")
-	mustContain := []string{
-		"PACK_MODE=raw",
-		"art.type",
-		"mt.conf",
-		"org.opencontainers.image.title\": \"myname\"",
-		"org.opencontainers.image.ref.name\": \"refy\"",
+func Test_modelpackScriptEnv(t *testing.T) {
+	// The script body is static and embedded; parameters are passed via env.
+	mustContainInScript := []string{
+		`PACK_MODE`,
+		`ARTIFACT_TYPE`,
+		`MT_MANIFEST`,
 		"add_category /tmp/weights.list weights",
+		"escape_json", // the JSON-escaping fix must be present.
 	}
-	for _, s := range mustContain {
-		if !strings.Contains(script, s) {
-			t.Fatalf("expected script to contain %q", s)
+	for _, s := range mustContainInScript {
+		if !strings.Contains(modelpackScript, s) {
+			t.Fatalf("expected embedded modelpack script to contain %q", s)
+		}
+	}
+
+	env := modelpackScriptEnv("raw", "art.type", "mt.conf", "myname", "refy")
+	want := map[string]string{
+		"PACK_MODE":            "raw",
+		"ARTIFACT_TYPE":        "art.type",
+		"MT_MANIFEST":          "mt.conf",
+		"NAME":                 "myname",
+		"REF_NAME":             "refy",
+		"LARGE_FILE_THRESHOLD": "10485760",
+	}
+	for k, v := range want {
+		if env[k] != v {
+			t.Errorf("modelpackScriptEnv[%q] = %q, want %q", k, env[k], v)
 		}
 	}
 }
 
-func Test_generateGenericScript(t *testing.T) {
-	script := generateGenericScript("tar+gzip", "atype", "nm", "refz", true)
-	checks := []string{
-		"set -x",
-		"PACK_MODE=tar+gzip",
-		"atype",
-		"org.opencontainers.image.title\": \"nm\"",
-		"org.opencontainers.image.ref.name\": \"refz\"",
+func Test_genericScriptEnv(t *testing.T) {
+	if !strings.Contains(genericScript, "escape_json") {
+		t.Fatal("expected embedded generic script to contain the escape_json helper")
 	}
-	for _, c := range checks {
-		if !strings.Contains(script, c) {
-			t.Fatalf("missing %q in generic script", c)
-		}
+	if !strings.Contains(genericScript, `[ -n "${DEBUG:-}" ] && set -x`) {
+		t.Fatal("expected embedded generic script to gate debug tracing on DEBUG")
+	}
+
+	env := genericScriptEnv("tar+gzip", "atype", "nm", "refz", true)
+	if env["PACK_MODE"] != "tar+gzip" || env["ARTIFACT_TYPE"] != "atype" {
+		t.Errorf("unexpected env: %+v", env)
+	}
+	if env["NAME"] != "nm" || env["REF_NAME"] != "refz" {
+		t.Errorf("unexpected name/ref env: %+v", env)
+	}
+	if env["DEBUG"] != "1" {
+		t.Errorf("expected DEBUG=1 when debug is true, got %q", env["DEBUG"])
+	}
+	// Archive mode uses the standard image-layer media type.
+	if env["RAW_LAYER_MT"] != "application/vnd.oci.image.layer.v1.tar" {
+		t.Errorf("unexpected RAW_LAYER_MT for archive mode: %q", env["RAW_LAYER_MT"])
 	}
 }
 
-func Test_generateGenericScript_RawOctetStream(t *testing.T) {
-	script := generateGenericScript("raw", "atype2", "nm2", "ref2", false)
-	if !strings.Contains(script, "application/octet-stream") {
-		t.Fatalf("expected raw generic script to use application/octet-stream media type, got: %s", script)
+func Test_genericScriptEnv_RawOctetStream(t *testing.T) {
+	env := genericScriptEnv("raw", "atype2", "nm2", "ref2", false)
+	if env["RAW_LAYER_MT"] != "application/octet-stream" {
+		t.Fatalf("expected raw mode to use application/octet-stream, got %q", env["RAW_LAYER_MT"])
 	}
-	if !strings.Contains(script, "PACK_MODE=raw") {
-		t.Fatalf("expected PACK_MODE=raw in script")
+	if env["PACK_MODE"] != "raw" {
+		t.Fatalf("expected PACK_MODE=raw, got %q", env["PACK_MODE"])
+	}
+	if _, ok := env["DEBUG"]; ok {
+		t.Errorf("expected no DEBUG key when debug is false, got %q", env["DEBUG"])
 	}
 }
 
@@ -816,14 +836,7 @@ func Test_resolveSourceState_AllPaths(t *testing.T) {
 
 // marshalToString is a helper to convert LLB state to string for validation.
 func marshalToString(def *llb.Definition) string {
-	if def == nil {
-		return ""
-	}
-	var combined string
-	for _, d := range def.ToPB().Def {
-		combined += string(d)
-	}
-	return combined
+	return testutil.MarshalToString(def)
 }
 
 // Test_BuildModelpack_ConfigValidation tests BuildModelpack configuration parsing

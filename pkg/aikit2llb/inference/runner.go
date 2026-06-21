@@ -20,44 +20,38 @@ func isRunnerMode(c *config.InferenceConfig) bool {
 // installRunnerDependencies installs packages needed for runtime model downloading
 // (curl for HTTP, huggingface-cli for HuggingFace Hub).
 func installRunnerDependencies(_ *config.InferenceConfig, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State) {
-	savedState := s
-
 	// Install curl for HTTP/HTTPS downloads, ca-certificates for TLS verification,
 	// and python3 + pip for huggingface-cli.
 	// Some backends (diffusers/vllm) already install python, but llama-cpp does not,
 	// so we always install the minimal set here.
 	// Note: Runner mode is not supported for Apple Silicon (validated in build).
-	s = s.Run(
-		utils.Sh("apt-get update && apt-get install --no-install-recommends -y curl ca-certificates python3 python3-pip && (pip install --break-system-packages huggingface-hub[cli] 2>/dev/null || pip install huggingface-hub[cli]) && apt-get clean"),
-		llb.WithCustomNamef("Installing runner dependencies for platform %s/%s", platform.OS, platform.Architecture),
-		llb.IgnoreCache,
-	).Root()
-
-	diff := llb.Diff(savedState, s)
-	return s, llb.Merge([]llb.State{merge, diff})
+	return applyAndMerge(s, merge, func(s llb.State) llb.State {
+		return s.Run(
+			utils.Sh("apt-get update && apt-get install --no-install-recommends -y curl ca-certificates python3 python3-pip && (pip install --break-system-packages huggingface-hub[cli] 2>/dev/null || pip install huggingface-hub[cli]) && apt-get clean"),
+			llb.WithCustomNamef("Installing runner dependencies for platform %s/%s", platform.OS, platform.Architecture),
+			llb.IgnoreCache,
+		).Root()
+	})
 }
 
 // installRunnerEntrypoint writes the entrypoint script and creates the /models/
 // directory with correct ownership for non-root compatibility.
 func installRunnerEntrypoint(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.State, llb.State) {
-	savedState := s
-
 	script := generateRunnerScript(c)
 
-	// Write the entrypoint script
-	s = s.File(
-		llb.Mkfile("/usr/local/bin/aikit-runner", 0o755, []byte(script)),
-		llb.WithCustomName("Creating runner entrypoint script"),
-	)
+	return applyAndMerge(s, merge, func(s llb.State) llb.State {
+		// Write the entrypoint script
+		s = s.File(
+			llb.Mkfile("/usr/local/bin/aikit-runner", 0o755, []byte(script)),
+			llb.WithCustomName("Creating runner entrypoint script"),
+		)
 
-	// Create /models/ with UID 1000 ownership for non-root compatibility
-	s = s.Run(
-		utils.Sh("mkdir -p /models && chown 1000:1000 /models"),
-		llb.WithCustomName("Creating /models directory with correct ownership"),
-	).Root()
-
-	diff := llb.Diff(savedState, s)
-	return s, llb.Merge([]llb.State{merge, diff})
+		// Create /models/ with UID 1000 ownership for non-root compatibility
+		return s.Run(
+			utils.Sh("mkdir -p /models && chown 1000:1000 /models"),
+			llb.WithCustomName("Creating /models directory with correct ownership"),
+		).Root()
+	})
 }
 
 // generateRunnerScript produces the bash entrypoint script that downloads a model

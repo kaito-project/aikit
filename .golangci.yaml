@@ -21,8 +21,6 @@ linters:
     - unused
     - whitespace
   settings:
-    lll:
-      line-length: 200
     misspell:
       locale: US
   exclusions:
