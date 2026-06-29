@@ -42,7 +42,7 @@ jobs:
             arch: arm64
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@6c3c2f2c1c457b00c10c4848d6f5491db3b629df # v2.18.0
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
           allowed-endpoints: >
@@ -69,10 +69,10 @@ jobs:
             sum.golang.org:443
             quay.io:443
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       # need containerd image store for testing local images
-      - uses: crazy-max/ghaction-setup-docker@1a6edb0ba9ac496f6850236981f15d8f9a82254d # v5.0.0
+      - uses: crazy-max/ghaction-setup-docker@0234bb73ccb40f0c430b795634f9247e2b5c2d23 # v5.2.0
         with:
           version: version=v27.5.1
           daemon-config: |
@@ -83,7 +83,7 @@ jobs:
               }
             }
       - uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
-      - uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+      - uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
         if: ${{ matrix.arch == 'arm64' }}
 
       - name: build aikit
@@ -183,7 +183,7 @@ jobs:
           - hf
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@6c3c2f2c1c457b00c10c4848d6f5491db3b629df # v2.18.0
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
           allowed-endpoints: >
@@ -212,10 +212,10 @@ jobs:
             sum.golang.org:443
             quay.io:443
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       # need containerd image store for testing local images
-      - uses: crazy-max/ghaction-setup-docker@1a6edb0ba9ac496f6850236981f15d8f9a82254d # v5.0.0
+      - uses: crazy-max/ghaction-setup-docker@0234bb73ccb40f0c430b795634f9247e2b5c2d23 # v5.2.0
         with:
           version: version=v27.5.1
           daemon-config: |
