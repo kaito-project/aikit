@@ -106,11 +106,15 @@ jobs:
         run: |
           set -euo pipefail
           dest=out-${{ matrix.case.name }}
+          layout_root="$dest"
+          if [ ! -f "$layout_root/index.json" ] && [ -f "$dest/layout/index.json" ]; then
+            layout_root="$dest/layout"
+          fi
           echo "Listing produced files (truncated)"
           find "$dest" -maxdepth 3 -type f | head -100
           # Check expected key files exist in local output (heuristic)
           if [ '${{ matrix.case.output_mode }}' != 'files' ]; then
-            if [ ! -f "$dest/layout/index.json" ]; then echo "layout/index.json missing (expected for packaged layout)"; exit 1; fi
+            if [ ! -f "$layout_root/index.json" ]; then echo "index.json missing (expected for packaged layout)"; exit 1; fi
           else
             # files mode: ensure at least one non-empty file present
             if ! find "$dest" -type f -maxdepth 2 | head -1 | grep -q . ; then
@@ -125,8 +129,11 @@ jobs:
         run: |
           set -euo pipefail
           dest=out-${{ matrix.case.name }}
-          layout_root="$dest/layout"
-          if [ ! -f "$layout_root/index.json" ]; then echo "layout/index.json missing; cannot treat local output as OCI layout"; ls -R "$dest" | head -200; exit 1; fi
+          layout_root="$dest"
+          if [ ! -f "$layout_root/index.json" ] && [ -f "$dest/layout/index.json" ]; then
+            layout_root="$dest/layout"
+          fi
+          if [ ! -f "$layout_root/index.json" ]; then echo "index.json missing; cannot treat local output as OCI layout"; ls -R "$dest" | head -200; exit 1; fi
           if [ ! -f "$layout_root/oci-layout" ]; then
             echo '{"imageLayoutVersion":"1.0.0"}' > "$layout_root/oci-layout"
           fi
@@ -140,7 +147,11 @@ jobs:
         run: |
           set -euo pipefail
           dest=out-${{ matrix.case.name }}
-          localDigest=$(jq -r '.manifests[0].digest' "$dest/layout/index.json")
+          layout_root="$dest"
+          if [ ! -f "$layout_root/index.json" ] && [ -f "$dest/layout/index.json" ]; then
+            layout_root="$dest/layout"
+          fi
+          localDigest=$(jq -r '.manifests[0].digest' "$layout_root/index.json")
           # Fetch raw manifest (artifact) and compute digest manually (inspect --format is image-specific and fails on artifactType)
           skopeo inspect --tls-verify=false --raw docker://localhost:5000/aikit/${{ matrix.case.name }}:test > remote-manifest.json
           remoteDigest=sha256:$(sha256sum remote-manifest.json | awk '{print $1}')
