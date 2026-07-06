@@ -6,7 +6,7 @@ toolchain go1.26.1
 
 require (
 	github.com/containerd/platforms v1.0.0-rc.4
-	github.com/moby/buildkit v0.31.0
+	github.com/moby/buildkit v0.31.1
 	github.com/modelpack/model-spec v0.0.7
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
