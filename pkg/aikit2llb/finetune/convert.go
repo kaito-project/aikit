@@ -41,7 +41,10 @@ func Aikit2LLB(c *config.FineTuneConfig) (llb.State, error) {
 	if err != nil {
 		return llb.State{}, errors.Wrap(err, "failed to marshal finetune config")
 	}
-	state = state.Run(utils.Shf("echo -n \"%s\" > /config.yaml", string(cfg))).Root()
+	state = state.File(
+		llb.Mkfile("/config.yaml", 0o644, cfg),
+		llb.WithCustomName("Writing finetune config"),
+	)
 
 	var scratch llb.State
 	if c.Target == utils.TargetUnsloth {
