@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,8 +20,9 @@ import (
 )
 
 const (
-	orasImage         = "ghcr.io/oras-project/oras:v1.2.0"
-	ollamaRegistryURL = "registry.ollama.ai"
+	orasImage             = "ghcr.io/oras-project/oras:v1.2.0"
+	ollamaRegistryURL     = "registry.ollama.ai"
+	localModelContextName = "context"
 )
 
 // handleOCI handles OCI artifact downloading and processing.
@@ -239,10 +241,57 @@ func listHuggingFaceRepoFiles(namespace, model, revision string) ([]string, erro
 	return files, nil
 }
 
+// localModelContext builds the shared local source used by all local models.
+func localModelContext(sources []string) llb.State {
+	followPaths := localModelFollowPaths(sources)
+	if len(followPaths) == 0 {
+		return llb.Local(localModelContextName)
+	}
+	return llb.Local(localModelContextName, llb.FollowPaths(followPaths))
+}
+
+// localModelFollowPaths returns deterministic symlink-aware filters for safe local paths.
+func localModelFollowPaths(sources []string) []string {
+	paths := make(map[string]struct{}, len(sources))
+	for _, source := range sources {
+		normalized := normalizeLocalModelPath(source)
+		if normalized == "." || !canFollowLocalModelPath(source, normalized) {
+			return nil
+		}
+		paths[normalized] = struct{}{}
+	}
+
+	result := make([]string, 0, len(paths))
+	for localPath := range paths {
+		result = append(result, localPath)
+	}
+	slices.Sort(result)
+	return result
+}
+
+func normalizeLocalModelPath(source string) string {
+	normalized := strings.TrimPrefix(path.Clean("/"+source), "/")
+	if normalized == "" {
+		return "."
+	}
+	return normalized
+}
+
+func canFollowLocalModelPath(source, normalized string) bool {
+	return source == strings.TrimSpace(source) &&
+		!strings.Contains(source, `\`) &&
+		!strings.ContainsAny(normalized, "*?[]") &&
+		!strings.HasPrefix(normalized, "!")
+}
+
+func localModelCopySource(source string) string {
+	return normalizeLocalModelPath(source)
+}
+
 // handleLocal handles copying from local paths.
-func handleLocal(source string, s llb.State) llb.State {
+func handleLocal(source string, localContext llb.State, s llb.State) llb.State {
 	s = s.File(
-		llb.Copy(llb.Local("context"), source, "/models/", createCopyOptions()...),
+		llb.Copy(localContext, localModelCopySource(source), "/models/", createCopyOptions()...),
 		llb.WithCustomName("Copying "+utils.FileNameFromURL(source)+" to /models"),
 	)
 	return s

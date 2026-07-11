@@ -30,25 +30,27 @@ func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, 
 	case utils.RuntimeAppleSilicon:
 		state = llb.Image(utils.AppleSiliconBase, llb.Platform(*platform))
 	case utils.RuntimeROCm:
-		// Use Ubuntu 24.04 for ROCm to match noble repository
+		// Use Ubuntu 24.04 for ROCm to match noble repository.
 		state = llb.Image(utils.Ubuntu24Base, llb.Platform(*platform))
 	default:
 		state = llb.Image(utils.UbuntuBase, llb.Platform(*platform))
 	}
+	buildBase := state
 	base := getBaseImage(c, platform)
 
 	var err error
 	if isRunnerMode(c) {
-		// Runner mode: skip model downloads, write config if present, install runner deps
-		state, merge = writeConfig(c, base, state, *platform)
-		state, merge = installRunnerDependencies(c, state, merge, *platform)
+		// Runner mode skips model downloads and keeps dependencies and the entrypoint sequential.
+		_, merge = writeConfig(c, base, buildBase, *platform)
+		state, merge = installRunnerDependencies(c, buildBase, merge, *platform)
 		state, merge = installRunnerEntrypoint(c, state, merge)
 	} else {
-		// Standard mode: download models + write config
-		state, merge, err = copyModels(c, base, state, *platform)
+		// Standard mode materializes models and config on an isolated branch.
+		state, merge, err = copyModels(c, base, buildBase, *platform)
 		if err != nil {
 			return state, nil, err
 		}
+		state = buildBase
 	}
 
 	state, merge, err = addLocalAI(c, state, merge, *platform)
@@ -105,6 +107,14 @@ func writeConfig(c *config.InferenceConfig, base llb.State, s llb.State, platfor
 // copyModels copies models to the image and writes the config.
 func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, platform specs.Platform) (llb.State, llb.State, error) {
 	savedState := s
+	localSources := make([]string, 0, len(c.Models))
+	for _, model := range c.Models {
+		if _, err := url.ParseRequestURI(model.Source); err != nil {
+			localSources = append(localSources, model.Source)
+		}
+	}
+	localContext := localModelContext(localSources)
+
 	var configurationFiles *llb.FileAction
 	for _, model := range c.Models {
 		// Check if the model source is a URL
@@ -123,8 +133,8 @@ func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, platform
 				return llb.State{}, llb.State{}, fmt.Errorf("unsupported URL scheme: %s", model.Source)
 			}
 		} else {
-			// Handle local paths
-			s = handleLocal(model.Source, s)
+			// Handle local paths.
+			s = handleLocal(model.Source, localContext, s)
 		}
 
 		// create prompt templates if defined
