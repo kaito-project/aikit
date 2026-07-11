@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 set -euo pipefail
 
 # Assemble a modelpack OCI layout from files mounted at /src into /layout.
@@ -18,40 +20,41 @@ src=/src
 if [ -f /src ]; then mkdir -p /worksrc && cp /src /worksrc/; src=/worksrc; fi
 cd "$src"
 
-# Initialize category lists for file classification.
-> /tmp/weights.list
-> /tmp/config.list
-> /tmp/docs.list
-> /tmp/code.list
-> /tmp/dataset.list
+# Initialize category lists and the size cache for file classification.
+: > /tmp/weights.list
+: > /tmp/config.list
+: > /tmp/docs.list
+: > /tmp/code.list
+: > /tmp/dataset.list
+: > /tmp/file_sizes.cache
 
 # Find all files, excluding lock files and cache, and sort deterministically.
 # Also cache file sizes in parallel to avoid repeated stat calls.
 find . -type f ! -name '*.lock' ! -path './.cache/*' -print0 | \
-	xargs -0 -P $(nproc) -I {} sh -c 'echo "{}|$(stat -c%s "{}")"' | \
+	xargs -0 -r -P "$(nproc)" -n 1 stat -c '%n|%s' -- | \
 	LC_ALL=C sort > /tmp/allfiles_with_size.list
 
 # Categorize files by extension and size into appropriate lists.
 # File size is already computed and cached.
 while IFS='|' read -r f sz; do
 	f=${f#./}
-	base=$(basename "$f" | tr A-Z a-z)
+	base=$(basename -- "$f" | tr '[:upper:]' '[:lower:]')
 	case "$base" in
 		# Model weight files.
-		*.safetensors|*.bin|*.gguf|*.pt|*.ckpt) echo "$f" >> /tmp/weights.list ;;
+		*.safetensors|*.bin|*.gguf|*.pt|*.ckpt) printf '%s\n' "$f" >> /tmp/weights.list ;;
 		# Documentation files.
-		readme*|license*|license|*.md) echo "$f" >> /tmp/docs.list ;;
+		readme*|license*|*.md) printf '%s\n' "$f" >> /tmp/docs.list ;;
 		# Configuration and tokenizer files.
-		config.json|tokenizer.json|*tokenizer*.json|generation_config.json|*.json|*.txt) echo "$f" >> /tmp/config.list ;;
+		config.json|tokenizer.json|*tokenizer*.json|generation_config.json|*.json|*.txt) printf '%s\n' "$f" >> /tmp/config.list ;;
 		# Code files.
-		*.py|*.sh|*.ipynb|*.go|*.js|*.ts) echo "$f" >> /tmp/code.list ;;
+		*.py|*.sh|*.ipynb|*.go|*.js|*.ts) printf '%s\n' "$f" >> /tmp/code.list ;;
 		# Dataset files.
-		*.csv|*.tsv|*.jsonl|*.parquet|*.arrow|*.h5|*.npz) echo "$f" >> /tmp/dataset.list ;;
+		*.csv|*.tsv|*.jsonl|*.parquet|*.arrow|*.h5|*.npz) printf '%s\n' "$f" >> /tmp/dataset.list ;;
 		# Unknown files: large ones go to weights, small ones to config.
-		*) if [ "$sz" -gt "$LARGE_FILE_THRESHOLD" ]; then echo "$f" >> /tmp/weights.list; else echo "$f" >> /tmp/config.list; fi ;;
+		*) if [ "$sz" -gt "$LARGE_FILE_THRESHOLD" ]; then printf '%s\n' "$f" >> /tmp/weights.list; else printf '%s\n' "$f" >> /tmp/config.list; fi ;;
 	esac
 	# Cache size for later use.
-	echo "$f|$sz" >> /tmp/file_sizes.cache
+	printf '%s|%s\n' "$f" "$sz" >> /tmp/file_sizes.cache
 done < /tmp/allfiles_with_size.list
 
 # Initialize JSON array for manifest layers.
@@ -80,7 +83,7 @@ append_layer() {
 	[ ! -f "$file" ] && return 0
 	dgst=$(sha256sum "$file" | cut -d' ' -f1)
 	size=$(stat -c%s "$file")
-	mv "$file" /layout/blobs/sha256/$dgst
+	mv "$file" "/layout/blobs/sha256/$dgst"
 	[ -n "$layers_json" ] && layers_json="$layers_json , "
 	fpathEsc=$(escape_json "$fpath")
 	metaEsc=$(escape_json "$metaJson")
@@ -104,9 +107,9 @@ add_category() {
 				[ -z "$fsize" ] && fsize=$(stat -c%s "$f")  # Fallback to stat if cache miss.
 				nameEsc=$(escape_json "$f")
 				meta=$(printf '{"name":"%s","mode":420,"uid":0,"gid":0,"size":%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0}' "$nameEsc" "$fsize")
-				tmpCp=/tmp/raw-$(basename "$f")
-				cp "$f" "$tmpCp"
-				append_layer "$tmpCp" "$mtRaw" "$f" "$meta" "true"
+				tmp_cp=$(mktemp /tmp/aikit-modelpack-raw.XXXXXX)
+				cp -- "$f" "$tmp_cp"
+				append_layer "$tmp_cp" "$mtRaw" "$f" "$meta" "true"
 			done < "$list" ;;
 		tar|tar+gzip|tar+zstd)
 			if [ "$cat" = "weights" ]; then
@@ -146,7 +149,7 @@ add_category() {
 				meta=$(printf '{"name":"%s","mode":420,"uid":0,"gid":0,"size":%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0,"files":%d}' "$nameEsc" "$totalSize" "$count")
 				append_layer "$outFile" "$mt" "$cat" "$meta" "true"
 			fi ;;
-		*) echo "unknown PACK_MODE $PACK_MODE" >&2; exit 1 ;;
+		*) printf 'unknown PACK_MODE %s\n' "$PACK_MODE" >&2; exit 1 ;;
 	esac
 }
 
@@ -181,7 +184,7 @@ add_category /tmp/dataset.list dataset \
 printf '{}' > /tmp/manifest-config.json
 mc_dgst=$(sha256sum /tmp/manifest-config.json | cut -d' ' -f1)
 mc_size=$(stat -c%s /tmp/manifest-config.json)
-cp /tmp/manifest-config.json /layout/blobs/sha256/$mc_dgst
+cp /tmp/manifest-config.json "/layout/blobs/sha256/$mc_dgst"
 
 # Generate OCI manifest with all layers.
 cat > /tmp/manifest.json <<EOF_MANIFEST
@@ -198,7 +201,7 @@ fi
 # Add manifest as blob.
 m_dgst=$(sha256sum /tmp/manifest.json | cut -d' ' -f1)
 m_size=$(stat -c%s /tmp/manifest.json)
-cp /tmp/manifest.json /layout/blobs/sha256/$m_dgst
+cp /tmp/manifest.json "/layout/blobs/sha256/$m_dgst"
 
 # Create OCI index pointing to manifest.
 nameEsc=$(escape_json "$NAME")

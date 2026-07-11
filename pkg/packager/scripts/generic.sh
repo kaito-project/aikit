@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 set -euo pipefail
 # Optional debug tracing, enabled when DEBUG is set to a non-empty value.
 [ -n "${DEBUG:-}" ] && set -x
@@ -23,7 +25,7 @@ cd "$work"
 # Find all files, excluding lock files and cache, sorted deterministically.
 # Cache file sizes for later use.
 find . -type f ! -name '*.lock' ! -path './.cache/*' -print0 | \
-	xargs -0 -P $(nproc) -I {} sh -c 'f="{}"; echo "$f|$(stat -c%s "$f")"' | \
+	xargs -0 -r -P "$(nproc)" -n 1 stat -c '%n|%s' -- | \
 	sed 's|^\./||' | LC_ALL=C sort > /tmp/files_with_size.list
 
 # Extract just the file paths for processing.
@@ -51,7 +53,7 @@ append_layer() {
 	[ ! -f "$file" ] && return 0
 	dgst=$(sha256sum "$file" | cut -d' ' -f1)
 	size=$(stat -c%s "$file")
-	mv "$file" /layout/blobs/sha256/$dgst
+	mv "$file" "/layout/blobs/sha256/$dgst"
 	[ -n "$layers_json" ] && layers_json="$layers_json , "
 	titleEsc=$(escape_json "$title")
 	ann="{ \"org.opencontainers.image.title\": \"$titleEsc\" }"
@@ -63,8 +65,9 @@ case "$PACK_MODE" in
 	raw)
 		# Raw mode: each file becomes its own layer.
 		while IFS= read -r f; do
-			cp "$f" "/tmp/$(basename "$f")"
-			append_layer "/tmp/$(basename "$f")" "$RAW_LAYER_MT" "$f"
+			tmp_file=$(mktemp /tmp/aikit-generic-raw.XXXXXX)
+			cp -- "$f" "$tmp_file"
+			append_layer "$tmp_file" "$RAW_LAYER_MT" "$f"
 		done < /tmp/files.list ;;
 	tar|tar+gzip|tar+zstd)
 		# Archive mode: bundle all files into a single tar.
@@ -78,14 +81,14 @@ case "$PACK_MODE" in
 			tar+zstd) zstd -q --no-progress "$tarFile"; outFile="$tarFile.zst"; layerName="allfiles.tar.zst" ;;
 		esac
 		append_layer "$outFile" "$mt" "$layerName" ;;
-	*) echo "unknown PACK_MODE $PACK_MODE" >&2; exit 1 ;;
+	*) printf 'unknown PACK_MODE %s\n' "$PACK_MODE" >&2; exit 1 ;;
 esac
 
 # Create empty config blob.
 printf '{}' > /tmp/config.json
 cfg_dgst=$(sha256sum /tmp/config.json | awk '{print $1}')
 cfg_size=$(stat -c%s /tmp/config.json)
-cp /tmp/config.json /layout/blobs/sha256/$cfg_dgst
+cp /tmp/config.json "/layout/blobs/sha256/$cfg_dgst"
 
 # Generate OCI manifest.
 manifest="{ \"schemaVersion\": 2, \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\", \"artifactType\": \"$ARTIFACT_TYPE\", \"config\": {\"mediaType\": \"application/vnd.oci.empty.v1+json\", \"digest\": \"sha256:$cfg_dgst\", \"size\": $cfg_size}, \"layers\": [ $layers_json ] }"
@@ -94,7 +97,7 @@ printf '%s' "$manifest" > /tmp/manifest.json
 # Add manifest as blob.
 m_dgst=$(sha256sum /tmp/manifest.json | awk '{print $1}')
 m_size=$(stat -c%s /tmp/manifest.json)
-cp /tmp/manifest.json /layout/blobs/sha256/$m_dgst
+cp /tmp/manifest.json "/layout/blobs/sha256/$m_dgst"
 
 # Create OCI index pointing to manifest.
 nameEsc=$(escape_json "$NAME")

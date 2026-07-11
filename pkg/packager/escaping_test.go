@@ -55,6 +55,7 @@ func TestEscapeJSONProducesValidJSON(t *testing.T) {
 			`back\slash.bin`,
 			`both"and\here.safetensors`,
 			`tab	and spaces.txt`,
+			"line\nbreak.gguf",
 		}
 		for _, in := range inputs {
 			escaped := runEscapeJSON(t, fn, in)
@@ -70,5 +71,32 @@ func TestEscapeJSONProducesValidJSON(t *testing.T) {
 				t.Errorf("round-trip mismatch: input %q, got %q", in, parsed.Title)
 			}
 		}
+	}
+}
+
+func TestEmbeddedScriptsHandleFilenamesWithoutShellInterpolation(t *testing.T) {
+	tests := map[string]string{
+		"generic":   genericScript,
+		"modelpack": modelpackScript,
+	}
+
+	for name, script := range tests {
+		t.Run(name, func(t *testing.T) {
+			for _, unsafe := range []string{`-I {}`, `f="{}"`, `echo "{}|`, `/tmp/$(basename`} {
+				if strings.Contains(script, unsafe) {
+					t.Errorf("embedded script contains unsafe filename interpolation %q", unsafe)
+				}
+			}
+			if !strings.Contains(script, `stat -c '%n|%s' --`) {
+				t.Error("embedded script should pass filenames directly to stat through xargs")
+			}
+			if !strings.Contains(script, "mktemp ") {
+				t.Error("embedded script should use unique temporary files for raw layers")
+			}
+		})
+	}
+
+	if !strings.Contains(modelpackScript, ": > /tmp/file_sizes.cache") {
+		t.Error("modelpack script should initialize its file-size cache")
 	}
 }
