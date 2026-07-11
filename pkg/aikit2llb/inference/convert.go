@@ -105,6 +105,7 @@ func writeConfig(c *config.InferenceConfig, base llb.State, s llb.State, platfor
 // copyModels copies models to the image and writes the config.
 func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, platform specs.Platform) (llb.State, llb.State, error) {
 	savedState := s
+	var configurationFiles *llb.FileAction
 	for _, model := range c.Models {
 		// Check if the model source is a URL
 		if _, err := url.ParseRequestURI(model.Source); err == nil {
@@ -129,15 +130,32 @@ func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, platform
 		// create prompt templates if defined
 		for _, pt := range model.PromptTemplates {
 			if pt.Name != "" && pt.Template != "" {
-				s = s.Run(utils.Shf("echo -n \"%s\" > /models/%s.tmpl", pt.Template, pt.Name)).Root()
+				path := fmt.Sprintf("/models/%s.tmpl", pt.Name)
+				if configurationFiles == nil {
+					configurationFiles = llb.Mkfile(path, 0o644, []byte(pt.Template))
+				} else {
+					configurationFiles = configurationFiles.Mkfile(path, 0o644, []byte(pt.Template))
+				}
 			}
 		}
 	}
 
 	// create config file if defined
 	if c.Config != "" {
-		s = s.Run(utils.Shf("mkdir -p /configuration && echo -n \"%s\" > /config.yaml", c.Config),
-			llb.WithCustomName(fmt.Sprintf("Creating config for platform %s/%s", platform.OS, platform.Architecture))).Root()
+		if configurationFiles == nil {
+			configurationFiles = llb.Mkdir("/configuration", 0o755, llb.WithParents(true))
+		} else {
+			configurationFiles = configurationFiles.Mkdir("/configuration", 0o755, llb.WithParents(true))
+		}
+		configurationFiles = configurationFiles.Mkfile("/config.yaml", 0o644, []byte(c.Config))
+	}
+
+	if configurationFiles != nil {
+		var opts []llb.ConstraintsOpt
+		if c.Config != "" {
+			opts = append(opts, llb.WithCustomName(fmt.Sprintf("Creating config for platform %s/%s", platform.OS, platform.Architecture)))
+		}
+		s = s.File(configurationFiles, opts...)
 	}
 
 	diff := llb.Diff(savedState, s)
