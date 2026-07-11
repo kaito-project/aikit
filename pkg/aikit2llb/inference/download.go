@@ -26,8 +26,8 @@ const (
 )
 
 // handleOCI handles OCI artifact downloading and processing.
-func handleOCI(source string, s llb.State, platform specs.Platform) llb.State {
-	toolingImage := llb.Image(orasImage, llb.Platform(platform))
+func handleOCI(source string, s llb.State, buildPlatform specs.Platform) llb.State {
+	toolingImage := llb.Image(orasImage, llb.Platform(buildPlatform))
 
 	artifactURL := strings.TrimPrefix(source, "oci://")
 	var script string

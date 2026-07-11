@@ -100,7 +100,7 @@ func TestCopyModelsMaterializesConfigurationWithSingleFileOp(t *testing.T) {
 	}
 	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformARM64}
 
-	state, _, err := copyModels(cfg, llb.Scratch(), llb.Scratch(), platform)
+	state, _, err := copyModels(cfg, llb.Scratch(), llb.Scratch(), platform, platform)
 	if err != nil {
 		t.Fatalf("copy models: %v", err)
 	}
@@ -466,7 +466,7 @@ func marshalInferenceConfig(t *testing.T, cfg *config.InferenceConfig, platform 
 func marshalCopiedModels(t *testing.T, cfg *config.InferenceConfig, platform specs.Platform) *llb.Definition {
 	t.Helper()
 
-	state, _, err := copyModels(cfg, llb.Scratch(), llb.Scratch(), platform)
+	state, _, err := copyModels(cfg, llb.Scratch(), llb.Scratch(), platform, platform)
 	if err != nil {
 		t.Fatalf("copy models: %v", err)
 	}

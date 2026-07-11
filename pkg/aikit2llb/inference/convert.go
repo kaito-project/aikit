@@ -24,54 +24,63 @@ const (
 )
 
 // Aikit2LLB converts an InferenceConfig to an LLB state.
-func Aikit2LLB(c *config.InferenceConfig, platform *specs.Platform) (llb.State, *specs.Image, error) {
+func Aikit2LLB(c *config.InferenceConfig, targetPlatform *specs.Platform) (llb.State, *specs.Image, error) {
+	return Aikit2LLBWithPlatforms(c, targetPlatform, targetPlatform)
+}
+
+// Aikit2LLBWithPlatforms converts an InferenceConfig using separate build and target platforms.
+func Aikit2LLBWithPlatforms(c *config.InferenceConfig, buildPlatform, targetPlatform *specs.Platform) (llb.State, *specs.Image, error) {
+	if buildPlatform == nil {
+		buildPlatform = targetPlatform
+	}
+
 	var merge, state llb.State
 	switch c.Runtime {
 	case utils.RuntimeAppleSilicon:
-		state = llb.Image(utils.AppleSiliconBase, llb.Platform(*platform))
+		state = llb.Image(utils.AppleSiliconBase, llb.Platform(*targetPlatform))
 	case utils.RuntimeROCm:
 		// Use Ubuntu 24.04 for ROCm to match noble repository.
-		state = llb.Image(utils.Ubuntu24Base, llb.Platform(*platform))
+		state = llb.Image(utils.Ubuntu24Base, llb.Platform(*targetPlatform))
 	default:
-		state = llb.Image(utils.UbuntuBase, llb.Platform(*platform))
+		state = llb.Image(utils.UbuntuBase, llb.Platform(*targetPlatform))
 	}
 	buildBase := state
-	base := getBaseImage(c, platform)
+	base := getBaseImage(c, targetPlatform)
 
 	var err error
 	if isRunnerMode(c) {
 		// Runner mode skips model downloads and keeps dependencies and the entrypoint sequential.
-		_, merge = writeConfig(c, base, buildBase, *platform)
-		state, merge = installRunnerDependencies(c, buildBase, merge, *platform)
+		_, merge = writeConfig(c, base, buildBase, *targetPlatform)
+		state, merge = installRunnerDependencies(c, buildBase, merge, *targetPlatform)
 		state, merge = installRunnerEntrypoint(c, state, merge)
 	} else {
 		// Standard mode materializes models and config on an isolated branch.
-		state, merge, err = copyModels(c, base, buildBase, *platform)
+		state, merge, err = copyModels(c, base, buildBase, *buildPlatform, *targetPlatform)
 		if err != nil {
 			return state, nil, err
 		}
 		state = buildBase
 	}
 
-	state, merge, err = addLocalAI(c, state, merge, *platform)
+	state, merge, err = addLocalAI(c, state, merge, *buildPlatform, *targetPlatform)
 	if err != nil {
 		return state, nil, err
 	}
 
 	// install cuda if runtime is nvidia and architecture is amd64
-	if c.Runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
+	if c.Runtime == utils.RuntimeNVIDIA && targetPlatform.Architecture == utils.PlatformAMD64 {
 		state, merge = installCuda(c, state, merge)
 	}
 
 	// install rocm if runtime is rocm and architecture is amd64
-	if c.Runtime == utils.RuntimeROCm && platform.Architecture == utils.PlatformAMD64 {
+	if c.Runtime == utils.RuntimeROCm && targetPlatform.Architecture == utils.PlatformAMD64 {
 		state, merge = installRocm(c, state, merge)
 	}
 
 	// install backend dependencies
-	merge = installBackends(c, *platform, state, merge)
+	merge = installBackends(c, *targetPlatform, state, merge)
 
-	imageCfg := NewImageConfig(c, platform)
+	imageCfg := NewImageConfig(c, targetPlatform)
 	return merge, imageCfg, nil
 }
 
@@ -105,7 +114,7 @@ func writeConfig(c *config.InferenceConfig, base llb.State, s llb.State, platfor
 }
 
 // copyModels copies models to the image and writes the config.
-func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, platform specs.Platform) (llb.State, llb.State, error) {
+func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, buildPlatform, targetPlatform specs.Platform) (llb.State, llb.State, error) {
 	savedState := s
 	localSources := make([]string, 0, len(c.Models))
 	for _, model := range c.Models {
@@ -121,7 +130,7 @@ func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, platform
 		if _, err := url.ParseRequestURI(model.Source); err == nil {
 			switch {
 			case strings.HasPrefix(model.Source, "oci://"):
-				s = handleOCI(model.Source, s, platform)
+				s = handleOCI(model.Source, s, buildPlatform)
 			case strings.HasPrefix(model.Source, "http://"), strings.HasPrefix(model.Source, "https://"):
 				s = handleHTTP(model.Source, model.Name, model.SHA256, s)
 			case strings.HasPrefix(model.Source, "huggingface://"):
@@ -163,7 +172,7 @@ func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, platform
 	if configurationFiles != nil {
 		var opts []llb.ConstraintsOpt
 		if c.Config != "" {
-			opts = append(opts, llb.WithCustomName(fmt.Sprintf("Creating config for platform %s/%s", platform.OS, platform.Architecture)))
+			opts = append(opts, llb.WithCustomName(fmt.Sprintf("Creating config for platform %s/%s", targetPlatform.OS, targetPlatform.Architecture)))
 		}
 		s = s.File(configurationFiles, opts...)
 	}
@@ -230,8 +239,8 @@ Pin-Priority: 600
 }
 
 // addLocalAI adds the LocalAI binary to the image.
-func addLocalAI(c *config.InferenceConfig, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State, error) {
-	artifactVersion := getLocalAIArtifactVersion(c, platform)
+func addLocalAI(c *config.InferenceConfig, s llb.State, merge llb.State, buildPlatform, targetPlatform specs.Platform) (llb.State, llb.State, error) {
+	artifactVersion := getLocalAIArtifactVersion(c, targetPlatform)
 
 	// Map architectures to OCI artifact references & internal artifact filenames
 	artifactRefs := map[string]struct {
@@ -241,15 +250,15 @@ func addLocalAI(c *config.InferenceConfig, s llb.State, merge llb.State, platfor
 		utils.PlatformARM64: {Ref: localAIRepo + artifactVersion + "-arm64"},
 	}
 
-	art, ok := artifactRefs[platform.Architecture]
+	art, ok := artifactRefs[targetPlatform.Architecture]
 	if !ok {
-		return s, merge, fmt.Errorf("unsupported architecture %s", platform.Architecture)
+		return s, merge, fmt.Errorf("unsupported architecture %s", targetPlatform.Architecture)
 	}
 
 	savedState := s
 
 	// Use the oras CLI image to pull the artifact containing the LocalAI binary
-	tooling := llb.Image(orasImage, llb.Platform(platform)).Run(
+	tooling := llb.Image(orasImage, llb.Platform(buildPlatform)).Run(
 		utils.Shf("set -e\noras pull %[1]s\nchmod +x local-ai\nchmod 755 local-ai", art.Ref),
 		llb.WithCustomName("Pulling LocalAI from OCI artifact "+art.Ref),
 	).Root()
