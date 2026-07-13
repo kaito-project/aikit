@@ -130,7 +130,7 @@ func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, buildPla
 		if _, err := url.ParseRequestURI(model.Source); err == nil {
 			switch {
 			case strings.HasPrefix(model.Source, "oci://"):
-				s = handleOCI(model.Source, s, buildPlatform)
+				s = handleOCI(model.Source, s, buildPlatform, targetPlatform)
 			case strings.HasPrefix(model.Source, "http://"), strings.HasPrefix(model.Source, "https://"):
 				s = handleHTTP(model.Source, model.Name, model.SHA256, s)
 			case strings.HasPrefix(model.Source, "huggingface://"):

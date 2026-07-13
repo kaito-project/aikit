@@ -96,6 +96,21 @@ func TestAikit2LLBWithPlatformsSeparatesHelperAndTargetPlatforms(t *testing.T) {
 
 	modelPull := findInferenceExecOp(t, definition, "example.com/models/test:latest")
 	assertInferenceOpPlatform(t, modelPull, *buildPlatform)
+	modelPullCommand := strings.Join(modelPull.op.GetExec().Meta.Args, "\x00")
+	for _, fragment := range []string{
+		`oras resolve  --full-reference "$ref"`,
+		`oras manifest fetch  "$pinned_ref"`,
+		`.platform.os != "unknown"`,
+		`.platform.architecture != "unknown"`,
+		`vnd.docker.reference.type`,
+		`attestation-manifest`,
+		`platform_flag="--platform linux/amd64"`,
+		`oras pull  $platform_flag "$pinned_ref"`,
+	} {
+		if !strings.Contains(modelPullCommand, fragment) {
+			t.Fatalf("OCI model pull command = %q, want %q", modelPullCommand, fragment)
+		}
+	}
 
 	localAIPull := findInferenceExecOp(t, definition, localAIRepo)
 	assertInferenceOpPlatform(t, localAIPull, *buildPlatform)

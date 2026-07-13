@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containerd/platforms"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/opencontainers/go-digest"
@@ -26,7 +27,7 @@ const (
 )
 
 // handleOCI handles OCI artifact downloading and processing.
-func handleOCI(source string, s llb.State, buildPlatform specs.Platform) llb.State {
+func handleOCI(source string, s llb.State, buildPlatform, targetPlatform specs.Platform) llb.State {
 	toolingImage := llb.Image(orasImage, llb.Platform(buildPlatform))
 
 	artifactURL := strings.TrimPrefix(source, "oci://")
@@ -46,7 +47,7 @@ func handleOCI(source string, s llb.State, buildPlatform specs.Platform) llb.Sta
 	}
 
 	// Generic (ModelPack) selects the first application/vnd.cncf.model.weight.* layer.
-	orasCmd := handleGenericModelPack(artifactURL)
+	orasCmd := handleGenericModelPack(artifactURL, targetPlatform)
 	script = fmt.Sprintf("apk add --no-cache jq curl && %s", orasCmd)
 	toolingImage = toolingImage.Run(utils.Sh(script)).Root()
 	// Copy all files from /download to /models
@@ -72,7 +73,7 @@ func handleOllamaRegistry(artifactURL string) (string, string) {
 // handleGenericModelPack builds an oras command that pulls the artifact,
 // automatically using org.opencontainers.image.title for filenames.
 // For localhost registries (localhost:* or 127.0.0.1:*), uses --insecure flag with a warning.
-func handleGenericModelPack(artifactURL string) string {
+func handleGenericModelPack(artifactURL string, targetPlatform specs.Platform) string {
 	// Determine if this is a localhost registry that may need insecure flag
 	isLocalhost := strings.HasPrefix(artifactURL, "localhost:") ||
 		strings.HasPrefix(artifactURL, "127.0.0.1:") ||
@@ -91,14 +92,21 @@ ref=%[1]s
 mkdir -p /download
 cd /download
 echo "Pulling artifact from $ref" >&2
-if ! oras pull %[3]s "$ref" 2>/tmp/oras-error.log; then
+platform_flag=""
+pinned_ref=$(oras resolve %[3]s --full-reference "$ref")
+oras manifest fetch %[3]s "$pinned_ref" > /tmp/oras-manifest.json
+# ModelPack indexes are platform-neutral; select a target only for a genuinely platform-indexed artifact.
+if jq -e 'any(.manifests[]?; .platform != null and (.platform.os // "") != "" and .platform.os != "unknown" and (.platform.architecture // "") != "" and .platform.architecture != "unknown" and ((.annotations["vnd.docker.reference.type"] // "") != "attestation-manifest"))' /tmp/oras-manifest.json >/dev/null; then
+	platform_flag="--platform %[4]s"
+fi
+if ! oras pull %[3]s $platform_flag "$pinned_ref" 2>/tmp/oras-error.log; then
 	echo "Failed to pull artifact from $ref" >&2
 	cat /tmp/oras-error.log >&2
 	exit 1
 fi
 echo "Downloaded files:" >&2
 ls -lh /download
-`, artifactURL, warningMsg, insecureFlag)
+`, artifactURL, warningMsg, insecureFlag, platforms.Format(targetPlatform))
 
 	return cmd
 }
