@@ -96,7 +96,7 @@ platform_flag=""
 pinned_ref=$(oras resolve %[3]s --full-reference "$ref")
 oras manifest fetch %[3]s "$pinned_ref" > /tmp/oras-manifest.json
 # ModelPack indexes are platform-neutral; select a target only for a genuinely platform-indexed artifact.
-if jq -e 'any(.manifests[]?; .platform != null and (.platform.os // "") != "" and .platform.os != "unknown" and (.platform.architecture // "") != "" and .platform.architecture != "unknown" and ((.annotations["vnd.docker.reference.type"] // "") != "attestation-manifest"))' /tmp/oras-manifest.json >/dev/null; then
+if jq -e '([.manifests[]? | select(.platform != null and (.platform.os // "") != "" and .platform.os != "unknown" and (.platform.architecture // "") != "" and .platform.architecture != "unknown" and ((.annotations["vnd.docker.reference.type"] // "") != "attestation-manifest")) | .platform] | unique | length) > 1' /tmp/oras-manifest.json >/dev/null; then
 	platform_flag="--platform %[4]s"
 fi
 if ! oras pull %[3]s $platform_flag "$pinned_ref" 2>/tmp/oras-error.log; then

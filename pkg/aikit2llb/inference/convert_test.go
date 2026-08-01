@@ -102,6 +102,7 @@ func TestAikit2LLBWithPlatformsSeparatesHelperAndTargetPlatforms(t *testing.T) {
 		`oras manifest fetch  "$pinned_ref"`,
 		`.platform.os != "unknown"`,
 		`.platform.architecture != "unknown"`,
+		`unique | length) > 1`,
 		`vnd.docker.reference.type`,
 		`attestation-manifest`,
 		`platform_flag="--platform linux/amd64"`,
