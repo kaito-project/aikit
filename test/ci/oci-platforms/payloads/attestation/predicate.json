@@ -1,0 +1,7 @@
+{
+  "_type": "https://in-toto.io/Statement/v1",
+  "predicateType": "https://example.invalid/aikit/ci-attestation/v1",
+  "predicate": {
+    "purpose": "Ensure unknown attestation descriptors do not affect OCI platform selection."
+  }
+}
