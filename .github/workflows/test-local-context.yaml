@@ -71,9 +71,8 @@ jobs:
       - name: Build current Aikit frontend
         run: |
           set -euo pipefail
-          docker buildx inspect default --bootstrap
+          docker buildx inspect --bootstrap
           docker buildx build . \
-            --builder default \
             --platform linux/amd64 \
             --tag "$FRONTEND_IMAGE" \
             --load \
@@ -100,7 +99,6 @@ jobs:
           progress_file="$RUNNER_TEMP/aikit-local-context-progress.raw"
           progress_json_file="$RUNNER_TEMP/aikit-local-context-progress.jsonl"
           if docker buildx build "$context_dir" \
-            --builder default \
             --file "$context_dir/aikitfile.yaml" \
             --platform linux/amd64 \
             --tag "$TEST_IMAGE" \
