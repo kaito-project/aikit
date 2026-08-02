@@ -213,7 +213,11 @@ cp -- "$config_file" "$layout_dir/blobs/sha256/$cfg_dgst"
 artifactTypeEsc=$(escape_json "$ARTIFACT_TYPE")
 manifest_file="$tmp_dir/manifest.json"
 {
-	printf '%s' "{ \"schemaVersion\": 2, \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\", \"artifactType\": \"$artifactTypeEsc\", \"config\": {\"mediaType\": \"application/vnd.oci.empty.v1+json\", \"digest\": \"sha256:$cfg_dgst\", \"size\": $cfg_size}, \"layers\": [ "
+	printf '%s' \
+		'{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", ' \
+		"\"artifactType\": \"$artifactTypeEsc\", " \
+		'"config": {"mediaType": "application/vnd.oci.empty.v1+json", ' \
+		"\"digest\": \"sha256:$cfg_dgst\", \"size\": $cfg_size}, \"layers\": [ "
 	cat "$layers_file"
 	printf '%s' ' ] }'
 } > "$manifest_file"
@@ -227,7 +231,21 @@ cp -- "$manifest_file" "$layout_dir/blobs/sha256/$m_dgst"
 nameEsc=$(escape_json "$NAME")
 refNameEsc=$(escape_json "$REF_NAME")
 cat > "$layout_dir/index.json" <<EOF_INDEX
-{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [ { "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:$m_dgst", "size": $m_size, "annotations": { "org.opencontainers.image.title": "$nameEsc", "org.opencontainers.image.ref.name": "$refNameEsc" } } ] }
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.index.v1+json",
+  "manifests": [
+    {
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "digest": "sha256:$m_dgst",
+      "size": $m_size,
+      "annotations": {
+        "org.opencontainers.image.title": "$nameEsc",
+        "org.opencontainers.image.ref.name": "$refNameEsc"
+      }
+    }
+  ]
+}
 EOF_INDEX
 
 # Create OCI layout version marker.

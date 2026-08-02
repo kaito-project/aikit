@@ -49,6 +49,11 @@ func TestBuildSchemaMatchesConfigDiscrimination(t *testing.T) {
 			wantBranch: inferenceConfigDefinition,
 		},
 		{
+			name:      "only one inference backend is supported",
+			document:  `{"apiVersion":"v1alpha1","runtime":"cuda","backends":["llama-cpp","vllm"]}`,
+			wantValid: false,
+		},
+		{
 			name:       "minimal finetune",
 			document:   `{"apiVersion":"v1alpha1","target":"unsloth","datasets":[{"type":"alpaca"}]}`,
 			wantValid:  true,

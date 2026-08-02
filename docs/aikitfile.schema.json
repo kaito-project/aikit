@@ -186,6 +186,7 @@
             ]
           },
           "type": "array",
+          "maxItems": 1,
           "description": "Backends lists the inference backends to install (e.g. llama-cpp, diffusers, vllm)."
         },
         "models": {

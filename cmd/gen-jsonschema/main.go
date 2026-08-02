@@ -142,6 +142,9 @@ func applyValidationConstraints(defs jsonschema.Definitions) error {
 	if err := setRequired(defs, "InferenceConfig", "apiVersion"); err != nil {
 		return err
 	}
+	if err := setArrayMaxItems(defs, "InferenceConfig", "backends", 1); err != nil {
+		return err
+	}
 	if err := setRequired(defs, "FineTuneConfig", "apiVersion", "datasets"); err != nil {
 		return err
 	}
@@ -217,6 +220,19 @@ func setRequired(defs jsonschema.Definitions, typeName string, properties ...str
 		}
 	}
 	def.Required = append([]string(nil), properties...)
+	return nil
+}
+
+// setArrayMaxItems constrains an array property to the runtime maximum.
+func setArrayMaxItems(defs jsonschema.Definitions, typeName, property string, maxItems uint64) error {
+	prop, err := lookupProperty(defs, typeName, property)
+	if err != nil {
+		return err
+	}
+	if prop.Items == nil {
+		return errors.Errorf("property %q on %q is not an array", property, typeName)
+	}
+	prop.MaxItems = &maxItems
 	return nil
 }
 

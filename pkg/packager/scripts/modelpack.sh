@@ -201,8 +201,12 @@ append_layer() {
 	first_layer=0
 	fpathEsc=$(escape_json "$fpath")
 	metaEsc=$(escape_json "$metaJson")
-	printf '{ "mediaType": "%s", "digest": "sha256:%s", "size": %s, "annotations": { "org.opencontainers.image.title": "%s", "org.cncf.model.filepath": "%s", "org.cncf.model.file.metadata+json": "%s", "org.cncf.model.file.mediatype.untested": "%s" } }' \
-		"$mt" "$dgst" "$size" "$fpathEsc" "$fpathEsc" "$metaEsc" "$untested" >> "$layers_file"
+	printf '%s' \
+		"{ \"mediaType\": \"$mt\", \"digest\": \"sha256:$dgst\", \"size\": $size, " \
+		"\"annotations\": { \"org.opencontainers.image.title\": \"$fpathEsc\", " \
+		"\"org.cncf.model.filepath\": \"$fpathEsc\", " \
+		"\"org.cncf.model.file.metadata+json\": \"$metaEsc\", " \
+		"\"org.cncf.model.file.mediatype.untested\": \"$untested\" } }" >> "$layers_file"
 }
 
 # add_category processes a file category and adds layers according to pack mode.
@@ -304,7 +308,11 @@ artifactTypeEsc=$(escape_json "$ARTIFACT_TYPE")
 mtManifestEsc=$(escape_json "$MT_MANIFEST")
 manifest_file="$tmp_dir/manifest.json"
 {
-	printf '%s' "{ \"schemaVersion\": 2, \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\", \"artifactType\": \"$artifactTypeEsc\", \"config\": {\"mediaType\": \"$mtManifestEsc\", \"digest\": \"sha256:$mc_dgst\", \"size\": $mc_size}, \"layers\": [ "
+	printf '%s' \
+		'{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", ' \
+		"\"artifactType\": \"$artifactTypeEsc\", \"config\": {" \
+		"\"mediaType\": \"$mtManifestEsc\", \"digest\": \"sha256:$mc_dgst\", " \
+		"\"size\": $mc_size}, \"layers\": [ "
 	cat "$layers_file"
 	printf '%s\n' ' ] }'
 } > "$manifest_file"
@@ -327,7 +335,21 @@ cp -- "$manifest_file" "$layout_dir/blobs/sha256/$m_dgst"
 nameEsc=$(escape_json "$NAME")
 refNameEsc=$(escape_json "$REF_NAME")
 cat > "$layout_dir/index.json" <<EOF_INDEX
-{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [ { "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:$m_dgst", "size": $m_size, "annotations": { "org.opencontainers.image.title": "$nameEsc", "org.opencontainers.image.ref.name": "$refNameEsc" } } ] }
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.index.v1+json",
+  "manifests": [
+    {
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "digest": "sha256:$m_dgst",
+      "size": $m_size,
+      "annotations": {
+        "org.opencontainers.image.title": "$nameEsc",
+        "org.opencontainers.image.ref.name": "$refNameEsc"
+      }
+    }
+  ]
+}
 EOF_INDEX
 
 # Create OCI layout version marker.
