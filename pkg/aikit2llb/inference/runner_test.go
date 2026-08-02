@@ -270,6 +270,12 @@ func TestGenerateHFModelConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			script := generateHFModelConfig(tt.backend)
 
+			// Model names should use the repository basename so API callers do not
+			// need to include the HuggingFace organization prefix.
+			if !strings.Contains(script, `MODEL_NAME="${MODEL##*/}"`) {
+				t.Error("should derive the model name from the repository basename")
+			}
+
 			// Should verify cached config matches the requested model
 			if !strings.Contains(script, "grep -qF") {
 				t.Error("should use fixed-string grep to verify cached config matches requested model")

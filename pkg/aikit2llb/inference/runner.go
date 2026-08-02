@@ -223,7 +223,9 @@ fi
 // These backends pass the HuggingFace model ID through to LocalAI config at runtime.
 func generateHFModelConfig(backend string) string {
 	return fmt.Sprintf(`# Check if model config matches the requested model (volume mount caching)
-MODEL_NAME=$(echo "$MODEL" | tr '/' '-')
+MODEL_NAME="${MODEL##*/}"
+MODEL_NAME="${MODEL_NAME%%\?*}"
+MODEL_NAME="${MODEL_NAME%%\#*}"
 if [[ -f "/models/aikit-model.yaml" ]] && grep -qF "model: ${MODEL}" /models/aikit-model.yaml 2>/dev/null; then
   echo "Found existing model config matching $MODEL in /models, skipping setup"
 else
