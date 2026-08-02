@@ -1,0 +1,167 @@
+name: oci-platform-selection-test
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/test-oci-platforms.yaml'
+      - 'Dockerfile'
+      - 'cmd/frontend/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'pkg/aikit/**'
+      - 'pkg/aikit2llb/inference/**'
+      - 'pkg/build/**'
+      - 'pkg/utils/**'
+      - 'test/ci/oci-platforms/**'
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generic-oci-platforms:
+    runs-on: ubuntu-latest-16-cores
+    timeout-minutes: 60
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@6c3c2f2c1c457b00c10c4848d6f5491db3b629df # v2.18.0
+        with:
+          egress-policy: audit
+          allowed-endpoints: >
+            api.github.com:443
+            auth.docker.io:443
+            dl-cdn.alpinelinux.org:443
+            github.com:443
+            *.githubusercontent.com:443
+            ghcr.io:443
+            production.cloudflare.docker.com:443
+            proxy.golang.org:443
+            quay.io:443
+            registry-1.docker.io:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            *.blob.core.windows.net:443
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install ORAS
+        uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3 # v2.0.0
+        with:
+          version: 1.2.0
+
+      - name: Start local registry
+        run: |
+          set -euo pipefail
+          docker run -d \
+            --name oci-platform-registry \
+            --publish 5000:5000 \
+            registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error http://localhost:5000/v2/ >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs oci-platform-registry
+          exit 1
+
+      - name: Create BuildKit builder on amd64 host
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          daemon_arch=$(docker info --format '{{.Architecture}}')
+          case "$daemon_arch" in
+            amd64|x86_64) ;;
+            *) echo "Expected an amd64 Docker daemon, got $daemon_arch" >&2; exit 1 ;;
+          esac
+          docker buildx create \
+            --name oci-platforms \
+            --driver docker-container \
+            --driver-opt network=host \
+            --platform linux/amd64 \
+            --use
+          docker buildx inspect --bootstrap | tee "$RUNNER_TEMP/buildx-inspect.txt"
+          grep -E 'Platforms:.*linux/amd64' "$RUNNER_TEMP/buildx-inspect.txt"
+
+      - name: Build and publish current Aikit frontend
+        run: |
+          set -euo pipefail
+          docker buildx build . \
+            --builder oci-platforms \
+            --platform linux/amd64 \
+            --tag localhost:5000/aikit/frontend:test \
+            --push \
+            --provenance=false \
+            --progress=plain
+
+      - name: Publish OCI index fixtures
+        run: |
+          set -euo pipefail
+          test/ci/oci-platforms/publish-fixtures.sh localhost:5000/aikit/oci-platforms
+          oras manifest fetch --plain-http localhost:5000/aikit/oci-platforms:single-stamped |
+            tee "$RUNNER_TEMP/single-stamped-index.json" |
+            jq .
+          oras manifest fetch --plain-http localhost:5000/aikit/oci-platforms:multi-platform |
+            tee "$RUNNER_TEMP/multi-platform-index.json" |
+            jq .
+
+      - name: Build arm64 targets and verify selected model bytes
+        run: |
+          set -euo pipefail
+
+          build_and_verify() {
+            local case_name=$1
+            local expected_payload=$2
+            local output_dir="$RUNNER_TEMP/oci-platform-output/$case_name"
+            local build_log="$RUNNER_TEMP/$case_name-build.log"
+
+            mkdir -p "$output_dir"
+            docker buildx build . \
+              --builder oci-platforms \
+              --file "test/ci/oci-platforms/$case_name.aikitfile.yaml" \
+              --platform linux/arm64 \
+              --output "type=local,dest=$output_dir" \
+              --provenance=false \
+              --progress=plain 2>&1 | tee "$build_log"
+
+            # The target is arm64. The x86_64 apk index proves the ORAS helper
+            # actually executed on the amd64 builder rather than the target.
+            grep -E '/x86_64/APKINDEX' "$build_log"
+            test -f "$output_dir/models/model.gguf"
+            test "$(find "$output_dir/models" -maxdepth 1 -type f | wc -l)" -eq 1
+            test ! -e "$output_dir/models/predicate.json"
+            cmp "$expected_payload" "$output_dir/models/model.gguf"
+            find "$output_dir/models" -maxdepth 2 -type f -print -exec sha256sum {} \;
+          }
+
+          # The sole descriptor is stamped amd64, but a neutral ModelPack-style
+          # index must still pull successfully for an arm64 target.
+          build_and_verify \
+            single-stamped \
+            test/ci/oci-platforms/payloads/single/model.gguf
+
+          # The real two-platform index must select arm64 while ignoring its
+          # unknown-platform attestation descriptor.
+          build_and_verify \
+            multi-platform \
+            test/ci/oci-platforms/payloads/multi-arm64/model.gguf
+
+      - name: Save diagnostics
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/oci-platform-diagnostics"
+          docker logs oci-platform-registry > "$RUNNER_TEMP/oci-platform-diagnostics/registry.log" 2>&1 || true
+          docker buildx inspect oci-platforms > "$RUNNER_TEMP/oci-platform-diagnostics/buildx.txt" 2>&1 || true
+          cp "$RUNNER_TEMP"/*-index.json "$RUNNER_TEMP/oci-platform-diagnostics/" 2>/dev/null || true
+          cp "$RUNNER_TEMP"/*-build.log "$RUNNER_TEMP/oci-platform-diagnostics/" 2>/dev/null || true
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oci-platform-selection-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oci-platform-diagnostics
+          if-no-files-found: ignore

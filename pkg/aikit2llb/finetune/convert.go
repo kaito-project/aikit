@@ -19,32 +19,25 @@ const (
 )
 
 func Aikit2LLB(c *config.FineTuneConfig) (llb.State, error) {
-	env := map[string]string{
-		"PATH":                       system.DefaultPathEnv("linux") + ":/usr/local/cuda/bin",
-		"NVIDIA_REQUIRE_CUDA":        "cuda>=12.0",
-		"NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
-		"NVIDIA_VISIBLE_DEVICES":     "all",
-		"LD_LIBRARY_PATH":            "/usr/local/cuda/lib64",
+	env := []struct {
+		key   string
+		value string
+	}{
+		{key: "PATH", value: system.DefaultPathEnv("linux") + ":/usr/local/cuda/bin"},
+		{key: "NVIDIA_REQUIRE_CUDA", value: "cuda>=12.0"},
+		{key: "NVIDIA_DRIVER_CAPABILITIES", value: "compute,utility"},
+		{key: "NVIDIA_VISIBLE_DEVICES", value: "all"},
+		{key: "LD_LIBRARY_PATH", value: "/usr/local/cuda/lib64"},
 	}
 
 	state := llb.Image(utils.CudaDevel)
-	for k, v := range env {
-		state = state.AddEnv(k, v)
+	for _, entry := range env {
+		state = state.AddEnv(entry.key, entry.value)
 	}
 
 	// installing dependencies
 	// due to buildkit run limitations, we need to install nvidia drivers and driver version must match the host
 	state = state.Run(utils.Sh("apt-get update && apt-get install -y --no-install-recommends python3-dev python3 python3-pip python-is-python3 git wget kmod && cd /root && VERSION=$(cat /proc/driver/nvidia/version | sed -n 's/.*NVIDIA UNIX x86_64 Kernel Module  \\([0-9]\\+\\.[0-9]\\+\\.[0-9]\\+\\).*/\\1/p') && wget --no-verbose https://download.nvidia.com/XFree86/Linux-x86_64/$VERSION/NVIDIA-Linux-x86_64-$VERSION.run && chmod +x NVIDIA-Linux-x86_64-$VERSION.run && ./NVIDIA-Linux-x86_64-$VERSION.run -x && rm NVIDIA-Linux-x86_64-$VERSION.run && /root/NVIDIA-Linux-x86_64-$VERSION/nvidia-installer -a -s --skip-depmod --no-dkms --no-nvidia-modprobe --no-questions --no-systemd --no-x-check --no-kernel-modules --no-kernel-module-source && rm -rf /root/NVIDIA-Linux-x86_64-$VERSION")).Root()
-
-	// write config to /config.yaml
-	cfg, err := yaml.Marshal(c)
-	if err != nil {
-		return llb.State{}, errors.Wrap(err, "failed to marshal finetune config")
-	}
-	state = state.File(
-		llb.Mkfile("/config.yaml", 0o644, cfg),
-		llb.WithCustomName("Writing finetune config"),
-	)
 
 	var scratch llb.State
 	if c.Target == utils.TargetUnsloth {
@@ -64,7 +57,19 @@ func Aikit2LLB(c *config.FineTuneConfig) (llb.State, error) {
 			llb.Copy(unslothScript, utils.FileNameFromURL(unslothScriptURL), "/"),
 			llb.WithCustomName("Copying "+utils.FileNameFromURL(unslothScriptURL)),
 		)
+	}
 
+	// Write config after invariant setup so config-only changes reuse dependency layers.
+	cfg, err := yaml.Marshal(c)
+	if err != nil {
+		return llb.State{}, errors.Wrap(err, "failed to marshal finetune config")
+	}
+	state = state.File(
+		llb.Mkfile("/config.yaml", 0o644, cfg),
+		llb.WithCustomName("Writing finetune config"),
+	)
+
+	if c.Target == utils.TargetUnsloth {
 		// setup nvidia devices and run unsloth
 		// due to buildkit run limitations, we need to create the devices manually and run unsloth in the same command
 		state = state.Run(utils.Shf("%[1]s && %[2]s && python -m target_unsloth", nvidiaMknod, sourceVenv), llb.Security(llb.SecurityModeInsecure)).Root()

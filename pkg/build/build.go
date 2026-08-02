@@ -169,8 +169,11 @@ func buildInference(ctx context.Context, c client.Client, cfg *config.InferenceC
 		}
 	}
 
+	// Build helper artifacts for the BuildKit worker platform while keeping the
+	// final image base and backend artifacts on each requested target platform.
+	buildPlatform := dc.BuildPlatforms[0]
 	rb, err := dc.Build(ctx, func(ctx context.Context, platform *specs.Platform, _ int) (*dockerui.BuildResult, error) {
-		return buildImage(ctx, c, cfg, platform, cacheImports)
+		return buildImage(ctx, c, cfg, &buildPlatform, platform, cacheImports)
 	})
 	if err != nil {
 		return nil, err
@@ -180,8 +183,8 @@ func buildInference(ctx context.Context, c client.Client, cfg *config.InferenceC
 }
 
 // buildImage builds an image from the given aikitfile config for one platform.
-func buildImage(ctx context.Context, c client.Client, cfg *config.InferenceConfig, platform *specs.Platform, cacheImports []client.CacheOptionsEntry) (*dockerui.BuildResult, error) {
-	state, image, err := inference.Aikit2LLB(cfg, platform)
+func buildImage(ctx context.Context, c client.Client, cfg *config.InferenceConfig, buildPlatform, targetPlatform *specs.Platform, cacheImports []client.CacheOptionsEntry) (*dockerui.BuildResult, error) {
+	state, image, err := inference.Aikit2LLBWithPlatforms(cfg, buildPlatform, targetPlatform)
 	if err != nil {
 		return nil, err
 	}

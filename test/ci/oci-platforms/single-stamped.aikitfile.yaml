@@ -1,0 +1,5 @@
+#syntax=localhost:5000/aikit/frontend:test
+apiVersion: v1alpha1
+models:
+  - name: oci-platform-probe
+    source: oci://localhost:5000/aikit/oci-platforms:single-stamped

@@ -2,7 +2,6 @@ package inference
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	"github.com/kaito-project/aikit/pkg/utils"
@@ -184,9 +183,8 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 		metadataContent := fmt.Sprintf(`{
   "alias": "%s",
   "name": "%s",
-  "gallery_url": "github:mudler/LocalAI/backend/index.yaml@master",
-  "installed_at": "%s"
-}`, backendAlias, backendName, time.Now().UTC().Format(time.RFC3339))
+  "gallery_url": "github:mudler/LocalAI/backend/index.yaml@master"
+}`, backendAlias, backendName)
 
 		s = s.File(
 			llb.Mkfile(fmt.Sprintf("%s/metadata.json", backendDir), 0o644, []byte(metadataContent)),

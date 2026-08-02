@@ -82,13 +82,19 @@ func TestEmbeddedScriptsHandleFilenamesWithoutShellInterpolation(t *testing.T) {
 
 	for name, script := range tests {
 		t.Run(name, func(t *testing.T) {
-			for _, unsafe := range []string{`-I {}`, `f="{}"`, `echo "{}|`, `/tmp/$(basename`} {
+			for _, unsafe := range []string{`-I {}`, `f="{}"`, `echo "{}|`, `/tmp/$(basename`, `IFS='|'`, `'%n|%s'`} {
 				if strings.Contains(script, unsafe) {
 					t.Errorf("embedded script contains unsafe filename interpolation %q", unsafe)
 				}
 			}
-			if !strings.Contains(script, `stat -c '%n|%s' --`) {
-				t.Error("embedded script should pass filenames directly to stat through xargs")
+			for _, required := range []string{
+				`-print0 | LC_ALL=C sort -z`,
+				`xargs -0 -r stat -c '%s' --`,
+				`read -r -d ''`,
+			} {
+				if !strings.Contains(script, required) {
+					t.Errorf("embedded script should contain NUL-safe filename handling %q", required)
+				}
 			}
 			if !strings.Contains(script, "mktemp ") {
 				t.Error("embedded script should use unique temporary files for raw layers")
@@ -96,7 +102,7 @@ func TestEmbeddedScriptsHandleFilenamesWithoutShellInterpolation(t *testing.T) {
 		})
 	}
 
-	if !strings.Contains(modelpackScript, ": > /tmp/file_sizes.cache") {
-		t.Error("modelpack script should initialize its file-size cache")
+	if !strings.Contains(modelpackScript, `printf '%s\0%s\0' "$f" "$sz" >> "$list"`) {
+		t.Error("modelpack script should write NUL-delimited category records")
 	}
 }

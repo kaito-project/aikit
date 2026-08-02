@@ -10,9 +10,11 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/containerd/platforms"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/opencontainers/go-digest"
@@ -20,13 +22,14 @@ import (
 )
 
 const (
-	orasImage         = "ghcr.io/oras-project/oras:v1.2.0"
-	ollamaRegistryURL = "registry.ollama.ai"
+	orasImage             = "ghcr.io/oras-project/oras:v1.2.0"
+	ollamaRegistryURL     = "registry.ollama.ai"
+	localModelContextName = "context"
 )
 
 // handleOCI handles OCI artifact downloading and processing.
-func handleOCI(source string, s llb.State, platform specs.Platform) llb.State {
-	toolingImage := llb.Image(orasImage, llb.Platform(platform))
+func handleOCI(source string, s llb.State, buildPlatform, targetPlatform specs.Platform) llb.State {
+	toolingImage := llb.Image(orasImage, llb.Platform(buildPlatform))
 
 	artifactURL := strings.TrimPrefix(source, "oci://")
 	var script string
@@ -45,7 +48,7 @@ func handleOCI(source string, s llb.State, platform specs.Platform) llb.State {
 	}
 
 	// Generic (ModelPack) selects the first application/vnd.cncf.model.weight.* layer.
-	orasCmd := handleGenericModelPack(artifactURL)
+	orasCmd := handleGenericModelPack(artifactURL, targetPlatform)
 	script = fmt.Sprintf("apk add --no-cache jq curl && %s", orasCmd)
 	toolingImage = toolingImage.Run(utils.Sh(script)).Root()
 	// Copy all files from /download to /models
@@ -71,7 +74,7 @@ func handleOllamaRegistry(artifactURL string) (string, string) {
 // handleGenericModelPack builds an oras command that pulls the artifact,
 // automatically using org.opencontainers.image.title for filenames.
 // For localhost registries (localhost:* or 127.0.0.1:*), uses --insecure flag with a warning.
-func handleGenericModelPack(artifactURL string) string {
+func handleGenericModelPack(artifactURL string, targetPlatform specs.Platform) string {
 	// Determine if this is a localhost registry that may need insecure flag
 	isLocalhost := strings.HasPrefix(artifactURL, "localhost:") ||
 		strings.HasPrefix(artifactURL, "127.0.0.1:") ||
@@ -90,14 +93,21 @@ ref=%[1]s
 mkdir -p /download
 cd /download
 echo "Pulling artifact from $ref" >&2
-if ! oras pull %[3]s "$ref" 2>/tmp/oras-error.log; then
+platform_flag=""
+pinned_ref=$(oras resolve %[3]s --full-reference "$ref")
+oras manifest fetch %[3]s "$pinned_ref" > /tmp/oras-manifest.json
+# ModelPack indexes are platform-neutral; select a target only for a genuinely platform-indexed artifact.
+if jq -e '([.manifests[]? | select(.platform != null and (.platform.os // "") != "" and .platform.os != "unknown" and (.platform.architecture // "") != "" and .platform.architecture != "unknown" and ((.annotations["vnd.docker.reference.type"] // "") != "attestation-manifest")) | .platform] | unique | length) > 1' /tmp/oras-manifest.json >/dev/null; then
+	platform_flag="--platform %[4]s"
+fi
+if ! oras pull %[3]s $platform_flag "$pinned_ref" 2>/tmp/oras-error.log; then
 	echo "Failed to pull artifact from $ref" >&2
 	cat /tmp/oras-error.log >&2
 	exit 1
 fi
 echo "Downloaded files:" >&2
 ls -lh /download
-`, artifactURL, warningMsg, insecureFlag)
+`, artifactURL, warningMsg, insecureFlag, platforms.Format(targetPlatform))
 
 	return cmd
 }
@@ -250,10 +260,57 @@ func listHuggingFaceRepoFiles(namespace, model, revision string) ([]string, erro
 	return files, nil
 }
 
+// localModelContext builds the shared local source used by all local models.
+func localModelContext(sources []string) llb.State {
+	followPaths := localModelFollowPaths(sources)
+	if len(followPaths) == 0 {
+		return llb.Local(localModelContextName)
+	}
+	return llb.Local(localModelContextName, llb.FollowPaths(followPaths))
+}
+
+// localModelFollowPaths returns deterministic symlink-aware filters for safe local paths.
+func localModelFollowPaths(sources []string) []string {
+	paths := make(map[string]struct{}, len(sources))
+	for _, source := range sources {
+		normalized := normalizeLocalModelPath(source)
+		if normalized == "." || !canFollowLocalModelPath(source, normalized) {
+			return nil
+		}
+		paths[normalized] = struct{}{}
+	}
+
+	result := make([]string, 0, len(paths))
+	for localPath := range paths {
+		result = append(result, localPath)
+	}
+	slices.Sort(result)
+	return result
+}
+
+func normalizeLocalModelPath(source string) string {
+	normalized := strings.TrimPrefix(path.Clean("/"+source), "/")
+	if normalized == "" {
+		return "."
+	}
+	return normalized
+}
+
+func canFollowLocalModelPath(source, normalized string) bool {
+	return source == strings.TrimSpace(source) &&
+		!strings.Contains(source, `\`) &&
+		!strings.ContainsAny(normalized, "*?[]") &&
+		!strings.HasPrefix(normalized, "!")
+}
+
+func localModelCopySource(source string) string {
+	return normalizeLocalModelPath(source)
+}
+
 // handleLocal handles copying from local paths.
-func handleLocal(source string, s llb.State) llb.State {
+func handleLocal(source string, localContext llb.State, s llb.State) llb.State {
 	s = s.File(
-		llb.Copy(llb.Local("context"), source, "/models/", createCopyOptions()...),
+		llb.Copy(localContext, localModelCopySource(source), "/models/", createCopyOptions()...),
 		llb.WithCustomName("Copying "+utils.FileNameFromURL(source)+" to /models"),
 	)
 	return s

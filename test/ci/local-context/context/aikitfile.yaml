@@ -1,0 +1,7 @@
+#syntax=aikit-local-context:test
+apiVersion: v1alpha1
+backends:
+  - llama-cpp
+models:
+  - name: local-context-fixture
+    source: models/nested/local-model.gguf
