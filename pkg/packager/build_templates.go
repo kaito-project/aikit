@@ -52,16 +52,18 @@ cd "$src"
 > /tmp/dataset.list
 
 # Find all files, excluding lock files and cache, and sort deterministically
-# Also cache file sizes in parallel to avoid repeated stat calls
-find . -type f ! -name '*.lock' ! -path './.cache/*' -print0 | \
-	xargs -0 -P $(nproc) -I {} sh -c 'echo "{}|$(stat -c%%s "{}")"' | \
+# Batch stat calls so file discovery does not launch one shell per file
+find . -type f ! -name '*.lock' ! -path './.cache/*' -exec stat -c '%%n|%%s' {} + | \
 	LC_ALL=C sort > /tmp/allfiles_with_size.list
 
 # Categorize files by extension and size into appropriate lists
 # File size is already computed and cached
+declare -A file_sizes=()
 while IFS='|' read -r f sz; do
 	f=${f#./}
-	base=$(basename "$f" | tr A-Z a-z)
+	file_sizes["$f"]=$sz
+	base=${f##*/}
+	base=${base,,}
 	case "$base" in
 		# Model weight files
 		*.safetensors|*.bin|*.gguf|*.pt|*.ckpt) echo "$f" >> /tmp/weights.list ;;
@@ -76,31 +78,30 @@ while IFS='|' read -r f sz; do
 		# Unknown files: large ones (>10MB) go to weights, small ones to config
 		*) if [ "$sz" -gt %[6]d ]; then echo "$f" >> /tmp/weights.list; else echo "$f" >> /tmp/config.list; fi ;;
 	esac
-	# Cache size for later use
-	echo "$f|$sz" >> /tmp/file_sizes.cache
 done < /tmp/allfiles_with_size.list
 
-# Initialize JSON array for manifest layers
-layers_json=""
-
-# get_cached_size: Retrieve cached file size to avoid repeated stat calls
-get_cached_size() {
-	local file="$1"
-	grep -F "$file|" /tmp/file_sizes.cache 2>/dev/null | cut -d'|' -f2 | head -n1
-}
+# Stream manifest layers to a file to avoid quadratic shell string concatenation
+layers_file=/tmp/layers.json
+: > "$layers_file"
+first_layer=1
 
 # append_layer: Add a file as a layer blob with annotations
-# Args: file path, media type, filepath annotation, metadata JSON, untested flag
+# Args: file path, media type, filepath annotation, metadata JSON, untested flag, optional size, optional blob action
 append_layer() {
-	file="$1"; mt="$2"; fpath="$3"; metaJson="$4"; untested="$5"
+	file="$1"; mt="$2"; fpath="$3"; metaJson="$4"; untested="$5"; size="${6-}"; blob_action="${7:-move}"
 	[ ! -f "$file" ] && return 0
-	dgst=$(sha256sum "$file" | cut -d' ' -f1)
-	size=$(stat -c%%s "$file")
-	mv "$file" /layout/blobs/sha256/$dgst
-	[ -n "$layers_json" ] && layers_json="$layers_json , "
-	metaEsc=$(printf '%%s' "$metaJson" | sed 's/"/\\"/g')
-	ann="{ \"org.opencontainers.image.title\": \"$fpath\", \"org.cncf.model.filepath\": \"$fpath\", \"org.cncf.model.file.metadata+json\": \"$metaEsc\", \"org.cncf.model.file.mediatype.untested\": \"$untested\" }"
-	layers_json="${layers_json}{ \"mediaType\": \"$mt\", \"digest\": \"sha256:$dgst\", \"size\": $size, \"annotations\": $ann }"
+	read -r dgst _ < <(sha256sum "$file")
+	[ -z "$size" ] && size=$(stat -c%%s "$file")
+	if [ "$blob_action" = "copy" ]; then
+		cp "$file" "/layout/blobs/sha256/$dgst"
+	else
+		mv "$file" "/layout/blobs/sha256/$dgst"
+	fi
+	if [ "$first_layer" -eq 0 ]; then printf ' , ' >> "$layers_file"; fi
+	first_layer=0
+	metaEsc=${metaJson//\"/\\\"}
+	printf '{ "mediaType": "%%s", "digest": "sha256:%%s", "size": %%s, "annotations": { "org.opencontainers.image.title": "%%s", "org.cncf.model.filepath": "%%s", "org.cncf.model.file.metadata+json": "%%s", "org.cncf.model.file.mediatype.untested": "%%s" } }' \
+		"$mt" "$dgst" "$size" "$fpath" "$fpath" "$metaEsc" "$untested" >> "$layers_file"
 }
 
 # det_tar: Create deterministic tar archive from file list
@@ -115,27 +116,25 @@ add_category() {
 		raw)
 			# Raw mode: each file becomes its own layer
 			while IFS= read -r f; do
-				fsize=$(get_cached_size "$f")
-				[ -z "$fsize" ] && fsize=$(stat -c%%s "$f")  # Fallback to stat if cache miss
+				fsize=${file_sizes["$f"]}
 				meta=$(printf '{"name":"%%s","mode":420,"uid":0,"gid":0,"size":%%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0}' "$f" "$fsize")
-				tmpCp=/tmp/raw-$(basename "$f")
-				cp "$f" "$tmpCp"
-				append_layer "$tmpCp" "$mtRaw" "$f" "$meta" "true"
+				append_layer "$f" "$mtRaw" "$f" "$meta" "true" "$fsize" copy
 			done < "$list" ;;
 		tar|tar+gzip|tar+zstd)
 			if [ "$cat" = "weights" ]; then
 				# Weights: tar each file individually (can be large)
 				while IFS= read -r f; do
-					b=$(basename "$f")
+					b=${f##*/}
+					dir=${f%%/*}
+					[ "$dir" = "$f" ] && dir=.
 					tmpTar=/tmp/${cat}-$b.tar
-					tar -cf "$tmpTar" -C "$(dirname "$f")" "$b"
+					tar -cf "$tmpTar" -C "$dir" "$b"
 					case "$PACK_MODE" in
 						tar) mt=$mtTar ;;
 						tar+gzip) gzip -n "$tmpTar"; tmpTar="$tmpTar.gz"; mt=$mtTarGz ;;
 						tar+zstd) zstd -q --no-progress "$tmpTar"; tmpTar="$tmpTar.zst"; mt=$mtTarZst ;;
 					esac
-					fsize=$(get_cached_size "$f")
-					[ -z "$fsize" ] && fsize=$(stat -c%%s "$f")
+					fsize=${file_sizes["$f"]}
 					meta=$(printf '{"name":"%%s","mode":420,"uid":0,"gid":0,"size":%%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0}' "$f" "$fsize")
 					append_layer "$tmpTar" "$mt" "$f" "$meta" "true"
 				done < "$list"
@@ -145,16 +144,16 @@ add_category() {
 				det_tar "$list" "$tmpTar" || return 0
 				case "$PACK_MODE" in
 					tar) outFile="$tmpTar"; mt=$mtTar ;;
-					tar+gzip) gzip -n "$tmpTar"; outFile="$tmpTar.gz"; mt=$mtTarGz ;;
-					tar+zstd) zstd -q --no-progress "$tmpTar"; outFile="$tmpTar.zst"; mt=$mtTarZst ;;
-				esac
-				count=$(wc -l < "$list" | tr -d ' ')
-				totalSize=0
-				while IFS= read -r f2; do
-					sz=$(get_cached_size "$f2")
-					[ -z "$sz" ] && sz=$(stat -c%%s "$f2")
-					totalSize=$((totalSize + sz))
-				done < "$list"
+						tar+gzip) gzip -n "$tmpTar"; outFile="$tmpTar.gz"; mt=$mtTarGz ;;
+						tar+zstd) zstd -q --no-progress "$tmpTar"; outFile="$tmpTar.zst"; mt=$mtTarZst ;;
+					esac
+					count=0
+					totalSize=0
+					while IFS= read -r f2; do
+						sz=${file_sizes["$f2"]}
+						totalSize=$((totalSize + sz))
+						count=$((count + 1))
+					done < "$list"
 				meta=$(printf '{"name":"%%s","mode":420,"uid":0,"gid":0,"size":%%s,"mtime":"1970-01-01T00:00:00Z","typeflag":0,"files":%%d}' "$cat" "$totalSize" "$count")
 				append_layer "$outFile" "$mt" "$cat" "$meta" "true"
 			fi ;;
@@ -191,14 +190,16 @@ add_category /tmp/dataset.list dataset \
 
 # Create empty manifest config and add as blob
 printf '{}' > /tmp/manifest-config.json
-mc_dgst=$(sha256sum /tmp/manifest-config.json | cut -d' ' -f1)
+read -r mc_dgst _ < <(sha256sum /tmp/manifest-config.json)
 mc_size=$(stat -c%%s /tmp/manifest-config.json)
 cp /tmp/manifest-config.json /layout/blobs/sha256/$mc_dgst
 
 # Generate OCI manifest with all layers
-cat > /tmp/manifest.json <<EOF_MANIFEST
-{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "%[2]s", "config": {"mediaType": "%[3]s", "digest": "sha256:$mc_dgst", "size": $mc_size}, "layers": [ $layers_json ] }
-EOF_MANIFEST
+{
+	printf '%%s' '{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "%[2]s", "config": {"mediaType": "%[3]s", "digest": "sha256:'"$mc_dgst"'", "size": '"$mc_size"'}, "layers": [ '
+	cat "$layers_file"
+	printf '%%s\n' ' ] }'
+} > /tmp/manifest.json
 
 # Validate manifest structure
 if [ "$(head -c1 /tmp/manifest.json)" != "{" ] || \
@@ -208,7 +209,7 @@ if [ "$(head -c1 /tmp/manifest.json)" != "{" ] || \
 fi
 
 # Add manifest as blob
-m_dgst=$(sha256sum /tmp/manifest.json | cut -d' ' -f1)
+read -r m_dgst _ < <(sha256sum /tmp/manifest.json)
 m_size=$(stat -c%%s /tmp/manifest.json)
 cp /tmp/manifest.json /layout/blobs/sha256/$m_dgst
 
@@ -260,33 +261,40 @@ if [ -f /src ]; then mkdir -p /worksrc && cp /src /worksrc/; work=/worksrc; fi
 cd "$work"
 
 # Find all files, excluding lock files and cache, sorted deterministically
-# Cache file sizes for later use
-find . -type f ! -name '*.lock' ! -path './.cache/*' -print0 | \
-	xargs -0 -P $(nproc) -I {} sh -c 'f="{}"; echo "$f|$(stat -c%%s "$f")"' | \
-	sed 's|^\./||' | LC_ALL=C sort > /tmp/files_with_size.list
+# Batch stat calls so file discovery does not launch one shell per file
+find . -type f ! -name '*.lock' ! -path './.cache/*' -exec stat -c '%%n|%%s' {} + | \
+	LC_ALL=C sort > /tmp/files_with_size.list
 
-# Extract just the file paths for processing
-cut -d'|' -f1 < /tmp/files_with_size.list > /tmp/files.list
+# Cache file sizes by path and extract the sorted file list
+declare -A file_sizes=()
+> /tmp/files.list
+while IFS='|' read -r f sz; do
+	f=${f#./}
+	file_sizes["$f"]=$sz
+	printf '%%s\n' "$f" >> /tmp/files.list
+done < /tmp/files_with_size.list
 
-# Initialize JSON array for manifest layers
-layers_json=""
-
-# get_file_size: Retrieve cached file size
-get_file_size() {
-	grep -F "$1|" /tmp/files_with_size.list 2>/dev/null | cut -d'|' -f2 | head -n1
-}
+# Stream manifest layers to a file to avoid quadratic shell string concatenation
+layers_file=/tmp/layers.json
+: > "$layers_file"
+first_layer=1
 
 # append_layer: Add a file as a layer blob with annotations
-# Args: file path, media type, title (original filename)
+# Args: file path, media type, title (original filename), optional size, optional blob action
 append_layer() {
-	file="$1"; mt="$2"; title="$3"
+	file="$1"; mt="$2"; title="$3"; size="${4-}"; blob_action="${5:-move}"
 	[ ! -f "$file" ] && return 0
-	dgst=$(sha256sum "$file" | cut -d' ' -f1)
-	size=$(stat -c%%s "$file")
-	mv "$file" /layout/blobs/sha256/$dgst
-	[ -n "$layers_json" ] && layers_json="$layers_json , "
-	ann="{ \"org.opencontainers.image.title\": \"$title\" }"
-	layers_json="${layers_json}{ \"mediaType\": \"$mt\", \"digest\": \"sha256:$dgst\", \"size\": $size, \"annotations\": $ann }"
+	read -r dgst _ < <(sha256sum "$file")
+	[ -z "$size" ] && size=$(stat -c%%s "$file")
+	if [ "$blob_action" = "copy" ]; then
+		cp "$file" "/layout/blobs/sha256/$dgst"
+	else
+		mv "$file" "/layout/blobs/sha256/$dgst"
+	fi
+	if [ "$first_layer" -eq 0 ]; then printf ' , ' >> "$layers_file"; fi
+	first_layer=0
+	printf '{ "mediaType": "%%s", "digest": "sha256:%%s", "size": %%s, "annotations": { "org.opencontainers.image.title": "%%s" } }' \
+		"$mt" "$dgst" "$size" "$title" >> "$layers_file"
 }
 
 # Process files according to pack mode
@@ -294,8 +302,7 @@ case "$PACK_MODE" in
 	raw)
 		# Raw mode: each file becomes its own layer
 		while IFS= read -r f; do
-			cp "$f" "/tmp/$(basename "$f")"
-			append_layer "/tmp/$(basename "$f")" "%s" "$f"
+			append_layer "$f" "%s" "$f" "${file_sizes["$f"]}" copy
 		done < /tmp/files.list ;;
 	tar|tar+gzip|tar+zstd)
 		# Archive mode: bundle all files into single tar
@@ -314,16 +321,19 @@ esac
 
 # Create empty config blob
 printf '{}' > /tmp/config.json
-cfg_dgst=$(sha256sum /tmp/config.json | awk '{print $1}')
+read -r cfg_dgst _ < <(sha256sum /tmp/config.json)
 cfg_size=$(stat -c%%s /tmp/config.json)
 cp /tmp/config.json /layout/blobs/sha256/$cfg_dgst
 
 # Generate OCI manifest
-manifest="{ \"schemaVersion\": 2, \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\", \"artifactType\": \"%s\", \"config\": {\"mediaType\": \"application/vnd.oci.empty.v1+json\", \"digest\": \"sha256:$cfg_dgst\", \"size\": $cfg_size}, \"layers\": [ $layers_json ] }"
-printf '%%s' "$manifest" > /tmp/manifest.json
+{
+	printf '%%s' '{ "schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "%s", "config": {"mediaType": "application/vnd.oci.empty.v1+json", "digest": "sha256:'"$cfg_dgst"'", "size": '"$cfg_size"'}, "layers": [ '
+	cat "$layers_file"
+	printf '%%s' ' ] }'
+} > /tmp/manifest.json
 
 # Add manifest as blob
-m_dgst=$(sha256sum /tmp/manifest.json | awk '{print $1}')
+read -r m_dgst _ < <(sha256sum /tmp/manifest.json)
 m_size=$(stat -c%%s /tmp/manifest.json)
 cp /tmp/manifest.json /layout/blobs/sha256/$m_dgst
 

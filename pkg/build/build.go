@@ -234,7 +234,8 @@ func buildImage(ctx context.Context, c client.Client, cfg *config.InferenceConfi
 		MultiPlatform: convertOpts.MultiPlatformRequested,
 	}
 
-	state, image, err := inference.Aikit2LLB(cfg, convertOpts.TargetPlatform)
+	buildPlatform := buildPlatformFromConvertOpt(convertOpts)
+	state, image, err := inference.Aikit2LLBWithPlatforms(cfg, &buildPlatform, convertOpts.TargetPlatform)
 	if err != nil {
 		return nil, err
 	}
@@ -275,6 +276,16 @@ func buildImage(ctx context.Context, c client.Client, cfg *config.InferenceConfi
 	result.ExportPlatform.ID = platforms.Format(result.ExportPlatform.Platform)
 
 	return &result, nil
+}
+
+func buildPlatformFromConvertOpt(convertOpts *d2llb.ConvertOpt) specs.Platform {
+	if len(convertOpts.BuildPlatforms) > 0 {
+		return convertOpts.BuildPlatforms[0]
+	}
+	if convertOpts.TargetPlatform != nil {
+		return *convertOpts.TargetPlatform
+	}
+	return platforms.DefaultSpec()
 }
 
 func getAikitfileConfig(ctx context.Context, c client.Client) (*config.InferenceConfig, *config.FineTuneConfig, error) {
