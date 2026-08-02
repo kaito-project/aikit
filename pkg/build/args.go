@@ -17,8 +17,8 @@ func parseBuildArgs(opts map[string]string, inferenceCfg *config.InferenceConfig
 	}
 
 	// Get model and runtime arguments
-	modelArg := getBuildArg(opts, "model")
-	runtimeArg := getBuildArg(opts, "runtime")
+	modelArg := utils.GetBuildArg(opts, "model")
+	runtimeArg := utils.GetBuildArg(opts, "runtime")
 
 	// Set the runtime if provided
 	if runtimeArg != "" {

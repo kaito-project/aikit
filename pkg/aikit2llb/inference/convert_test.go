@@ -2,6 +2,7 @@ package inference
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
+	"github.com/moby/buildkit/solver/pb"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -64,6 +66,142 @@ func marshalDefinitionToString(def *llb.Definition) string {
 	}
 
 	return combined.String()
+}
+
+func TestCopyModelsSourceDispatch(t *testing.T) {
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	tests := []struct {
+		name          string
+		source        string
+		wantLocalPath string
+		wantErr       bool
+	}{
+		{
+			name:          "absolute local path",
+			source:        "/models/absolute.gguf",
+			wantLocalPath: "models/absolute.gguf",
+		},
+		{
+			name:          "relative local path",
+			source:        "models/relative.gguf",
+			wantLocalPath: "models/relative.gguf",
+		},
+		{
+			name:    "misspelled HTTP scheme",
+			source:  "htps://example.com/model.gguf",
+			wantErr: true,
+		},
+		{
+			name:    "unsupported object storage scheme",
+			source:  "s3://bucket/model.gguf",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.InferenceConfig{
+				Models: []config.Model{{Name: "model", Source: tt.source}},
+			}
+			base := llb.Image(utils.UbuntuBase)
+			state, merged, err := copyModels(cfg, base, base, platform, platform)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("copyModels(%q) returned no error", tt.source)
+				}
+				if !strings.Contains(err.Error(), "unsupported URL scheme") {
+					t.Fatalf("copyModels(%q) error = %q, want unsupported URL scheme", tt.source, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("copyModels(%q) returned error: %v", tt.source, err)
+			}
+
+			definition, err := state.Marshal(context.Background())
+			if err != nil {
+				t.Fatalf("marshal model state: %v", err)
+			}
+			localSources := findInferenceLocalContextOps(t, definition)
+			if len(localSources) != 1 {
+				t.Fatalf("local context source count = %d, want 1", len(localSources))
+			}
+			encodedFollowPaths, ok := localSources[0].op.GetSource().Attrs[pb.AttrFollowPaths]
+			if !ok {
+				t.Fatal("local context source does not contain symlink-aware follow paths")
+			}
+			var followPaths []string
+			if err := json.Unmarshal([]byte(encodedFollowPaths), &followPaths); err != nil {
+				t.Fatalf("unmarshal local context follow paths: %v", err)
+			}
+			if want := []string{tt.wantLocalPath}; !reflect.DeepEqual(followPaths, want) {
+				t.Fatalf("local context follow paths = %#v, want %#v", followPaths, want)
+			}
+
+			if _, err := merged.Marshal(context.Background()); err != nil {
+				t.Fatalf("marshal merged state: %v", err)
+			}
+		})
+	}
+}
+
+func TestCopyModelsSourceDispatchNormalizesSupportedSchemes(t *testing.T) {
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	tests := []struct {
+		name                 string
+		source               string
+		wantSourceIdentifier string
+		wantOCIReference     string
+	}{
+		{
+			name:                 "uppercase HTTPS scheme",
+			source:               "HTTPS://example.com/model.gguf",
+			wantSourceIdentifier: "https://example.com/model.gguf",
+		},
+		{
+			name:                 "mixed-case HTTP scheme",
+			source:               "hTtP://example.com/model.gguf",
+			wantSourceIdentifier: "http://example.com/model.gguf",
+		},
+		{
+			name:             "mixed-case OCI scheme",
+			source:           "OcI://example.com/models/test:latest",
+			wantOCIReference: "example.com/models/test:latest",
+		},
+		{
+			name:                 "mixed-case Hugging Face scheme",
+			source:               "HuGgInGfAcE://namespace/model/model.gguf",
+			wantSourceIdentifier: "https://huggingface.co/namespace/model/resolve/main/model.gguf",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.InferenceConfig{
+				Models: []config.Model{{Name: "model", Source: tt.source}},
+			}
+			base := llb.Image(utils.UbuntuBase)
+			state, _, err := copyModels(cfg, base, base, platform, platform)
+			if err != nil {
+				t.Fatalf("copyModels(%q) returned error: %v", tt.source, err)
+			}
+
+			definition, err := state.Marshal(context.Background())
+			if err != nil {
+				t.Fatalf("marshal model state: %v", err)
+			}
+			if tt.wantSourceIdentifier != "" {
+				findInferenceSourceOp(t, definition, tt.wantSourceIdentifier)
+			}
+			if tt.wantOCIReference != "" {
+				modelPull := findInferenceExecOp(t, definition, "ref="+tt.wantOCIReference)
+				command := strings.Join(modelPull.op.GetExec().Meta.Args, "\x00")
+				if strings.Contains(command, "OcI://") {
+					t.Fatalf("OCI model pull command retained mixed-case scheme: %q", command)
+				}
+			}
+		})
+	}
 }
 
 func TestAikit2LLBWithPlatformsSeparatesHelperAndTargetPlatforms(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"github.com/kaito-project/aikit/pkg/version"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/util/system"
+	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
 )
 
@@ -17,7 +18,7 @@ const (
 	sourceVenv         = ". .venv/bin/activate"
 )
 
-func Aikit2LLB(c *config.FineTuneConfig) llb.State {
+func Aikit2LLB(c *config.FineTuneConfig) (llb.State, error) {
 	env := []struct {
 		key   string
 		value string
@@ -61,9 +62,12 @@ func Aikit2LLB(c *config.FineTuneConfig) llb.State {
 	// Write config after invariant setup so config-only changes reuse dependency layers.
 	cfg, err := yaml.Marshal(c)
 	if err != nil {
-		panic(err)
+		return llb.State{}, errors.Wrap(err, "failed to marshal finetune config")
 	}
-	state = state.File(llb.Mkfile("/config.yaml", 0o644, cfg))
+	state = state.File(
+		llb.Mkfile("/config.yaml", 0o644, cfg),
+		llb.WithCustomName("Writing finetune config"),
+	)
 
 	if c.Target == utils.TargetUnsloth {
 		// setup nvidia devices and run unsloth
@@ -78,5 +82,5 @@ func Aikit2LLB(c *config.FineTuneConfig) llb.State {
 		scratch = llb.Scratch().File(llb.Copy(state, inputFile, outputFile, copyOpts...))
 	}
 
-	return scratch
+	return scratch, nil
 }

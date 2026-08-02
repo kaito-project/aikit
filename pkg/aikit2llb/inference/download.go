@@ -2,6 +2,7 @@
 package inference
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/moby/buildkit/client/llb"
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
+	pkgerrors "github.com/pkg/errors"
 )
 
 const (
@@ -184,12 +186,12 @@ func handleHuggingFace(source string, s llb.State) (llb.State, error) {
 	// Fall back to full repo download (2 parts: namespace/model)
 	spec, err := ParseHuggingFaceSpec(source)
 	if err != nil {
-		return llb.State{}, fmt.Errorf("invalid Hugging Face URL format: %w", err)
+		return llb.State{}, pkgerrors.Wrap(err, "invalid Hugging Face URL format")
 	}
 
 	files, err := listHuggingFaceRepoFiles(spec.Namespace, spec.Model, spec.Revision)
 	if err != nil {
-		return llb.State{}, fmt.Errorf("listing HuggingFace repo files: %w", err)
+		return llb.State{}, pkgerrors.Wrap(err, "listing HuggingFace repo files")
 	}
 
 	modelDir := fmt.Sprintf("/models/%s/%s", spec.Namespace, spec.Model)
@@ -210,12 +212,22 @@ func handleHuggingFace(source string, s llb.State) (llb.State, error) {
 
 // listHuggingFaceRepoFiles returns the list of files in a HuggingFace repo,
 // excluding non-essential files like .gitattributes and README.md.
+//
+// This performs a live HTTP request during LLB graph construction. The request
+// is context-aware so it can be canceled, but a cancelable context is not yet
+// threaded all the way from the solve: Aikit2LLB has a frozen signature without
+// a context parameter, so context.TODO is used here. Fully threading the solve
+// context (or moving this enumeration into the build graph) is a follow-up.
 func listHuggingFaceRepoFiles(namespace, model, revision string) ([]string, error) {
 	apiURL := fmt.Sprintf("https://huggingface.co/api/models/%s/%s/revision/%s", namespace, model, revision)
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(apiURL) //nolint:gosec
+	req, err := http.NewRequestWithContext(context.TODO(), http.MethodGet, apiURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("fetching repo info: %w", err)
+		return nil, pkgerrors.Wrap(err, "building HuggingFace API request")
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req) //nolint:gosec
+	if err != nil {
+		return nil, pkgerrors.Wrap(err, "fetching repo info")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -228,7 +240,7 @@ func listHuggingFaceRepoFiles(namespace, model, revision string) ([]string, erro
 		} `json:"siblings"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decoding HuggingFace API response: %w", err)
+		return nil, pkgerrors.Wrap(err, "decoding HuggingFace API response")
 	}
 
 	skipFiles := map[string]bool{

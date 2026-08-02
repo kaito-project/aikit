@@ -7,11 +7,9 @@ import (
 
 // installPythonBaseDependencies installs minimal Python dependencies common to all Python backends.
 func installPythonBaseDependencies(s llb.State, merge llb.State) llb.State {
-	savedState := s
-
 	// Install minimal Python dependencies common to all Python backends
-	s = s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y git python3 python3-pip python3-venv python-is-python3 && pip install uv && pip install grpcio-tools==1.71.0 --no-dependencies && apt-get clean"), llb.IgnoreCache).Root()
-
-	diff := llb.Diff(savedState, s)
-	return llb.Merge([]llb.State{merge, diff})
+	_, merge = applyAndMerge(s, merge, func(s llb.State) llb.State {
+		return s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y git python3 python3-pip python3-venv python-is-python3 && pip install uv && pip install grpcio-tools==1.71.0 --no-dependencies && apt-get clean"), llb.IgnoreCache).Root()
+	})
+	return merge
 }

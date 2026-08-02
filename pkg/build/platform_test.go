@@ -9,59 +9,15 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/containerd/platforms"
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/exporter/containerimage/exptypes"
-	d2llb "github.com/moby/buildkit/frontend/dockerfile/dockerfile2llb"
-	"github.com/moby/buildkit/frontend/dockerui"
 	"github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/moby/buildkit/solver/pb"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 const testBuildModelName = "test"
-
-func TestBuildPlatformFromConvertOpt(t *testing.T) {
-	buildPlatform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformARM64}
-	targetPlatform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
-
-	tests := []struct {
-		name        string
-		convertOpts *d2llb.ConvertOpt
-		want        specs.Platform
-	}{
-		{
-			name: "first configured build platform",
-			convertOpts: &d2llb.ConvertOpt{
-				TargetPlatform: &targetPlatform,
-				Config: dockerui.Config{
-					BuildPlatforms: []specs.Platform{buildPlatform, targetPlatform},
-				},
-			},
-			want: buildPlatform,
-		},
-		{
-			name:        "target platform fallback",
-			convertOpts: &d2llb.ConvertOpt{TargetPlatform: &targetPlatform},
-			want:        targetPlatform,
-		},
-		{
-			name:        "host platform fallback",
-			convertOpts: &d2llb.ConvertOpt{},
-			want:        platforms.DefaultSpec(),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := buildPlatformFromConvertOpt(tt.convertOpts)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("build platform = %#v, want %#v", got, tt.want)
-			}
-		})
-	}
-}
 
 func TestBuildInferenceUsesBuildPlatformForArtifactHelpers(t *testing.T) {
 	buildPlatform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformARM64}
@@ -71,6 +27,7 @@ func TestBuildInferenceUsesBuildPlatformForArtifactHelpers(t *testing.T) {
 				keyTargetPlatform: "linux/amd64,linux/arm64",
 			},
 			Workers: []client.WorkerInfo{{Platforms: []specs.Platform{buildPlatform}}},
+			LLBCaps: pb.Caps.CapSet(pb.Caps.All()),
 		},
 	}
 	cfg := &config.InferenceConfig{

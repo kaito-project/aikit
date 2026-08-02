@@ -48,6 +48,42 @@ func TestAikit2LLBDefinitionIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestAikit2LLBWritesConfigWithoutShellInterpolation(t *testing.T) {
+	const marker = `$(touch /tmp/aikit-injection)`
+	cfg := &config.FineTuneConfig{
+		Target:    utils.TargetUnsloth,
+		BaseModel: "model-with-shell-text-" + marker + "\nand-a-newline",
+		Output: config.FineTuneOutputSpec{
+			Name:     "test-model",
+			Quantize: "q4_k_m",
+		},
+	}
+
+	wantConfig, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal expected config: %v", err)
+	}
+
+	ops := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, cfg))
+	for _, graphOp := range ops {
+		if execOp := graphOp.op.GetExec(); execOp != nil {
+			for _, arg := range execOp.Meta.Args {
+				if strings.Contains(arg, marker) {
+					t.Fatalf("finetune config content was interpolated into a shell command: %q", arg)
+				}
+			}
+		}
+	}
+
+	_, configFile := findFineTuneConfigFile(t, ops)
+	if configFile.Mode != 0o644 {
+		t.Errorf("config file mode = %#o, want %#o", configFile.Mode, 0o644)
+	}
+	if !slices.Equal(configFile.Data, wantConfig) {
+		t.Errorf("config file contents = %q, want %q", configFile.Data, wantConfig)
+	}
+}
+
 func TestAikit2LLBMaterializesConfigAfterDependencies(t *testing.T) {
 	cfg := fineTuneTestConfig()
 	cfg.BaseModel = "model with \"quotes\"\nand $HOME `literal`"
@@ -129,7 +165,11 @@ func fineTuneTestConfig() *config.FineTuneConfig {
 func marshalFineTuneDefinition(t *testing.T, cfg *config.FineTuneConfig) *llb.Definition {
 	t.Helper()
 
-	definition, err := Aikit2LLB(cfg).Marshal(context.Background())
+	state, err := Aikit2LLB(cfg)
+	if err != nil {
+		t.Fatalf("convert fine-tune config to LLB: %v", err)
+	}
+	definition, err := state.Marshal(context.Background())
 	if err != nil {
 		t.Fatalf("marshal fine-tune definition: %v", err)
 	}
