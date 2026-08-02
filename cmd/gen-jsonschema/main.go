@@ -38,6 +38,16 @@ const outputPath = "docs/aikitfile.schema.json"
 // non-empty value must be exactly 64 lowercase hexadecimal characters.
 const sha256Pattern = `^$|^[a-f0-9]{64}$`
 
+const (
+	schemaArrayType  = "array"
+	schemaObjectType = "object"
+	schemaStringType = "string"
+
+	backendsProperty = "backends"
+	modelsProperty   = "models"
+	runtimeProperty  = "runtime"
+)
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "gen-jsonschema:", err)
@@ -142,7 +152,7 @@ func applyValidationConstraints(defs jsonschema.Definitions) error {
 	if err := setRequired(defs, "InferenceConfig", "apiVersion"); err != nil {
 		return err
 	}
-	if err := setArrayMaxItems(defs, "InferenceConfig", "backends", 1); err != nil {
+	if err := setArrayMaxItems(defs, "InferenceConfig", backendsProperty, 1); err != nil {
 		return err
 	}
 	if err := setRequired(defs, "FineTuneConfig", "apiVersion", "datasets"); err != nil {
@@ -154,7 +164,130 @@ func applyValidationConstraints(defs jsonschema.Definitions) error {
 	if err := setRequired(defs, "Dataset", "type"); err != nil {
 		return err
 	}
-	return setStringPattern(defs, "Model", "sha256", sha256Pattern)
+	if err := setStringPattern(defs, "Model", "sha256", sha256Pattern); err != nil {
+		return err
+	}
+	return applyInferenceConditionalConstraints(defs)
+}
+
+// applyInferenceConditionalConstraints mirrors the backend/runtime
+// compatibility rules in config.InferenceConfig.Validate.
+func applyInferenceConditionalConstraints(defs jsonschema.Definitions) error {
+	inference, ok := defs["InferenceConfig"]
+	if !ok {
+		return errors.New("schema definition \"InferenceConfig\" not found")
+	}
+
+	one := uint64(1)
+	gpuBackendCondition := newObjectSchema(
+		[]string{backendsProperty},
+		schemaProperty{
+			name: backendsProperty,
+			schema: &jsonschema.Schema{
+				Type:     schemaArrayType,
+				MinItems: &one,
+				Items: &jsonschema.Schema{
+					Type: schemaStringType,
+					Enum: []any{utils.BackendDiffusers, utils.BackendVLLM},
+				},
+			},
+		},
+	)
+	requireCUDA := newObjectSchema(
+		[]string{runtimeProperty},
+		schemaProperty{
+			name: runtimeProperty,
+			schema: &jsonschema.Schema{
+				Type: schemaStringType,
+				Enum: []any{utils.RuntimeNVIDIA},
+			},
+		},
+	)
+
+	acceleratorBackendCondition := newObjectSchema(
+		[]string{runtimeProperty, backendsProperty},
+		schemaProperty{
+			name: runtimeProperty,
+			schema: &jsonschema.Schema{
+				Type: schemaStringType,
+				Enum: []any{utils.RuntimeAppleSilicon, utils.RuntimeROCm},
+			},
+		},
+		schemaProperty{
+			name: backendsProperty,
+			schema: &jsonschema.Schema{
+				Type:     schemaArrayType,
+				MinItems: &one,
+			},
+		},
+	)
+	requireLlamaCpp := newObjectSchema(
+		[]string{backendsProperty},
+		schemaProperty{
+			name: backendsProperty,
+			schema: &jsonschema.Schema{
+				Type: schemaArrayType,
+				Items: &jsonschema.Schema{
+					Type: schemaStringType,
+					Enum: []any{utils.BackendLlamaCpp},
+				},
+			},
+		},
+	)
+
+	appleRunnerCondition := newObjectSchema(
+		[]string{runtimeProperty, backendsProperty},
+		schemaProperty{
+			name: runtimeProperty,
+			schema: &jsonschema.Schema{
+				Type: schemaStringType,
+				Enum: []any{utils.RuntimeAppleSilicon},
+			},
+		},
+		schemaProperty{
+			name: backendsProperty,
+			schema: &jsonschema.Schema{
+				Type:     schemaArrayType,
+				MinItems: &one,
+			},
+		},
+	)
+	requireModel := newObjectSchema(
+		[]string{modelsProperty},
+		schemaProperty{
+			name: modelsProperty,
+			schema: &jsonschema.Schema{
+				Type:     schemaArrayType,
+				MinItems: &one,
+			},
+		},
+	)
+
+	inference.AllOf = append(inference.AllOf,
+		&jsonschema.Schema{If: gpuBackendCondition, Then: requireCUDA},
+		&jsonschema.Schema{If: acceleratorBackendCondition, Then: requireLlamaCpp},
+		&jsonschema.Schema{If: appleRunnerCondition, Then: requireModel},
+	)
+	return nil
+}
+
+type schemaProperty struct {
+	name   string
+	schema *jsonschema.Schema
+}
+
+// newObjectSchema constructs a partial object schema with stable property
+// ordering for deterministic generated output.
+func newObjectSchema(required []string, properties ...schemaProperty) *jsonschema.Schema {
+	orderedProperties := jsonschema.NewProperties()
+	for _, property := range properties {
+		orderedProperties.Set(property.name, property.schema)
+	}
+	return &jsonschema.Schema{
+		Type:       schemaObjectType,
+		Properties: orderedProperties,
+		Required:   required,
+	}
 }
 
 // applyEnums constrains the discriminator fields to the exact value sets the
@@ -165,11 +298,11 @@ func applyEnums(defs jsonschema.Definitions) error {
 	if err := setEnum(defs, "InferenceConfig", "apiVersion", utils.APIv1alpha1); err != nil {
 		return err
 	}
-	if err := setEnum(defs, "InferenceConfig", "runtime",
+	if err := setEnum(defs, "InferenceConfig", runtimeProperty,
 		"", utils.RuntimeNVIDIA, utils.RuntimeROCm, utils.RuntimeAppleSilicon); err != nil {
 		return err
 	}
-	if err := setItemsEnum(defs, "InferenceConfig", "backends",
+	if err := setItemsEnum(defs, "InferenceConfig", backendsProperty,
 		utils.BackendLlamaCpp, utils.BackendDiffusers, utils.BackendVLLM); err != nil {
 		return err
 	}
@@ -258,7 +391,7 @@ func setStringPattern(defs jsonschema.Definitions, typeName, property, pattern s
 	if err != nil {
 		return err
 	}
-	if prop.Type != "string" {
+	if prop.Type != schemaStringType {
 		return errors.Errorf("property %q on %q is not a string", property, typeName)
 	}
 	prop.Pattern = pattern

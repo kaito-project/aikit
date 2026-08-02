@@ -49,6 +49,78 @@ func TestBuildSchemaMatchesConfigDiscrimination(t *testing.T) {
 			wantBranch: inferenceConfigDefinition,
 		},
 		{
+			name:       "default cpu allows llama-cpp",
+			document:   `{"apiVersion":"v1alpha1","backends":["llama-cpp"]}`,
+			wantValid:  true,
+			wantBranch: inferenceConfigDefinition,
+		},
+		{
+			name:       "vllm with cuda",
+			document:   `{"apiVersion":"v1alpha1","runtime":"cuda","backends":["vllm"]}`,
+			wantValid:  true,
+			wantBranch: inferenceConfigDefinition,
+		},
+		{
+			name:      "vllm without cuda",
+			document:  `{"apiVersion":"v1alpha1","backends":["vllm"]}`,
+			wantValid: false,
+		},
+		{
+			name:       "diffusers with cuda",
+			document:   `{"apiVersion":"v1alpha1","runtime":"cuda","backends":["diffusers"]}`,
+			wantValid:  true,
+			wantBranch: inferenceConfigDefinition,
+		},
+		{
+			name:      "diffusers without cuda",
+			document:  `{"apiVersion":"v1alpha1","runtime":"rocm","backends":["diffusers"]}`,
+			wantValid: false,
+		},
+		{
+			name:       "apple silicon without backend",
+			document:   `{"apiVersion":"v1alpha1","runtime":"applesilicon"}`,
+			wantValid:  true,
+			wantBranch: inferenceConfigDefinition,
+		},
+		{
+			name:       "apple silicon llama-cpp with model",
+			document:   `{"apiVersion":"v1alpha1","runtime":"applesilicon","backends":["llama-cpp"],"models":[{"name":"model","source":"model.gguf"}]}`,
+			wantValid:  true,
+			wantBranch: inferenceConfigDefinition,
+		},
+		{
+			name:      "apple silicon rejects non llama-cpp backend",
+			document:  `{"apiVersion":"v1alpha1","runtime":"applesilicon","backends":["vllm"],"models":[{"name":"model","source":"model.gguf"}]}`,
+			wantValid: false,
+		},
+		{
+			name:      "apple silicon runner mode requires model",
+			document:  `{"apiVersion":"v1alpha1","runtime":"applesilicon","backends":["llama-cpp"]}`,
+			wantValid: false,
+		},
+		{
+			name:      "apple silicon runner mode rejects empty models",
+			document:  `{"apiVersion":"v1alpha1","runtime":"applesilicon","backends":["llama-cpp"],"models":[]}`,
+			wantValid: false,
+		},
+		{
+			name:       "rocm without backend",
+			document:   `{"apiVersion":"v1alpha1","runtime":"rocm"}`,
+			wantValid:  true,
+			wantBranch: inferenceConfigDefinition,
+		},
+		{
+			name:       "rocm allows llama-cpp",
+			document:   `{"apiVersion":"v1alpha1","runtime":"rocm","backends":["llama-cpp"]}`,
+			wantValid:  true,
+			wantBranch: inferenceConfigDefinition,
+		},
+		{
+			name:      "rocm rejects non llama-cpp backend",
+			document:  `{"apiVersion":"v1alpha1","runtime":"rocm","backends":["vllm"]}`,
+			wantValid: false,
+		},
+		{
 			name:      "only one inference backend is supported",
 			document:  `{"apiVersion":"v1alpha1","runtime":"cuda","backends":["llama-cpp","vllm"]}`,
 			wantValid: false,
@@ -256,6 +328,26 @@ func schemaMatches(schema *jsonschema.Schema, defs jsonschema.Definitions, value
 		return ok && schemaMatches(definition, defs, value)
 	}
 
+	for _, candidate := range schema.AllOf {
+		if !schemaMatches(candidate, defs, value) {
+			return false
+		}
+	}
+
+	if schema.If != nil {
+		conditionMatches := schemaMatches(schema.If, defs, value)
+		switch {
+		case conditionMatches && schema.Then != nil:
+			if !schemaMatches(schema.Then, defs, value) {
+				return false
+			}
+		case !conditionMatches && schema.Else != nil:
+			if !schemaMatches(schema.Else, defs, value) {
+				return false
+			}
+		}
+	}
+
 	if len(schema.OneOf) > 0 {
 		matches := 0
 		for _, candidate := range schema.OneOf {
@@ -284,7 +376,7 @@ func schemaMatches(schema *jsonschema.Schema, defs jsonschema.Definitions, value
 	switch schema.Type {
 	case "":
 		return true
-	case "object":
+	case schemaObjectType:
 		object, ok := value.(map[string]any)
 		if !ok {
 			return false
@@ -307,7 +399,7 @@ func schemaMatches(schema *jsonschema.Schema, defs jsonschema.Definitions, value
 			}
 		}
 		return true
-	case "array":
+	case schemaArrayType:
 		array, ok := value.([]any)
 		if !ok {
 			return false
@@ -324,7 +416,7 @@ func schemaMatches(schema *jsonschema.Schema, defs jsonschema.Definitions, value
 			}
 		}
 		return true
-	case "string":
+	case schemaStringType:
 		stringValue, ok := value.(string)
 		if !ok {
 			return false

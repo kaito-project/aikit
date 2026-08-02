@@ -154,6 +154,115 @@
       "description": "FineTuneOutputSpec controls how the fine-tuned model is exported."
     },
     "InferenceConfig": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "backends": {
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "diffusers",
+                    "vllm"
+                  ]
+                },
+                "type": "array",
+                "minItems": 1
+              }
+            },
+            "type": "object",
+            "required": [
+              "backends"
+            ]
+          },
+          "then": {
+            "properties": {
+              "runtime": {
+                "type": "string",
+                "enum": [
+                  "cuda"
+                ]
+              }
+            },
+            "type": "object",
+            "required": [
+              "runtime"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "runtime": {
+                "type": "string",
+                "enum": [
+                  "applesilicon",
+                  "rocm"
+                ]
+              },
+              "backends": {
+                "type": "array",
+                "minItems": 1
+              }
+            },
+            "type": "object",
+            "required": [
+              "runtime",
+              "backends"
+            ]
+          },
+          "then": {
+            "properties": {
+              "backends": {
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "llama-cpp"
+                  ]
+                },
+                "type": "array"
+              }
+            },
+            "type": "object",
+            "required": [
+              "backends"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "runtime": {
+                "type": "string",
+                "enum": [
+                  "applesilicon"
+                ]
+              },
+              "backends": {
+                "type": "array",
+                "minItems": 1
+              }
+            },
+            "type": "object",
+            "required": [
+              "runtime",
+              "backends"
+            ]
+          },
+          "then": {
+            "properties": {
+              "models": {
+                "type": "array",
+                "minItems": 1
+              }
+            },
+            "type": "object",
+            "required": [
+              "models"
+            ]
+          }
+        }
+      ],
       "properties": {
         "apiVersion": {
           "type": "string",
