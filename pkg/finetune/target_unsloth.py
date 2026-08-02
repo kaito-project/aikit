@@ -11,7 +11,7 @@ import yaml
 
 with open("/config.yaml", "r", encoding="utf-8") as config_file:
     data = yaml.safe_load(config_file)
-print(data)
+print("Loaded fine-tuning configuration.")
 
 cfg = data["config"]["unsloth"]
 max_seq_length = cfg["maxSeqLength"]
