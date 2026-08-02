@@ -189,10 +189,6 @@ case "$PACK_MODE" in
 			append_layer "$f" "$RAW_LAYER_MT" "$f" "$fsize" copy
 		done < "$records_file" ;;
 	tar|tar+gzip|tar+zstd)
-		if [ ! -s "$members_file" ]; then
-			printf 'no files to package\n' >&2
-			exit 1
-		fi
 		tarFile=$(mktemp "$tmp_dir/archive.XXXXXX")
 		create_tar_archive "$members_file" "$tarFile"
 		mt=$ARCHIVE_LAYER_MT

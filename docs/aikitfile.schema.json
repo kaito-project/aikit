@@ -64,7 +64,6 @@
       "type": "object",
       "required": [
         "apiVersion",
-        "target",
         "datasets"
       ],
       "description": "FineTuneConfig is the root aikitfile schema for a fine-tuning job that produces a customized model from a base model and datasets."
@@ -220,6 +219,7 @@
         },
         "sha256": {
           "type": "string",
+          "pattern": "^$|^[a-f0-9]{64}$",
           "description": "SHA256 is the optional checksum used to verify the downloaded model."
         },
         "promptTemplates": {

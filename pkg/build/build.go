@@ -39,11 +39,7 @@ const (
 // logic so that a programming error surfaces as a build failure with a stack
 // trace rather than crashing the frontend process.
 func Build(ctx context.Context, c client.Client) (_ *client.Result, retErr error) {
-	defer func() {
-		if r := recover(); r != nil {
-			retErr = errors.Errorf("recovered from panic in frontend: %+v\n%s", r, getPanicStack())
-		}
-	}()
+	defer recoverBuildPanic(&retErr)
 
 	opts := c.BuildOpts().Opts
 
@@ -75,10 +71,16 @@ func Build(ctx context.Context, c client.Client) (_ *client.Result, retErr error
 	}
 }
 
+func recoverBuildPanic(retErr *error) {
+	if r := recover(); r != nil {
+		*retErr = errors.Errorf("recovered from panic in frontend: %+v\n%s", r, getPanicStack())
+	}
+}
+
 // getPanicStack captures the current goroutine's stack as an error-friendly string.
 func getPanicStack() string {
 	stackBuf := make([]uintptr, 32)
-	n := runtime.Callers(3, stackBuf) // Skip runtime.Callers, getPanicStack, and the deferred closure.
+	n := runtime.Callers(3, stackBuf) // Skip runtime.Callers and the recovery helpers.
 	stackBuf = stackBuf[:n]
 	frames := runtime.CallersFrames(stackBuf)
 	var sb strings.Builder
@@ -173,7 +175,7 @@ func buildInference(ctx context.Context, c client.Client, cfg *config.InferenceC
 	// final image base and backend artifacts on each requested target platform.
 	buildPlatform := dc.BuildPlatforms[0]
 	rb, err := dc.Build(ctx, func(ctx context.Context, platform *specs.Platform, _ int) (*dockerui.BuildResult, error) {
-		return buildImage(ctx, c, cfg, &buildPlatform, platform, cacheImports)
+		return buildImageWithRecovery(ctx, c, cfg, &buildPlatform, platform, cacheImports)
 	})
 	if err != nil {
 		return nil, err
@@ -182,8 +184,27 @@ func buildInference(ctx context.Context, c client.Client, cfg *config.InferenceC
 	return rb.Finalize()
 }
 
+func buildImageWithRecovery(
+	ctx context.Context,
+	c client.Client,
+	cfg *config.InferenceConfig,
+	buildPlatform *specs.Platform,
+	targetPlatform *specs.Platform,
+	cacheImports []client.CacheOptionsEntry,
+) (_ *dockerui.BuildResult, retErr error) {
+	defer recoverBuildPanic(&retErr)
+	return buildImage(ctx, c, cfg, buildPlatform, targetPlatform, cacheImports)
+}
+
 // buildImage builds an image from the given aikitfile config for one platform.
-func buildImage(ctx context.Context, c client.Client, cfg *config.InferenceConfig, buildPlatform, targetPlatform *specs.Platform, cacheImports []client.CacheOptionsEntry) (*dockerui.BuildResult, error) {
+func buildImage(
+	ctx context.Context,
+	c client.Client,
+	cfg *config.InferenceConfig,
+	buildPlatform *specs.Platform,
+	targetPlatform *specs.Platform,
+	cacheImports []client.CacheOptionsEntry,
+) (*dockerui.BuildResult, error) {
 	state, image, err := inference.Aikit2LLBWithPlatforms(cfg, buildPlatform, targetPlatform)
 	if err != nil {
 		return nil, err

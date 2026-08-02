@@ -17,13 +17,7 @@ import (
 const archiveArgumentLimitBytes = 32768
 
 func TestEmbeddedPackagingScriptsArchiveBeyondArgumentLimitInProductionImage(t *testing.T) {
-	docker, err := exec.LookPath("docker")
-	if err != nil {
-		t.Skipf("docker is required for the production-image archive regression test: %v", err)
-	}
-	if output, inspectErr := exec.Command(docker, "image", "inspect", bashImage).CombinedOutput(); inspectErr != nil {
-		t.Skipf("production image %s is not available locally: %v\n%s", bashImage, inspectErr, output)
-	}
+	docker := requireProductionImageDocker(t)
 
 	sourceDir := t.TempDir()
 	files := make(map[string][]byte)
@@ -52,24 +46,7 @@ func TestEmbeddedPackagingScriptsArchiveBeyondArgumentLimitInProductionImage(t *
 		t.Fatalf("test paths use %d bytes, want more than the %d-byte archive argument limit", pathBytes, archiveArgumentLimitBytes)
 	}
 
-	wrapperDir := t.TempDir()
-	wrapperPath := filepath.Join(wrapperDir, "tar")
-	wrapper := `#!/usr/bin/env bash
-set -euo pipefail
-bytes=0
-for arg in "$@"; do
-	bytes=$((bytes + ${#arg} + 1))
-done
-if [ "$bytes" -gt "$AIKIT_TEST_TAR_ARG_LIMIT" ]; then
-	printf 'tar argv uses %d bytes, limit is %s\n' "$bytes" "$AIKIT_TEST_TAR_ARG_LIMIT" >&2
-	exit 97
-fi
-printf '%s\n' "$bytes" >> "$AIKIT_TEST_TAR_CALLS"
-exec /usr/bin/tar "$@"
-`
-	if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o755); err != nil { //nolint:gosec // Test-owned executable wrapper.
-		t.Fatalf("write tar argument-limit wrapper: %v", err)
-	}
+	wrapperDir := writeTarArgumentLimitWrapper(t)
 
 	tests := []struct {
 		name      string
@@ -81,16 +58,44 @@ exec /usr/bin/tar "$@"
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			firstDigest := runProductionArchiveScript(t, docker, sourceDir, wrapperDir, tt.script, tt.modelpack, files)
-			secondDigest := runProductionArchiveScript(t, docker, sourceDir, wrapperDir, tt.script, tt.modelpack, files)
-			if firstDigest != secondDigest {
-				t.Fatalf("archive digest is not deterministic: first %s, second %s", firstDigest, secondDigest)
+			first := runProductionArchiveScript(t, docker, sourceDir, wrapperDir, tt.script, tt.modelpack, files, true)
+			second := runProductionArchiveScript(t, docker, sourceDir, wrapperDir, tt.script, tt.modelpack, files, true)
+			if first.digest != second.digest {
+				t.Fatalf("archive digest is not deterministic: first %s, second %s", first.digest, second.digest)
 			}
 		})
 	}
 }
 
-func runProductionArchiveScript(t *testing.T, docker, sourceDir, wrapperDir, script string, modelpack bool, files map[string][]byte) string {
+func TestEmbeddedGenericArchiveAllowsEmptySourceInProductionImage(t *testing.T) {
+	docker := requireProductionImageDocker(t)
+	sourceDir := t.TempDir()
+	wrapperDir := writeTarArgumentLimitWrapper(t)
+	files := map[string][]byte{}
+
+	first := runProductionArchiveScript(t, docker, sourceDir, wrapperDir, genericScript, false, files, false)
+	second := runProductionArchiveScript(t, docker, sourceDir, wrapperDir, genericScript, false, files, false)
+	if first.digest != second.digest {
+		t.Fatalf("empty archive digest is not deterministic: first %s, second %s", first.digest, second.digest)
+	}
+	want := make([]byte, 2*512)
+	if !bytes.Equal(first.blob, want) {
+		t.Fatalf("empty archive is %d bytes or contains non-zero data; want two zero-filled tar end blocks", len(first.blob))
+	}
+}
+
+type productionArchiveResult struct {
+	digest string
+	blob   []byte
+}
+
+func runProductionArchiveScript(
+	t *testing.T,
+	docker, sourceDir, wrapperDir, script string,
+	modelpack bool,
+	files map[string][]byte,
+	expectMultipleBatches bool,
+) productionArchiveResult {
 	t.Helper()
 
 	layoutDir := t.TempDir()
@@ -139,12 +144,15 @@ func runProductionArchiveScript(t *testing.T, docker, sourceDir, wrapperDir, scr
 	}
 
 	callData, err := os.ReadFile(filepath.Join(tmpDir, "tar-calls"))
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("read tar invocation sizes: %v", err)
 	}
 	calls := strings.Fields(string(callData))
-	if len(calls) < 2 {
+	if expectMultipleBatches && len(calls) < 2 {
 		t.Fatalf("tar was invoked %d time(s), want multiple bounded batches", len(calls))
+	}
+	if !expectMultipleBatches && len(calls) != 0 {
+		t.Fatalf("tar was invoked %d time(s) for an empty archive, want zero", len(calls))
 	}
 	for _, call := range calls {
 		bytesUsed, parseErr := strconv.Atoi(call)
@@ -173,7 +181,42 @@ func runProductionArchiveScript(t *testing.T, docker, sourceDir, wrapperDir, scr
 		t.Fatalf("read archive layer: %v", err)
 	}
 	assertTarMembers(t, blob, files)
-	return manifest.Layers[0].Digest
+	return productionArchiveResult{digest: manifest.Layers[0].Digest, blob: blob}
+}
+
+func requireProductionImageDocker(t *testing.T) string {
+	t.Helper()
+	docker, err := exec.LookPath("docker")
+	if err != nil {
+		t.Skipf("docker is required for the production-image archive regression test: %v", err)
+	}
+	if output, inspectErr := exec.Command(docker, "image", "inspect", bashImage).CombinedOutput(); inspectErr != nil {
+		t.Skipf("production image %s is not available locally: %v\n%s", bashImage, inspectErr, output)
+	}
+	return docker
+}
+
+func writeTarArgumentLimitWrapper(t *testing.T) string {
+	t.Helper()
+	wrapperDir := t.TempDir()
+	wrapperPath := filepath.Join(wrapperDir, "tar")
+	wrapper := `#!/usr/bin/env bash
+set -euo pipefail
+bytes=0
+for arg in "$@"; do
+	bytes=$((bytes + ${#arg} + 1))
+done
+if [ "$bytes" -gt "$AIKIT_TEST_TAR_ARG_LIMIT" ]; then
+	printf 'tar argv uses %d bytes, limit is %s\n' "$bytes" "$AIKIT_TEST_TAR_ARG_LIMIT" >&2
+	exit 97
+fi
+printf '%s\n' "$bytes" >> "$AIKIT_TEST_TAR_CALLS"
+exec /usr/bin/tar "$@"
+`
+	if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o755); err != nil { //nolint:gosec // Test-owned executable wrapper.
+		t.Fatalf("write tar argument-limit wrapper: %v", err)
+	}
+	return wrapperDir
 }
 
 func assertTarMembers(t *testing.T, archive []byte, files map[string][]byte) {

@@ -33,6 +33,11 @@ const configPkgDir = "pkg/aikit/config"
 // outputPath is the module-root-relative path the generated schema is written to.
 const outputPath = "docs/aikitfile.schema.json"
 
+// sha256Pattern mirrors the optional checksum accepted by
+// config.InferenceConfig.Validate: absent and empty values are allowed, while a
+// non-empty value must be exactly 64 lowercase hexadecimal characters.
+const sha256Pattern = `^$|^[a-f0-9]{64}$`
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "gen-jsonschema:", err)
@@ -108,7 +113,7 @@ func buildSchema(r *jsonschema.Reflector) (*jsonschema.Schema, error) {
 	if err := applyEnums(defs); err != nil {
 		return nil, err
 	}
-	if err := applyShapeConstraints(defs); err != nil {
+	if err := applyValidationConstraints(defs); err != nil {
 		return nil, err
 	}
 
@@ -123,25 +128,30 @@ func buildSchema(r *jsonschema.Reflector) (*jsonschema.Schema, error) {
 	}, nil
 }
 
-// applyShapeConstraints mirrors the required-field and collection-size rules
-// that determine whether NewFromBytes and Validate accept a document.
+// applyValidationConstraints mirrors the required-field, collection-size, and
+// scalar rules that determine whether the build pipeline accepts a document.
 //
 // NewFromBytes defaults to inference unless it sees a non-empty baseModel or
 // datasets list. A valid finetune config always has exactly one dataset, so
 // requiring that runtime-valid shape keeps the root oneOf branches disjoint:
 // apiVersion-only documents remain valid inference configs, while finetune
 // documents have the positive signal the parser uses to select FineTuneConfig.
-func applyShapeConstraints(defs jsonschema.Definitions) error {
+// The target stays optional because getAikitfileConfig injects the requested
+// target, defaulting to unsloth, after parsing and before validation.
+func applyValidationConstraints(defs jsonschema.Definitions) error {
 	if err := setRequired(defs, "InferenceConfig", "apiVersion"); err != nil {
 		return err
 	}
-	if err := setRequired(defs, "FineTuneConfig", "apiVersion", "target", "datasets"); err != nil {
+	if err := setRequired(defs, "FineTuneConfig", "apiVersion", "datasets"); err != nil {
 		return err
 	}
 	if err := setArrayItemBounds(defs, "FineTuneConfig", "datasets", 1, 1); err != nil {
 		return err
 	}
-	return setRequired(defs, "Dataset", "type")
+	if err := setRequired(defs, "Dataset", "type"); err != nil {
+		return err
+	}
+	return setStringPattern(defs, "Model", "sha256", sha256Pattern)
 }
 
 // applyEnums constrains the discriminator fields to the exact value sets the
@@ -222,6 +232,20 @@ func setArrayItemBounds(defs jsonschema.Definitions, typeName, property string, 
 	}
 	prop.MinItems = &minItems
 	prop.MaxItems = &maxItems
+	return nil
+}
+
+// setStringPattern constrains a string property to the provided regular
+// expression.
+func setStringPattern(defs jsonschema.Definitions, typeName, property, pattern string) error {
+	prop, err := lookupProperty(defs, typeName, property)
+	if err != nil {
+		return err
+	}
+	if prop.Type != "string" {
+		return errors.Errorf("property %q on %q is not a string", property, typeName)
+	}
+	prop.Pattern = pattern
 	return nil
 }
 

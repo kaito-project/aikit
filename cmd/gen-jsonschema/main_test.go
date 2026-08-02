@@ -7,11 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/invopop/jsonschema"
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/utils"
+	yaml "gopkg.in/yaml.v2"
 )
 
 const (
@@ -48,6 +51,12 @@ func TestBuildSchemaMatchesConfigDiscrimination(t *testing.T) {
 		{
 			name:       "minimal finetune",
 			document:   `{"apiVersion":"v1alpha1","target":"unsloth","datasets":[{"type":"alpaca"}]}`,
+			wantValid:  true,
+			wantBranch: finetuneConfigDefinition,
+		},
+		{
+			name:       "targetless finetune defaults to unsloth",
+			document:   `{"apiVersion":"v1alpha1","datasets":[{"type":"alpaca"}]}`,
 			wantValid:  true,
 			wantBranch: finetuneConfigDefinition,
 		},
@@ -97,6 +106,29 @@ func TestBuildSchemaMatchesConfigDiscrimination(t *testing.T) {
 			document:  `{"apiVersion":"v2"}`,
 			wantValid: false,
 		},
+		{
+			name:       "model checksum absent",
+			document:   `{"apiVersion":"v1alpha1","models":[{"name":"model","source":"model.gguf"}]}`,
+			wantValid:  true,
+			wantBranch: inferenceConfigDefinition,
+		},
+		{
+			name:       "model checksum empty",
+			document:   `{"apiVersion":"v1alpha1","models":[{"name":"model","source":"model.gguf","sha256":""}]}`,
+			wantValid:  true,
+			wantBranch: inferenceConfigDefinition,
+		},
+		{
+			name:       "model checksum valid",
+			document:   `{"apiVersion":"v1alpha1","models":[{"name":"model","source":"model.gguf","sha256":"` + strings.Repeat("a", 64) + `"}]}`,
+			wantValid:  true,
+			wantBranch: inferenceConfigDefinition,
+		},
+		{
+			name:      "model checksum invalid",
+			document:  `{"apiVersion":"v1alpha1","models":[{"name":"model","source":"model.gguf","sha256":"abc"}]}`,
+			wantValid: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -126,6 +158,31 @@ func TestBuildSchemaMatchesConfigDiscrimination(t *testing.T) {
 				t.Errorf("config kind = %q, want %q", gotConfigKind, tt.wantBranch)
 			}
 		})
+	}
+}
+
+func TestTargetlessFinetuneFixtureMatchesSchema(t *testing.T) {
+	schema, err := buildSchema(newReflector())
+	if err != nil {
+		t.Fatalf("buildSchema() error = %v", err)
+	}
+	root, err := moduleRoot()
+	if err != nil {
+		t.Fatalf("moduleRoot() error = %v", err)
+	}
+	documentBytes, err := os.ReadFile(filepath.Join(root, "test/aikitfile-unsloth.yaml"))
+	if err != nil {
+		t.Fatalf("os.ReadFile() error = %v", err)
+	}
+	document := decodeYAMLDocument(t, documentBytes)
+
+	matches := matchingRootDefinitions(schema, document)
+	if !reflect.DeepEqual(matches, []string{finetuneConfigDefinition}) {
+		t.Fatalf("matching branches = %v, want [%s]", matches, finetuneConfigDefinition)
+	}
+	kind, valid := configValidationResult(documentBytes)
+	if !valid || kind != finetuneConfigDefinition {
+		t.Fatalf("config result = (%q, %v), want (%q, true)", kind, valid, finetuneConfigDefinition)
 	}
 }
 
@@ -168,6 +225,9 @@ func configValidationResult(document []byte) (string, bool) {
 		return inferenceConfigDefinition, inference.Validate() == nil
 	}
 	if finetune != nil {
+		if finetune.Target == "" {
+			finetune.Target = utils.TargetUnsloth
+		}
 		return finetuneConfigDefinition, finetune.Validate() == nil
 	}
 	return "", false
@@ -260,8 +320,15 @@ func schemaMatches(schema *jsonschema.Schema, defs jsonschema.Definitions, value
 		}
 		return true
 	case "string":
-		_, ok := value.(string)
-		return ok
+		stringValue, ok := value.(string)
+		if !ok {
+			return false
+		}
+		if schema.Pattern == "" {
+			return true
+		}
+		matched, err := regexp.MatchString(schema.Pattern, stringValue)
+		return err == nil && matched
 	case "boolean":
 		_, ok := value.(bool)
 		return ok
@@ -273,6 +340,46 @@ func schemaMatches(schema *jsonschema.Schema, defs jsonschema.Definitions, value
 		return ok
 	default:
 		return false
+	}
+}
+
+func decodeYAMLDocument(t *testing.T, document []byte) any {
+	t.Helper()
+	var decoded any
+	if err := yaml.Unmarshal(document, &decoded); err != nil {
+		t.Fatalf("yaml.Unmarshal() error = %v", err)
+	}
+	normalized, err := json.Marshal(normalizeYAMLValue(t, decoded))
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := json.Unmarshal(normalized, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	return decoded
+}
+
+func normalizeYAMLValue(t *testing.T, value any) any {
+	t.Helper()
+	switch typed := value.(type) {
+	case map[any]any:
+		normalized := make(map[string]any, len(typed))
+		for key, item := range typed {
+			stringKey, ok := key.(string)
+			if !ok {
+				t.Fatalf("YAML object key has type %T, want string", key)
+			}
+			normalized[stringKey] = normalizeYAMLValue(t, item)
+		}
+		return normalized
+	case []any:
+		normalized := make([]any, len(typed))
+		for index, item := range typed {
+			normalized[index] = normalizeYAMLValue(t, item)
+		}
+		return normalized
+	default:
+		return value
 	}
 }
 
