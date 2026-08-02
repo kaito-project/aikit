@@ -19,6 +19,7 @@ import (
 	"github.com/moby/buildkit/client/llb"
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
+	pkgerrors "github.com/pkg/errors"
 )
 
 const (
@@ -185,12 +186,12 @@ func handleHuggingFace(source string, s llb.State) (llb.State, error) {
 	// Fall back to full repo download (2 parts: namespace/model)
 	spec, err := ParseHuggingFaceSpec(source)
 	if err != nil {
-		return llb.State{}, fmt.Errorf("invalid Hugging Face URL format: %w", err)
+		return llb.State{}, pkgerrors.Wrap(err, "invalid Hugging Face URL format")
 	}
 
 	files, err := listHuggingFaceRepoFiles(spec.Namespace, spec.Model, spec.Revision)
 	if err != nil {
-		return llb.State{}, fmt.Errorf("listing HuggingFace repo files: %w", err)
+		return llb.State{}, pkgerrors.Wrap(err, "listing HuggingFace repo files")
 	}
 
 	modelDir := fmt.Sprintf("/models/%s/%s", spec.Namespace, spec.Model)
@@ -221,12 +222,12 @@ func listHuggingFaceRepoFiles(namespace, model, revision string) ([]string, erro
 	apiURL := fmt.Sprintf("https://huggingface.co/api/models/%s/%s/revision/%s", namespace, model, revision)
 	req, err := http.NewRequestWithContext(context.TODO(), http.MethodGet, apiURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("building HuggingFace API request: %w", err)
+		return nil, pkgerrors.Wrap(err, "building HuggingFace API request")
 	}
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req) //nolint:gosec
 	if err != nil {
-		return nil, fmt.Errorf("fetching repo info: %w", err)
+		return nil, pkgerrors.Wrap(err, "fetching repo info")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -239,7 +240,7 @@ func listHuggingFaceRepoFiles(namespace, model, revision string) ([]string, erro
 		} `json:"siblings"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decoding HuggingFace API response: %w", err)
+		return nil, pkgerrors.Wrap(err, "decoding HuggingFace API response")
 	}
 
 	skipFiles := map[string]bool{

@@ -39,9 +39,11 @@ cd "$work"
 paths_file="$tmp_dir/files.paths"
 sizes_file="$tmp_dir/files.sizes"
 records_file="$tmp_dir/files.records"
+members_file="$tmp_dir/files.members"
 find . -type f ! -name '*.lock' ! -path './.cache/*' -print0 | LC_ALL=C sort -z > "$paths_file"
 xargs -0 -r stat -c '%s' -- < "$paths_file" > "$sizes_file"
 : > "$records_file"
+: > "$members_file"
 
 exec 3<"$paths_file"
 exec 4<"$sizes_file"
@@ -52,6 +54,7 @@ while IFS= read -r -d '' f <&3; do
 	fi
 	f=${f#./}
 	printf '%s\0%s\0' "$f" "$sz" >> "$records_file"
+	printf '%s\0' "$f" >> "$members_file"
 done
 if IFS= read -r extra_size <&4; then
 	printf 'unexpected size without a discovered path: %s\n' "$extra_size" >&2
@@ -94,6 +97,68 @@ escape_json() {
 	done
 }
 
+# BusyBox tar supports newline-delimited -T input but not a NUL-delimited list,
+# so arbitrary filenames cannot be streamed to one invocation through -T. Build
+# bounded tar chunks from NUL-delimited xargs batches, strip each chunk's end
+# marker, and concatenate the member records into one valid archive. The final
+# directory marker makes trailer detection unambiguous even when file data ends
+# in one or more all-zero 512-byte blocks.
+archive_batch_bytes=32768
+zero_block="$tmp_dir/zero.block"
+tar_batch_script="$tmp_dir/archive-batch.sh"
+dd if=/dev/zero of="$zero_block" bs=512 count=1 2>/dev/null
+cat > "$tar_batch_script" <<'EOF_ARCHIVE_BATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+archive=$1
+tmp_dir=$2
+zero_block=$3
+shift 3
+
+chunk=$(mktemp "$tmp_dir/archive-chunk.XXXXXX")
+cleanup_batch() { rm -f -- "$chunk"; }
+trap cleanup_batch EXIT
+
+tar -cf "$chunk" --no-recursion -- "$@" .
+size=$(stat -c%s -- "$chunk")
+if [ "$size" -eq 0 ] || [ $((size % 512)) -ne 0 ]; then
+	printf 'tar chunk has invalid size %s\n' "$size" >&2
+	exit 1
+fi
+
+blocks=$((size / 512))
+end=$blocks
+while [ "$end" -gt 0 ] && cmp -s -n 512 "$zero_block" "$chunk" 0 $(((end - 1) * 512)); do
+	end=$((end - 1))
+done
+if [ "$end" -lt 1 ] || [ $((blocks - end)) -lt 2 ]; then
+	printf 'tar chunk is missing its end-of-archive marker\n' >&2
+	exit 1
+fi
+
+marker_name=$(dd if="$chunk" bs=512 skip=$((end - 1)) count=1 2>/dev/null | dd bs=1 count=100 2>/dev/null | tr -d '\000')
+case "$marker_name" in
+	.|./) ;;
+	*)
+		printf 'unexpected tar chunk marker %q\n' "$marker_name" >&2
+		exit 1
+		;;
+esac
+
+payload_blocks=$((end - 1))
+if [ "$payload_blocks" -gt 0 ]; then
+	dd if="$chunk" bs=512 count="$payload_blocks" 2>/dev/null >> "$archive"
+fi
+EOF_ARCHIVE_BATCH
+
+create_tar_archive() {
+	local members=$1 archive=$2
+	: > "$archive"
+	xargs -0 -r -s "$archive_batch_bytes" bash "$tar_batch_script" "$archive" "$tmp_dir" "$zero_block" < "$members"
+	cat "$zero_block" "$zero_block" >> "$archive"
+}
+
 # append_layer adds a file as a layer blob with annotations.
 # Args: file path, media type, title (original filename), optional size, and
 # optional blob action.
@@ -124,18 +189,12 @@ case "$PACK_MODE" in
 			append_layer "$f" "$RAW_LAYER_MT" "$f" "$fsize" copy
 		done < "$records_file" ;;
 	tar|tar+gzip|tar+zstd)
-		# BusyBox tar does not support NUL-delimited -T input. Load the NUL-safe
-		# records into a Bash array so every argument remains exact.
-		files=()
-		while IFS= read -r -d '' f && IFS= read -r -d '' _; do
-			files+=("$f")
-		done < "$records_file"
-		if [ "${#files[@]}" -eq 0 ]; then
+		if [ ! -s "$members_file" ]; then
 			printf 'no files to package\n' >&2
 			exit 1
 		fi
 		tarFile=$(mktemp "$tmp_dir/archive.XXXXXX")
-		tar -cf "$tarFile" -- "${files[@]}"
+		create_tar_archive "$members_file" "$tarFile"
 		mt=$ARCHIVE_LAYER_MT
 		layerName=allfiles.tar
 		case "$PACK_MODE" in

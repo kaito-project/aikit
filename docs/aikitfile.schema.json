@@ -17,6 +17,9 @@
       },
       "additionalProperties": false,
       "type": "object",
+      "required": [
+        "type"
+      ],
       "description": "Dataset describes a single training dataset for a fine-tuning job."
     },
     "FineTuneConfig": {
@@ -44,6 +47,8 @@
             "$ref": "#/$defs/Dataset"
           },
           "type": "array",
+          "maxItems": 1,
+          "minItems": 1,
           "description": "Datasets lists the training datasets used to fine-tune the base model."
         },
         "config": {
@@ -57,6 +62,11 @@
       },
       "additionalProperties": false,
       "type": "object",
+      "required": [
+        "apiVersion",
+        "target",
+        "datasets"
+      ],
       "description": "FineTuneConfig is the root aikitfile schema for a fine-tuning job that produces a customized model from a base model and datasets."
     },
     "FineTuneConfigSpec": {
@@ -193,6 +203,9 @@
       },
       "additionalProperties": false,
       "type": "object",
+      "required": [
+        "apiVersion"
+      ],
       "description": "InferenceConfig is the root aikitfile schema for building an inference image that serves one or more models."
     },
     "Model": {

@@ -100,6 +100,38 @@ func TestEmbeddedPackagingScriptsAvoidRepeatedPerFileScans(t *testing.T) {
 	}
 }
 
+func TestEmbeddedPackagingScriptsBoundArchiveArgumentSize(t *testing.T) {
+	tests := []struct {
+		name   string
+		script string
+	}{
+		{name: performanceScriptModelpack, script: modelpackScript},
+		{name: performanceScriptGeneric, script: genericScript},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mustContain := []string{
+				"archive_batch_bytes=32768",
+				`xargs -0 -r -s "$archive_batch_bytes" bash "$tar_batch_script"`,
+				`tar -cf "$chunk" --no-recursion -- "$@" .`,
+				`cat "$zero_block" "$zero_block" >> "$archive"`,
+			}
+			for _, pattern := range mustContain {
+				if !strings.Contains(tt.script, pattern) {
+					t.Fatalf("expected embedded script to contain bounded archive pattern %q", pattern)
+				}
+			}
+
+			for _, pattern := range []string{`"${files[@]}"`, "local -a files"} {
+				if strings.Contains(tt.script, pattern) {
+					t.Fatalf("embedded script must not expand an unbounded archive member array %q", pattern)
+				}
+			}
+		})
+	}
+}
+
 func TestEmbeddedRawPackagingScriptsCopyDirectlyToDigestBlob(t *testing.T) {
 	if !strings.Contains(modelpackScript, `append_layer "$f" "$mtRaw" "$f" "$meta" true "$fsize" copy`) {
 		t.Fatal("expected modelpack raw mode to copy source files directly into digest-addressed blobs")

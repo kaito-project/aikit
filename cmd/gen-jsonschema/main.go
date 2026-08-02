@@ -1,12 +1,13 @@
 // Command gen-jsonschema generates the JSON schema for aikitfile documents.
 //
 // It reflects the two root config types (InferenceConfig and FineTuneConfig)
-// into a single JSON schema whose root is a oneOf over both shapes, suitable
-// for editor autocomplete and validation. Field names come from the yaml struct
-// tags (aikit parses with yaml.v2 and has no json tags), descriptions come from
-// the Go doc comments on the spec structs, and the enum values are imported from
-// pkg/utils so the schema cannot drift from the validators. The result is
-// written to docs/aikitfile.schema.json.
+// into a single JSON schema whose root is a oneOf over both runtime-valid
+// shapes, suitable for editor autocomplete and validation. Field names come
+// from the yaml struct tags (aikit parses with yaml.v2 and has no json tags),
+// descriptions come from the Go doc comments on the spec structs, and static
+// validation rules are imported from the config semantics and pkg/utils so the
+// schema cannot drift from the validators. The result is written to
+// docs/aikitfile.schema.json.
 package main
 
 import (
@@ -50,15 +51,7 @@ func run() error {
 		return errors.Wrap(err, "chdir to module root")
 	}
 
-	reflector := &jsonschema.Reflector{
-		// aikit parses with yaml.v2 and has no json tags, so read field names from
-		// the yaml struct tag instead of the default json tag.
-		FieldNameTag: "yaml",
-		// An editor schema should not force every field to be present; suppress the
-		// reflector's default of requiring all non-omitempty fields. Unknown keys
-		// are still rejected because additionalProperties defaults to false.
-		RequiredFromJSONSchemaTags: true,
-	}
+	reflector := newReflector()
 	if err := reflector.AddGoComments(modulePath, configPkgDir); err != nil {
 		return errors.Wrap(err, "extract go comments")
 	}
@@ -85,6 +78,19 @@ func run() error {
 	return nil
 }
 
+func newReflector() *jsonschema.Reflector {
+	return &jsonschema.Reflector{
+		// aikit parses with yaml.v2 and has no json tags, so read field names from
+		// the yaml struct tag instead of the default json tag.
+		FieldNameTag: "yaml",
+		// Suppress the reflector's default of requiring every non-omitempty field.
+		// buildSchema adds only the fields required by the runtime validators.
+		// Unknown keys are still rejected because additionalProperties defaults to
+		// false.
+		RequiredFromJSONSchemaTags: true,
+	}
+}
+
 // buildSchema reflects both root config types and merges them into a single
 // schema whose root selects exactly one of the two shapes.
 func buildSchema(r *jsonschema.Reflector) (*jsonschema.Schema, error) {
@@ -102,6 +108,9 @@ func buildSchema(r *jsonschema.Reflector) (*jsonschema.Schema, error) {
 	if err := applyEnums(defs); err != nil {
 		return nil, err
 	}
+	if err := applyShapeConstraints(defs); err != nil {
+		return nil, err
+	}
 
 	return &jsonschema.Schema{
 		Version: jsonschema.Version,
@@ -112,6 +121,27 @@ func buildSchema(r *jsonschema.Reflector) (*jsonschema.Schema, error) {
 		},
 		Definitions: defs,
 	}, nil
+}
+
+// applyShapeConstraints mirrors the required-field and collection-size rules
+// that determine whether NewFromBytes and Validate accept a document.
+//
+// NewFromBytes defaults to inference unless it sees a non-empty baseModel or
+// datasets list. A valid finetune config always has exactly one dataset, so
+// requiring that runtime-valid shape keeps the root oneOf branches disjoint:
+// apiVersion-only documents remain valid inference configs, while finetune
+// documents have the positive signal the parser uses to select FineTuneConfig.
+func applyShapeConstraints(defs jsonschema.Definitions) error {
+	if err := setRequired(defs, "InferenceConfig", "apiVersion"); err != nil {
+		return err
+	}
+	if err := setRequired(defs, "FineTuneConfig", "apiVersion", "target", "datasets"); err != nil {
+		return err
+	}
+	if err := setArrayItemBounds(defs, "FineTuneConfig", "datasets", 1, 1); err != nil {
+		return err
+	}
+	return setRequired(defs, "Dataset", "type")
 }
 
 // applyEnums constrains the discriminator fields to the exact value sets the
@@ -161,6 +191,37 @@ func setItemsEnum(defs jsonschema.Definitions, typeName, property string, values
 		return errors.Errorf("property %q on %q is not an array", property, typeName)
 	}
 	prop.Items.Enum = values
+	return nil
+}
+
+// setRequired marks the named properties as required after verifying they
+// exist on the reflected definition.
+func setRequired(defs jsonschema.Definitions, typeName string, properties ...string) error {
+	def, ok := defs[typeName]
+	if !ok || def.Properties == nil {
+		return errors.Errorf("schema definition %q not found", typeName)
+	}
+	for _, property := range properties {
+		if _, err := lookupProperty(defs, typeName, property); err != nil {
+			return err
+		}
+	}
+	def.Required = append([]string(nil), properties...)
+	return nil
+}
+
+// setArrayItemBounds constrains an array property to the inclusive item-count
+// range used by the runtime validator.
+func setArrayItemBounds(defs jsonschema.Definitions, typeName, property string, minItems, maxItems uint64) error {
+	prop, err := lookupProperty(defs, typeName, property)
+	if err != nil {
+		return err
+	}
+	if prop.Items == nil {
+		return errors.Errorf("property %q on %q is not an array", property, typeName)
+	}
+	prop.MinItems = &minItems
+	prop.MaxItems = &maxItems
 	return nil
 }
 
