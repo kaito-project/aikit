@@ -75,7 +75,7 @@ jobs:
           echo "$result" | jq -e '
             if (.error? != null) then
               error("error field present in response")
-            elif (.choices | type != "array" or (.choices | length) == 0) then
+            elif ((.choices | type) != "array" or (.choices | length) == 0) then
               error("choices must be a non-empty array")
             else
               .
@@ -95,7 +95,7 @@ jobs:
           echo "$result" | jq -e '
             if (.error? != null) then
               error("error field present in response")
-            elif (.data | type != "array" or (.data | length) == 0) then
+            elif ((.data | type) != "array" or (.data | length) == 0) then
               error("data must be a non-empty array")
             elif (.data[0].url == null or .data[0].url == "") then
               error("data[0].url must be non-empty")
@@ -120,7 +120,7 @@ jobs:
           echo "$result" | jq -e '
             if (.error? != null) then
               error("error field present in response")
-            elif (.choices | type != "array" or (.choices | length) == 0) then
+            elif ((.choices | type) != "array" or (.choices | length) == 0) then
               error("choices must be a non-empty array")
             else
               .
