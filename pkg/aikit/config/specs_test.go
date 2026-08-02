@@ -65,3 +65,57 @@ foo
 		})
 	}
 }
+
+func TestNewFromBytesPreservesDisabledFourBitLoading(t *testing.T) {
+	_, fineTuneConfig, err := NewFromBytes([]byte(`
+apiVersion: v1alpha1
+baseModel: test-model
+datasets:
+  - source: test-dataset
+    type: alpaca
+config:
+  unsloth:
+    loadIn4bit: false
+`))
+	if err != nil {
+		t.Fatalf("NewFromBytes() error = %v", err)
+	}
+	if fineTuneConfig == nil {
+		t.Fatal("NewFromBytes() returned no fine-tune config")
+	}
+	if fineTuneConfig.Config.Unsloth.LoadIn4bit {
+		t.Fatal("loadIn4bit = true, want false")
+	}
+}
+
+func TestNewFromBytesDefaultsFourBitLoading(t *testing.T) {
+	tests := []struct {
+		name   string
+		config string
+	}{
+		{name: "config omitted"},
+		{name: "unsloth omitted", config: "config: {}"},
+		{name: "load setting omitted", config: "config:\n  unsloth: {}"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := "apiVersion: v1alpha1\n" +
+				"baseModel: test-model\n" +
+				"datasets:\n" +
+				"  - source: test-dataset\n" +
+				"    type: alpaca\n" +
+				tt.config + "\n"
+			_, fineTuneConfig, err := NewFromBytes([]byte(input))
+			if err != nil {
+				t.Fatalf("NewFromBytes() error = %v", err)
+			}
+			if fineTuneConfig == nil {
+				t.Fatal("NewFromBytes() returned no fine-tune config")
+			}
+			if !fineTuneConfig.Config.Unsloth.LoadIn4bit {
+				t.Fatal("loadIn4bit = false, want true")
+			}
+		})
+	}
+}
