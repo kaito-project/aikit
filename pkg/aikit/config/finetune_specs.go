@@ -13,13 +13,25 @@ type FineTuneConfig struct {
 func (c *FineTuneConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type plain FineTuneConfig
 
-	decoded := plain{
-		Config: FineTuneConfigSpec{
-			Unsloth: FineTuneConfigUnslothSpec{LoadIn4bit: true},
-		},
-	}
+	var decoded plain
 	if err := unmarshal(&decoded); err != nil {
 		return err
+	}
+
+	var fields struct {
+		Config *struct {
+			Unsloth *struct {
+				LoadIn4bit *bool `yaml:"loadIn4bit"`
+			} `yaml:"unsloth"`
+		} `yaml:"config"`
+	}
+	if err := unmarshal(&fields); err != nil {
+		return err
+	}
+
+	decoded.Config.Unsloth.LoadIn4bit = true
+	if fields.Config != nil && fields.Config.Unsloth != nil && fields.Config.Unsloth.LoadIn4bit != nil {
+		decoded.Config.Unsloth.LoadIn4bit = *fields.Config.Unsloth.LoadIn4bit
 	}
 
 	*c = FineTuneConfig(decoded)

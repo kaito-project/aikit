@@ -16,9 +16,12 @@ const (
 	torchVersion   = "2.10.0"
 	sourceVenv     = ". .venv/bin/activate"
 
-	nvidiaMknod = "NVIDIA_MAJOR=$(awk '$2 == \"nvidia\" { print $1; exit }' /proc/devices) && " +
+	nvidiaPrimaryMajorAWK = `$2 == "nvidia-frontend" { frontend = $1 } $2 == "nvidia" { legacy = $1 } ` +
+		`END { if (frontend != "") { print frontend } else if (legacy != "") { print legacy } ` +
+		`else { print "failed to find NVIDIA primary character device major (expected nvidia-frontend or nvidia)" > "/dev/stderr"; exit 1 } }`
+	nvidiaMknod = "NVIDIA_MAJOR=$(awk '" + nvidiaPrimaryMajorAWK + "' /proc/devices) && " +
 		"NVIDIA_UVM_MAJOR=$(awk '$2 == \"nvidia-uvm\" { print $1; exit }' /proc/devices) && " +
-		"test -n \"$NVIDIA_MAJOR\" && test -n \"$NVIDIA_UVM_MAJOR\" && " +
+		"test -n \"$NVIDIA_UVM_MAJOR\" && " +
 		"rm -f /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia0 && " +
 		"mknod --mode 666 /dev/nvidiactl c \"$NVIDIA_MAJOR\" 255 && " +
 		"mknod --mode 666 /dev/nvidia-uvm c \"$NVIDIA_UVM_MAJOR\" 0 && " +

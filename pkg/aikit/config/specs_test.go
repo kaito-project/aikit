@@ -66,36 +66,18 @@ foo
 	}
 }
 
-func TestNewFromBytesPreservesDisabledFourBitLoading(t *testing.T) {
-	_, fineTuneConfig, err := NewFromBytes([]byte(`
-apiVersion: v1alpha1
-baseModel: test-model
-datasets:
-  - source: test-dataset
-    type: alpaca
-config:
-  unsloth:
-    loadIn4bit: false
-`))
-	if err != nil {
-		t.Fatalf("NewFromBytes() error = %v", err)
-	}
-	if fineTuneConfig == nil {
-		t.Fatal("NewFromBytes() returned no fine-tune config")
-	}
-	if fineTuneConfig.Config.Unsloth.LoadIn4bit {
-		t.Fatal("loadIn4bit = true, want false")
-	}
-}
-
 func TestNewFromBytesDefaultsFourBitLoading(t *testing.T) {
 	tests := []struct {
-		name   string
-		config string
+		name           string
+		config         string
+		wantLoadIn4bit bool
 	}{
-		{name: "config omitted"},
-		{name: "unsloth omitted", config: "config: {}"},
-		{name: "load setting omitted", config: "config:\n  unsloth: {}"},
+		{name: "config omitted", wantLoadIn4bit: true},
+		{name: "config null", config: "config:\n", wantLoadIn4bit: true},
+		{name: "config empty", config: "config: {}\n", wantLoadIn4bit: true},
+		{name: "unsloth null", config: "config:\n  unsloth:\n", wantLoadIn4bit: true},
+		{name: "unsloth empty", config: "config:\n  unsloth: {}\n", wantLoadIn4bit: true},
+		{name: "load setting false", config: "config:\n  unsloth:\n    loadIn4bit: false\n", wantLoadIn4bit: false},
 	}
 
 	for _, tt := range tests {
@@ -105,7 +87,7 @@ func TestNewFromBytesDefaultsFourBitLoading(t *testing.T) {
 				"datasets:\n" +
 				"  - source: test-dataset\n" +
 				"    type: alpaca\n" +
-				tt.config + "\n"
+				tt.config
 			_, fineTuneConfig, err := NewFromBytes([]byte(input))
 			if err != nil {
 				t.Fatalf("NewFromBytes() error = %v", err)
@@ -113,8 +95,8 @@ func TestNewFromBytesDefaultsFourBitLoading(t *testing.T) {
 			if fineTuneConfig == nil {
 				t.Fatal("NewFromBytes() returned no fine-tune config")
 			}
-			if !fineTuneConfig.Config.Unsloth.LoadIn4bit {
-				t.Fatal("loadIn4bit = false, want true")
+			if fineTuneConfig.Config.Unsloth.LoadIn4bit != tt.wantLoadIn4bit {
+				t.Fatalf("loadIn4bit = %t, want %t", fineTuneConfig.Config.Unsloth.LoadIn4bit, tt.wantLoadIn4bit)
 			}
 		})
 	}

@@ -2,6 +2,7 @@ package finetune
 
 import (
 	"context"
+	"os/exec"
 	"reflect"
 	"slices"
 	"strings"
@@ -162,13 +163,67 @@ func TestAikit2LLBDiscoversNvidiaDeviceMajors(t *testing.T) {
 	trainingOp := findFineTuneExec(t, ops, "python -m target_unsloth")
 	trainingCommand := strings.Join(trainingOp.op.GetExec().Meta.Args, "\x00")
 
-	for _, fragment := range []string{"/proc/devices", "nvidia-uvm", "$NVIDIA_UVM_MAJOR", "$NVIDIA_MAJOR"} {
+	for _, fragment := range []string{"/proc/devices", "nvidia-frontend", "nvidia-uvm", "$NVIDIA_UVM_MAJOR", "$NVIDIA_MAJOR"} {
 		if !strings.Contains(trainingCommand, fragment) {
 			t.Errorf("training command does not contain dynamic NVIDIA device fragment %q: %q", fragment, trainingCommand)
 		}
 	}
 	if strings.Contains(trainingCommand, "nvidia-uvm c 235") {
 		t.Fatalf("training command still contains the stale hard-coded NVIDIA UVM major: %q", trainingCommand)
+	}
+}
+
+func TestNvidiaPrimaryMajorAWK(t *testing.T) {
+	tests := []struct {
+		name        string
+		devices     string
+		wantMajor   string
+		wantFailure bool
+	}{
+		{
+			name:      "frontend",
+			devices:   "Character devices:\n195 nvidia-frontend\n511 nvidia-uvm\n",
+			wantMajor: "195",
+		},
+		{
+			name:      "legacy fallback",
+			devices:   "Character devices:\n195 nvidia\n511 nvidia-uvm\n",
+			wantMajor: "195",
+		},
+		{
+			name:      "frontend preferred over legacy",
+			devices:   "Character devices:\n195 nvidia\n509 nvidia-frontend\n511 nvidia-uvm\n",
+			wantMajor: "509",
+		},
+		{
+			name:        "missing primary device",
+			devices:     "Character devices:\n511 nvidia-uvm\n",
+			wantFailure: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command("awk", nvidiaPrimaryMajorAWK)
+			cmd.Stdin = strings.NewReader(tt.devices)
+			output, err := cmd.CombinedOutput()
+			if tt.wantFailure {
+				if err == nil {
+					t.Fatalf("device discovery unexpectedly succeeded: %q", output)
+				}
+				if !strings.Contains(string(output), "expected nvidia-frontend or nvidia") {
+					t.Fatalf("device discovery failure = %q, want actionable error", output)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("device discovery failed: %v: %s", err, output)
+			}
+			if got := strings.TrimSpace(string(output)); got != tt.wantMajor {
+				t.Fatalf("device major = %q, want %q", got, tt.wantMajor)
+			}
+		})
 	}
 }
 
