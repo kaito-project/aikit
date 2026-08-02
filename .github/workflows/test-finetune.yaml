@@ -7,7 +7,7 @@ permissions: read-all
 
 jobs:
   test:
-    runs-on: self-hosted
+    runs-on: [self-hosted, gpu]
     timeout-minutes: 360
     strategy:
       fail-fast: false
