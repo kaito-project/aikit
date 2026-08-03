@@ -16,6 +16,13 @@ import (
 	digest "github.com/opencontainers/go-digest"
 )
 
+const (
+	testImmutableCDIDevice  = "nvidia.com/gpu=GPU-4f684ff2-f5d1-8b33-decf-42fac828778c"
+	testNVIDIADriverVersion = "590.48.01"
+	testSessionA            = "session-a"
+	testSessionB            = "session-b"
+)
+
 type fineTuneDefinitionOp struct {
 	digest digest.Digest
 	index  int
@@ -49,9 +56,30 @@ func TestAikit2LLBDefinitionIsDeterministic(t *testing.T) {
 }
 
 func TestAikit2LLBRequiresGPUCacheKey(t *testing.T) {
-	_, err := Aikit2LLB(fineTuneTestConfig(), Options{})
-	if err == nil || !strings.Contains(err.Error(), "GPU cache key") {
-		t.Fatalf("Aikit2LLB() error = %v, want missing GPU cache key error", err)
+	tests := []struct {
+		name    string
+		opts    Options
+		wantErr bool
+	}{
+		{name: "no discriminator", wantErr: true},
+		{name: "mutable device and driver", opts: Options{NVIDIADriverVersion: testNVIDIADriverVersion, CDIDevice: nvidiaCDIDevice}, wantErr: true},
+		{name: "session", opts: Options{BuildSessionID: testSessionA}},
+		{name: "immutable device and driver", opts: Options{NVIDIADriverVersion: testNVIDIADriverVersion, CDIDevice: testImmutableCDIDevice}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Aikit2LLB(fineTuneTestConfig(), tt.opts)
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "GPU cache key") {
+					t.Fatalf("Aikit2LLB() error = %v, want missing GPU cache key error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Aikit2LLB() error = %v", err)
+			}
+		})
 	}
 }
 
@@ -266,10 +294,9 @@ func TestAikit2LLBUsesNvidiaCDIWithoutInsecureSecurity(t *testing.T) {
 }
 
 func TestAikit2LLBUsesConfiguredCDIDevice(t *testing.T) {
-	const configuredDevice = "nvidia.com/gpu=GPU-4f684ff2-f5d1-8b33-decf-42fac828778c"
 	definition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{
-		NVIDIADriverVersion: "590.48.01",
-		CDIDevice:           configuredDevice,
+		NVIDIADriverVersion: testNVIDIADriverVersion,
+		CDIDevice:           testImmutableCDIDevice,
 	})
 	ops := decodeFineTuneDefinition(t, definition)
 
@@ -278,56 +305,168 @@ func TestAikit2LLBUsesConfiguredCDIDevice(t *testing.T) {
 		findFineTuneExec(t, ops, "target_unsloth.py export"),
 	} {
 		devices := phase.op.GetExec().GetCdiDevices()
-		if len(devices) != 1 || devices[0].Name != configuredDevice {
-			t.Fatalf("CDI devices = %#v, want configured device %q", devices, configuredDevice)
+		if len(devices) != 1 || devices[0].Name != testImmutableCDIDevice {
+			t.Fatalf("CDI devices = %#v, want configured device %q", devices, testImmutableCDIDevice)
 		}
 	}
 }
 
-func TestAikit2LLBUsesDriverVersionOnlyAsGPUCacheKey(t *testing.T) {
-	baseDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{NVIDIADriverVersion: "590.48.01", BuildSessionID: "session-a"})
+func TestAikit2LLBUsesImmutableDeviceAndDriverAsGPUCacheKey(t *testing.T) {
+	const cacheKey = "device:" + testImmutableCDIDevice + ";driver:" + testNVIDIADriverVersion
+	baseDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{
+		NVIDIADriverVersion: testNVIDIADriverVersion,
+		BuildSessionID:      testSessionA,
+		CDIDevice:           testImmutableCDIDevice,
+	})
 	baseOps := decodeFineTuneDefinition(t, baseDefinition)
 	baseDependency := findFineTuneExec(t, baseOps, "uv pip sync")
 	baseTraining := findFineTuneExec(t, baseOps, "target_unsloth.py train")
 	baseExport := findFineTuneExec(t, baseOps, "target_unsloth.py export")
 
-	if slices.Contains(baseDependency.op.GetExec().Meta.Env, nvidiaCacheKey+"=driver:590.48.01") {
-		t.Fatal("driver cache key invalidated dependency installation")
+	if slices.Contains(baseDependency.op.GetExec().Meta.Env, nvidiaCacheKey+"="+cacheKey) {
+		t.Fatal("GPU cache key invalidated dependency installation")
 	}
 	for _, phase := range []fineTuneDefinitionOp{baseTraining, baseExport} {
-		if !slices.Contains(phase.op.GetExec().Meta.Env, nvidiaCacheKey+"=driver:590.48.01") {
-			t.Fatalf("GPU phase environment does not contain driver cache key: %#v", phase.op.GetExec().Meta.Env)
+		if !slices.Contains(phase.op.GetExec().Meta.Env, nvidiaCacheKey+"="+cacheKey) {
+			t.Fatalf("GPU phase environment does not contain device and driver cache key: %#v", phase.op.GetExec().Meta.Env)
 		}
 		if baseDefinition.Metadata[phase.digest].IgnoreCache {
-			t.Fatal("GPU phase ignored cache despite an explicit driver version")
+			t.Fatal("GPU phase ignored cache despite an immutable device identity and driver version")
 		}
 	}
 
-	changedDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{NVIDIADriverVersion: "590.50.02", BuildSessionID: "session-b"})
-	changedOps := decodeFineTuneDefinition(t, changedDefinition)
-	if got := findFineTuneExec(t, changedOps, "uv pip sync").digest; got != baseDependency.digest {
+	sessionChangedDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{
+		NVIDIADriverVersion: testNVIDIADriverVersion,
+		BuildSessionID:      testSessionB,
+		CDIDevice:           testImmutableCDIDevice,
+	})
+	sessionChangedOps := decodeFineTuneDefinition(t, sessionChangedDefinition)
+	if got := findFineTuneExec(t, sessionChangedOps, "target_unsloth.py train").digest; got != baseTraining.digest {
+		t.Fatalf("session change invalidated training with an immutable GPU cache key: got %s, want %s", got, baseTraining.digest)
+	}
+	if got := findFineTuneExec(t, sessionChangedOps, "target_unsloth.py export").digest; got != baseExport.digest {
+		t.Fatalf("session change invalidated export with an immutable GPU cache key: got %s, want %s", got, baseExport.digest)
+	}
+
+	driverChangedDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{
+		NVIDIADriverVersion: "590.50.02",
+		BuildSessionID:      "session-c",
+		CDIDevice:           testImmutableCDIDevice,
+	})
+	driverChangedOps := decodeFineTuneDefinition(t, driverChangedDefinition)
+	if got := findFineTuneExec(t, driverChangedOps, "uv pip sync").digest; got != baseDependency.digest {
 		t.Fatalf("driver version change invalidated dependency installation: got %s, want %s", got, baseDependency.digest)
 	}
-	if got := findFineTuneExec(t, changedOps, "target_unsloth.py train").digest; got == baseTraining.digest {
+	if got := findFineTuneExec(t, driverChangedOps, "target_unsloth.py train").digest; got == baseTraining.digest {
 		t.Fatalf("driver version change did not invalidate training: %s", got)
 	}
-	if got := findFineTuneExec(t, changedOps, "target_unsloth.py export").digest; got == baseExport.digest {
+	if got := findFineTuneExec(t, driverChangedOps, "target_unsloth.py export").digest; got == baseExport.digest {
 		t.Fatalf("driver version change did not invalidate export: %s", got)
+	}
+
+	deviceChangedDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{
+		NVIDIADriverVersion: testNVIDIADriverVersion,
+		BuildSessionID:      "session-d",
+		CDIDevice:           "nvidia.com/gpu=GPU-76a594f9-82d1-4f03-9424-18c7a80f0e76",
+	})
+	deviceChangedOps := decodeFineTuneDefinition(t, deviceChangedDefinition)
+	if got := findFineTuneExec(t, deviceChangedOps, "target_unsloth.py train").digest; got == baseTraining.digest {
+		t.Fatalf("GPU identity change did not invalidate training: %s", got)
+	}
+	if got := findFineTuneExec(t, deviceChangedOps, "target_unsloth.py export").digest; got == baseExport.digest {
+		t.Fatalf("GPU identity change did not invalidate export: %s", got)
+	}
+}
+
+func TestAikit2LLBFallsBackToSessionForMutableCDIDevice(t *testing.T) {
+	selectors := []string{
+		"",
+		"nvidia.com/gpu",
+		nvidiaCDIDevice,
+		"nvidia.com/gpu=0:0",
+		"nvidia.com/gpu=all",
+		"nvidia.com/gpu=gpu0",
+		"nvidia.com/gpu=mig1:0",
+	}
+
+	for _, selector := range selectors {
+		name := selector
+		if name == "" {
+			name = "default"
+		}
+		t.Run(name, func(t *testing.T) {
+			baseDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{
+				NVIDIADriverVersion: testNVIDIADriverVersion,
+				BuildSessionID:      testSessionA,
+				CDIDevice:           selector,
+			})
+			baseOps := decodeFineTuneDefinition(t, baseDefinition)
+			baseDependency := findFineTuneExec(t, baseOps, "uv pip sync")
+			baseTraining := findFineTuneExec(t, baseOps, "target_unsloth.py train")
+			baseExport := findFineTuneExec(t, baseOps, "target_unsloth.py export")
+
+			for _, phase := range []fineTuneDefinitionOp{baseTraining, baseExport} {
+				if !slices.Contains(phase.op.GetExec().Meta.Env, nvidiaCacheKey+"=session:"+testSessionA) {
+					t.Fatalf("GPU phase environment does not contain fallback session cache key: %#v", phase.op.GetExec().Meta.Env)
+				}
+			}
+
+			changedDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{
+				NVIDIADriverVersion: testNVIDIADriverVersion,
+				BuildSessionID:      testSessionB,
+				CDIDevice:           selector,
+			})
+			changedOps := decodeFineTuneDefinition(t, changedDefinition)
+			if got := findFineTuneExec(t, changedOps, "uv pip sync").digest; got != baseDependency.digest {
+				t.Fatalf("session change invalidated dependency installation: got %s, want %s", got, baseDependency.digest)
+			}
+			if got := findFineTuneExec(t, changedOps, "target_unsloth.py train").digest; got == baseTraining.digest {
+				t.Fatalf("session change did not invalidate training for a mutable CDI selector: %s", got)
+			}
+			if got := findFineTuneExec(t, changedOps, "target_unsloth.py export").digest; got == baseExport.digest {
+				t.Fatalf("session change did not invalidate export for a mutable CDI selector: %s", got)
+			}
+		})
+	}
+}
+
+func TestIsImmutableNVIDIACDIDevice(t *testing.T) {
+	tests := []struct {
+		device string
+		want   bool
+	}{
+		{device: testImmutableCDIDevice, want: true},
+		{device: "nvidia.com/gpu=MIG-5f9d9b6a-98d1-4f6a-9b49-4a2d4a651369", want: true},
+		{device: ""},
+		{device: "nvidia.com/gpu"},
+		{device: nvidiaCDIDevice},
+		{device: "nvidia.com/gpu=all"},
+		{device: "nvidia.com/gpu=gpu0"},
+		{device: "nvidia.com/gpu=mig1:0"},
+		{device: "vendor.example/gpu=GPU-4f684ff2-f5d1-8b33-decf-42fac828778c"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.device, func(t *testing.T) {
+			if got := isImmutableNVIDIACDIDevice(tt.device); got != tt.want {
+				t.Fatalf("isImmutableNVIDIACDIDevice(%q) = %t, want %t", tt.device, got, tt.want)
+			}
+		})
 	}
 }
 
 func TestAikit2LLBUsesSessionCacheKeyWithoutDriverVersion(t *testing.T) {
-	baseDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{BuildSessionID: "session-a"})
+	baseDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{BuildSessionID: testSessionA})
 	baseOps := decodeFineTuneDefinition(t, baseDefinition)
 	baseDependency := findFineTuneExec(t, baseOps, "uv pip sync")
 	baseTraining := findFineTuneExec(t, baseOps, "target_unsloth.py train")
 	baseExport := findFineTuneExec(t, baseOps, "target_unsloth.py export")
 
-	if slices.Contains(baseDependency.op.GetExec().Meta.Env, nvidiaCacheKey+"=session:session-a") {
+	if slices.Contains(baseDependency.op.GetExec().Meta.Env, nvidiaCacheKey+"=session:"+testSessionA) {
 		t.Fatal("session cache key invalidated dependency installation")
 	}
 	for _, phase := range []fineTuneDefinitionOp{baseTraining, baseExport} {
-		if !slices.Contains(phase.op.GetExec().Meta.Env, nvidiaCacheKey+"=session:session-a") {
+		if !slices.Contains(phase.op.GetExec().Meta.Env, nvidiaCacheKey+"=session:"+testSessionA) {
 			t.Fatalf("GPU phase environment does not contain session cache key: %#v", phase.op.GetExec().Meta.Env)
 		}
 		if baseDefinition.Metadata[phase.digest].IgnoreCache {
@@ -335,7 +474,7 @@ func TestAikit2LLBUsesSessionCacheKeyWithoutDriverVersion(t *testing.T) {
 		}
 	}
 
-	changedDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{BuildSessionID: "session-b"})
+	changedDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{BuildSessionID: testSessionB})
 	changedOps := decodeFineTuneDefinition(t, changedDefinition)
 	if got := findFineTuneExec(t, changedOps, "uv pip sync").digest; got != baseDependency.digest {
 		t.Fatalf("session change invalidated dependency installation: got %s, want %s", got, baseDependency.digest)

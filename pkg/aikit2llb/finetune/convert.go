@@ -2,6 +2,7 @@ package finetune
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	finetunescript "github.com/kaito-project/aikit/pkg/finetune"
@@ -19,7 +20,7 @@ const (
 	pythonVenv      = "/opt/aikit-venv"
 	sourceVenv      = ". " + pythonVenv + "/bin/activate"
 	nvidiaCDIDevice = "nvidia.com/gpu=0"
-	nvidiaCacheKey  = "AIKIT_NVIDIA_DRIVER_VERSION"
+	nvidiaCacheKey  = "AIKIT_NVIDIA_CACHE_KEY"
 
 	aptCacheID         = "aikit-finetune-apt-v1"
 	aptListsCacheID    = "aikit-finetune-apt-lists-v1"
@@ -132,13 +133,25 @@ func Aikit2LLB(c *config.FineTuneConfig, opts Options) (llb.State, error) {
 }
 
 func gpuCacheKey(opts Options) string {
-	if opts.NVIDIADriverVersion != "" {
-		return "driver:" + opts.NVIDIADriverVersion
+	cdiDevice := opts.CDIDevice
+	if cdiDevice == "" {
+		cdiDevice = nvidiaCDIDevice
+	}
+	if opts.NVIDIADriverVersion != "" && isImmutableNVIDIACDIDevice(cdiDevice) {
+		return fmt.Sprintf("device:%s;driver:%s", cdiDevice, opts.NVIDIADriverVersion)
 	}
 	if opts.BuildSessionID != "" {
 		return "session:" + opts.BuildSessionID
 	}
 	return ""
+}
+
+func isImmutableNVIDIACDIDevice(cdiDevice string) bool {
+	selector, found := strings.CutPrefix(cdiDevice, "nvidia.com/gpu=")
+	if !found {
+		return false
+	}
+	return strings.HasPrefix(selector, "GPU-") || strings.HasPrefix(selector, "MIG-")
 }
 
 func runUnslothPhase(state, scriptState, configState llb.State, phase, cdiDevice string, includeLlamaCache bool) llb.State {

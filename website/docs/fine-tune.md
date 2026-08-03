@@ -79,17 +79,20 @@ Build using following command and make sure to replace `--target` with the fine-
 
 ```bash
 NVIDIA_DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1)
+NVIDIA_GPU_UUID=$(nvidia-smi --query-gpu=uuid --format=csv,noheader | head -n 1)
+NVIDIA_CDI_DEVICE="nvidia.com/gpu=${NVIDIA_GPU_UUID}"
 
 docker buildx build --builder aikit-builder \
-  --allow 'device=nvidia.com/gpu=0' \
+  --allow "device=${NVIDIA_CDI_DEVICE}" \
   --build-arg "nvidiaDriverVersion=${NVIDIA_DRIVER_VERSION}" \
+  --build-arg "cdiDevice=${NVIDIA_CDI_DEVICE}" \
   --file "/path/to/config.yaml" \
   --output "/path/to/output" \
   --target unsloth \
   --progress plain .
 ```
 
-The `device` entitlement authorizes only the CDI device requested by AIKit. Training and GGUF export run with the normal BuildKit sandbox security mode. The optional `nvidiaDriverVersion` argument is used only as a GPU-phase cache discriminator; AIKit does not install that driver in the build container. If it is omitted, AIKit uses the current BuildKit session as the result-cache discriminator while retaining persistent model, dataset, and compiler caches.
+The `device` entitlement authorizes only the CDI device requested by AIKit. Training and GGUF export run with the normal BuildKit sandbox security mode. The `cdiDevice` argument selects that GPU, while the optional `nvidiaDriverVersion` argument is used only as a GPU-phase cache discriminator; AIKit does not install that driver in the build container. AIKit reuses GPU results across BuildKit sessions only when the driver version is paired with an immutable `GPU-...` or `MIG-...` CDI selector. Index, `all`, and on-demand selectors can identify different hardware on another builder, so AIKit falls back to the current BuildKit session as the result-cache discriminator while retaining persistent model, dataset, and compiler caches.
 
 The training and GGUF export phases are cached separately. Changing only `output.name` reuses both phases, while changing only `output.quantize` reuses training and reruns export.
 

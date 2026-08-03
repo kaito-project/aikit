@@ -21,7 +21,6 @@ jobs:
     timeout-minutes: 360
     env:
       BUILDX_BUILDER: default
-      NVIDIA_CDI_DEFAULT_DEVICE: nvidia.com/gpu=0
       NVIDIA_CDI_RUNTIME_DEVICE: nvidia.com/gpu=0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -65,9 +64,16 @@ jobs:
         run: |
           set -euo pipefail
           nvidia-smi
-          driver_version=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1)
+          driver_version=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1 | xargs)
+          runtime_gpu_uuid=$(nvidia-smi --query-gpu=uuid --format=csv,noheader | head -n 1 | xargs)
           test -n "$driver_version"
-          echo "NVIDIA_DRIVER_VERSION=$driver_version" >> "$GITHUB_ENV"
+          case "$runtime_gpu_uuid" in
+            GPU-*) ;;
+            *)
+              echo "nvidia-smi returned an invalid GPU UUID: $runtime_gpu_uuid" >&2
+              exit 1
+              ;;
+          esac
 
           command -v nvidia-ctk > /dev/null
           if ! nvidia-ctk cdi list | grep -Fxq "$NVIDIA_CDI_RUNTIME_DEVICE"; then
@@ -78,26 +84,46 @@ jobs:
           builder_info=$(docker buildx inspect "$BUILDX_BUILDER" --bootstrap)
           printf '%s\n' "$builder_info"
           nvidia_cdi_device=$(awk '
-            $1 == "Name:" { device = $2; next }
-            (($1 == "Automatically" && $2 == "allowed:" && $3 == "true") || ($1 == "On-Demand:" && $2 == "true")) && device ~ /^nvidia\.com\/gpu(=|$)/ {
-              print device
+            $1 == "Name:" && $2 ~ /^nvidia\.com\/gpu=(GPU|MIG)-/ {
+              print $2
               exit
             }
           ' <<< "$builder_info")
-          nvidia_cdi_allow=""
           if [[ -z "$nvidia_cdi_device" ]]; then
-            nvidia_cdi_kind=${NVIDIA_CDI_DEFAULT_DEVICE%%=*}
-            nvidia_cdi_device=$(awk -v device="$NVIDIA_CDI_DEFAULT_DEVICE" -v kind="$nvidia_cdi_kind" \
-              '$1 == "Name:" && ($2 == device || $2 == kind) { print $2; exit }' \
-              <<< "$builder_info")
-            nvidia_cdi_allow="device=$nvidia_cdi_device"
+            nvidia_cdi_device=$(awk '
+              $1 == "Name:" { device = $2; next }
+              (($1 == "Automatically" && $2 == "allowed:" && $3 == "true") || ($1 == "On-Demand:" && $2 == "true")) && device ~ /^nvidia\.com\/gpu(=|$)/ {
+                print device
+                exit
+              }
+            ' <<< "$builder_info")
+          fi
+          if [[ -z "$nvidia_cdi_device" ]]; then
+            nvidia_cdi_device=$(awk '$1 == "Name:" && $2 ~ /^nvidia\.com\/gpu(=|$)/ { print $2; exit }' <<< "$builder_info")
           fi
           if [[ -z "$nvidia_cdi_device" ]]; then
             echo "builder $BUILDX_BUILDER does not expose an NVIDIA CDI device" >&2
             exit 1
           fi
+
+          nvidia_cdi_allow=""
+          if ! awk -v desired="$nvidia_cdi_device" '
+            $1 == "Name:" { device = $2; next }
+            device == desired && (($1 == "Automatically" && $2 == "allowed:" && $3 == "true") || ($1 == "On-Demand:" && $2 == "true")) { allowed = 1 }
+            END { exit allowed ? 0 : 1 }
+          ' <<< "$builder_info"; then
+            nvidia_cdi_allow="device=$nvidia_cdi_device"
+          fi
+
+          nvidia_driver_version=""
+          if [[ "$nvidia_cdi_device" == "nvidia.com/gpu=$runtime_gpu_uuid" ]]; then
+            nvidia_driver_version="$driver_version"
+          else
+            echo "Builder device $nvidia_cdi_device does not match runtime GPU $runtime_gpu_uuid; using a per-session GPU result cache key"
+          fi
           echo "Using CDI device $nvidia_cdi_device"
           {
+            echo "NVIDIA_DRIVER_VERSION=$nvidia_driver_version"
             echo "NVIDIA_CDI_DEVICE=$nvidia_cdi_device"
             echo "NVIDIA_CDI_ALLOW=$nvidia_cdi_allow"
           } >> "$GITHUB_ENV"
