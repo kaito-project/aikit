@@ -296,9 +296,10 @@ func TestGenerateHFModelConfig(t *testing.T) {
 				t.Error("should respect HF_TOKEN")
 			}
 
-			// Should handle model mismatch
-			if !strings.Contains(script, "does not match requested model") {
-				t.Error("should detect and handle model mismatch on cached volume")
+			// Cache logs should identify the backend that matched or changed.
+			if !strings.Contains(script, "Found existing "+tt.backend+" model config") ||
+				!strings.Contains(script, "does not match requested backend/model ("+tt.backend) {
+				t.Error("should identify the backend in cache hit and mismatch logs")
 			}
 		})
 	}

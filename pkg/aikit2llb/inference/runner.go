@@ -239,10 +239,10 @@ if [[ -f "/models/aikit-model.yaml" ]] &&
   grep -qxF "name: ${MODEL_NAME}" /models/aikit-model.yaml 2>/dev/null &&
   grep -qxF "backend: %[2]s" /models/aikit-model.yaml 2>/dev/null &&
   grep -qxF "  model: ${MODEL}" /models/aikit-model.yaml 2>/dev/null; then
-  echo "Found existing model config matching $MODEL in /models, skipping setup"
+  echo "Found existing %[2]s model config matching $MODEL in /models, skipping setup"
 else
   if [[ -f "/models/aikit-model.yaml" ]]; then
-    echo "Cached config does not match requested model ($MODEL), regenerating"
+    echo "Cached config does not match requested backend/model (%[2]s, $MODEL), regenerating"
   fi
   # For %[2]s backend, generate a LocalAI model config pointing to the HF model
   echo "Generating LocalAI config for %[2]s backend with model: $MODEL"
