@@ -281,8 +281,9 @@ func TestGenerateHFModelConfig(t *testing.T) {
 
 			// Cached configs should match both the new alias and the requested model.
 			if !strings.Contains(script, `grep -qxF "name: ${MODEL_NAME}"`) ||
+				!strings.Contains(script, `grep -qxF "backend: `+tt.backend+`"`) ||
 				!strings.Contains(script, `grep -qxF "  model: ${MODEL}"`) {
-				t.Error("should validate the cached model name and source")
+				t.Error("should validate the cached model name, backend, and source")
 			}
 
 			// Should contain correct backend reference

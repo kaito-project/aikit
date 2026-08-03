@@ -237,6 +237,7 @@ func generateHFModelConfig(backend string) string {
 %[1]s
 if [[ -f "/models/aikit-model.yaml" ]] &&
   grep -qxF "name: ${MODEL_NAME}" /models/aikit-model.yaml 2>/dev/null &&
+  grep -qxF "backend: %[2]s" /models/aikit-model.yaml 2>/dev/null &&
   grep -qxF "  model: ${MODEL}" /models/aikit-model.yaml 2>/dev/null; then
   echo "Found existing model config matching $MODEL in /models, skipping setup"
 else
