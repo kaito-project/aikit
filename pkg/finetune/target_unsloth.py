@@ -1,46 +1,50 @@
 #!/usr/bin/env python3
 
-from unsloth import is_bfloat16_supported
-from transformers import TrainingArguments, DataCollatorForSeq2Seq
-from unsloth import FastLanguageModel
-import torch
-from trl import SFTTrainer
-from transformers import TrainingArguments
+import shutil
+from pathlib import Path
+
+from unsloth import FastLanguageModel, is_bfloat16_supported
 from datasets import load_dataset
+from trl import SFTConfig, SFTTrainer
 import yaml
 
-with open('config.yaml', 'r') as config_file:
-    try:
-        data = yaml.safe_load(config_file)
-        print(data)
-    except yaml.YAMLError as exc:
-        print(exc)
 
-cfg = data.get('config').get('unsloth')
-max_seq_length = cfg.get('maxSeqLength')
+with open("/config.yaml", "r", encoding="utf-8") as config_file:
+    data = yaml.safe_load(config_file)
+print("Loaded fine-tuning configuration.")
+
+cfg = data["config"]["unsloth"]
+max_seq_length = cfg["maxSeqLength"]
 
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name=data.get('baseModel'),
+    model_name=data["baseModel"],
     max_seq_length=max_seq_length,
     dtype=None,
-    load_in_4bit=True,
+    load_in_4bit=cfg["loadIn4bit"],
 )
 
 model = FastLanguageModel.get_peft_model(
     model,
-    r = 16, # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
-    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-                      "gate_proj", "up_proj", "down_proj",],
-    lora_alpha = 16,
-    lora_dropout = 0, # Supports any, but = 0 is optimized
-    bias = "none",    # Supports any, but = "none" is optimized
+    r=16,
+    target_modules=[
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ],
+    lora_alpha=16,
+    lora_dropout=0,
+    bias="none",
     use_gradient_checkpointing="unsloth",
-    random_state = 3407,
-    use_rslora = False,  # We support rank stabilized LoRA
-    loftq_config = None, # And LoftQ
+    random_state=cfg["seed"],
+    use_rslora=False,
+    loftq_config=None,
 )
 
-# TODO: right now, this is hardcoded for alpaca. use the dataset type here in the future to make this customizable
+# Alpaca is the only dataset type currently supported by the AIKit fine-tuning API.
 alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
 
 ### Instruction:
@@ -52,56 +56,67 @@ alpaca_prompt = """Below is an instruction that describes a task, paired with an
 ### Response:
 {}"""
 
-EOS_TOKEN = tokenizer.eos_token
+eos_token = tokenizer.eos_token
+
+
 def formatting_prompts_func(examples):
-    instructions = examples["instruction"]
-    inputs       = examples["input"]
-    outputs      = examples["output"]
     texts = []
-    for instruction, input, output in zip(instructions, inputs, outputs):
-        # Must add EOS_TOKEN, otherwise your generation will go on forever!
-        text = alpaca_prompt.format(instruction, input, output) + EOS_TOKEN
-        texts.append(text)
-    return { "text" : texts, }
-pass
+    for instruction, input_text, output_text in zip(
+        examples["instruction"], examples["input"], examples["output"]
+    ):
+        texts.append(alpaca_prompt.format(instruction, input_text, output_text) + eos_token)
+    return {"text": texts}
 
-from datasets import load_dataset
-source = data.get('datasets')[0]['source']
 
-if source.startswith('http'):
+source = data["datasets"][0]["source"]
+if source.startswith("http"):
     dataset = load_dataset("json", data_files={"train": source}, split="train")
 else:
-    dataset = load_dataset(source, split = "train")
+    dataset = load_dataset(source, split="train")
 
 dataset = dataset.map(formatting_prompts_func, batched=True)
+bfloat16_supported = is_bfloat16_supported()
 
 trainer = SFTTrainer(
     model=model,
     train_dataset=dataset,
-    dataset_text_field="text",
-    max_seq_length=max_seq_length,
-    data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer),
-    tokenizer=tokenizer,
-    dataset_num_proc = 2,
-    packing = cfg.get('packing'), # Can make training 5x faster for short sequences.
-    args=TrainingArguments(
-        per_device_train_batch_size=cfg.get('batchSize'),
-        gradient_accumulation_steps=cfg.get('gradientAccumulationSteps'),
-        warmup_steps=cfg.get('warmupSteps'),
-        max_steps=cfg.get('maxSteps'),
-        learning_rate = cfg.get('learningRate'),
-        fp16=not is_bfloat16_supported(),
-        bf16=is_bfloat16_supported(),
-        logging_steps=cfg.get('loggingSteps'),
-        optim=cfg.get('optimizer'),
-        weight_decay = cfg.get('weightDecay'),
-        lr_scheduler_type = cfg.get('lrSchedulerType'),
-        seed=cfg.get('seed'),
+    processing_class=tokenizer,
+    args=SFTConfig(
         output_dir="outputs",
+        dataset_text_field="text",
+        dataset_num_proc=2,
+        max_length=max_seq_length,
+        packing=cfg["packing"],
+        per_device_train_batch_size=cfg["batchSize"],
+        gradient_accumulation_steps=cfg["gradientAccumulationSteps"],
+        warmup_steps=cfg["warmupSteps"],
+        max_steps=cfg["maxSteps"],
+        learning_rate=cfg["learningRate"],
+        fp16=not bfloat16_supported,
+        bf16=bfloat16_supported,
+        logging_steps=cfg["loggingSteps"],
+        optim=cfg["optimizer"],
+        weight_decay=cfg["weightDecay"],
+        lr_scheduler_type=cfg["lrSchedulerType"],
+        seed=cfg["seed"],
+        save_strategy="no",
+        report_to="none",
     ),
 )
 trainer.train()
 
-output = data.get('output')
-model.save_pretrained_gguf(output.get('name'), tokenizer,
-                           quantization_method=output.get('quantize'))
+export_directory = Path("/aikit-unsloth-export")
+export_result = model.save_pretrained_gguf(
+    export_directory,
+    tokenizer,
+    quantization_method=data["output"]["quantize"],
+)
+gguf_files = export_result.get("gguf_files", [])
+if len(gguf_files) != 1:
+    raise RuntimeError(f"expected exactly one GGUF output, found {gguf_files}")
+
+artifact_directory = Path("/model")
+artifact_directory.mkdir(parents=True, exist_ok=True)
+Path(gguf_files[0]).replace(artifact_directory / Path(gguf_files[0]).name)
+shutil.rmtree(export_directory, ignore_errors=True)
+shutil.rmtree(Path(f"{export_directory}_gguf"), ignore_errors=True)

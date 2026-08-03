@@ -2,12 +2,14 @@ package finetune
 
 import (
 	"context"
+	"os/exec"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	finetunescript "github.com/kaito-project/aikit/pkg/finetune"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/solver/pb"
@@ -58,7 +60,7 @@ func TestAikit2LLBMaterializesConfigAfterDependencies(t *testing.T) {
 
 	wantEnv := []string{
 		"PATH=" + system.DefaultPathEnv("linux") + ":/usr/local/cuda/bin",
-		"NVIDIA_REQUIRE_CUDA=cuda>=12.0",
+		"NVIDIA_REQUIRE_CUDA=cuda>=12.6",
 		"NVIDIA_DRIVER_CAPABILITIES=compute,utility",
 		"NVIDIA_VISIBLE_DEVICES=all",
 		"LD_LIBRARY_PATH=/usr/local/cuda/lib64",
@@ -69,9 +71,13 @@ func TestAikit2LLBMaterializesConfigAfterDependencies(t *testing.T) {
 		}
 	}
 
-	dependencyOp := findFineTuneExec(t, ops, "uv pip install --upgrade --force-reinstall")
+	dependencyOp := findFineTuneExec(t, ops, "unsloth[cu126-torch2100]")
+	scriptOp, scriptFile := findFineTuneFile(t, ops, "/target_unsloth.py")
 	trainingOp := findFineTuneExec(t, ops, "python -m target_unsloth")
 	configOp, configFile := findFineTuneConfigFile(t, ops)
+	if scriptFile.Mode != 0o755 || !slices.Equal(scriptFile.Data, finetunescript.TargetUnsloth) {
+		t.Fatalf("script mkfile = mode %o data %q, want mode %o embedded script", scriptFile.Mode, string(scriptFile.Data), 0o755)
+	}
 	wantConfig, err := yaml.Marshal(cfg)
 	if err != nil {
 		t.Fatalf("marshal expected config: %v", err)
@@ -82,8 +88,18 @@ func TestAikit2LLBMaterializesConfigAfterDependencies(t *testing.T) {
 	if dependencyOp.index >= configOp.index {
 		t.Fatalf("dependency op index %d must precede config op index %d", dependencyOp.index, configOp.index)
 	}
+	if dependencyOp.index >= scriptOp.index || scriptOp.index >= configOp.index {
+		t.Fatalf("dependency, script, and config op indexes must be ordered: dependency=%d script=%d config=%d", dependencyOp.index, scriptOp.index, configOp.index)
+	}
 	if len(trainingOp.op.Inputs) != 1 || trainingOp.op.Inputs[0].Digest != configOp.digest.String() {
 		t.Fatalf("training op inputs = %#v, want config digest %s", trainingOp.op.Inputs, configOp.digest)
+	}
+	outputCopy := findFineTuneGGUFCopy(t, ops)
+	if strings.TrimPrefix(outputCopy.Src, "/") != "model/*.gguf" {
+		t.Errorf("GGUF copy source = %q, want model/*.gguf", outputCopy.Src)
+	}
+	if strings.TrimPrefix(outputCopy.Dest, "/") != "output-q4_k_m.gguf" {
+		t.Errorf("GGUF copy destination = %q, want output-q4_k_m.gguf", outputCopy.Dest)
 	}
 	for _, graphOp := range ops {
 		if exec := graphOp.op.GetExec(); exec != nil {
@@ -97,13 +113,117 @@ func TestAikit2LLBMaterializesConfigAfterDependencies(t *testing.T) {
 	changedConfig := *cfg
 	changedConfig.BaseModel = "a config-only change"
 	changedOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, &changedConfig))
-	changedDependencyOp := findFineTuneExec(t, changedOps, "uv pip install --upgrade --force-reinstall")
+	changedDependencyOp := findFineTuneExec(t, changedOps, "unsloth[cu126-torch2100]")
+	changedScriptOp, _ := findFineTuneFile(t, changedOps, "/target_unsloth.py")
 	changedConfigOp, _ := findFineTuneConfigFile(t, changedOps)
 	if dependencyOp.digest != changedDependencyOp.digest {
 		t.Fatalf("config-only change invalidated dependency op: got %s, want %s", changedDependencyOp.digest, dependencyOp.digest)
 	}
 	if configOp.digest == changedConfigOp.digest {
 		t.Fatalf("config file op digest did not change after config change: %s", configOp.digest)
+	}
+	if scriptOp.digest != changedScriptOp.digest {
+		t.Fatalf("config-only change invalidated script op: got %s, want %s", changedScriptOp.digest, scriptOp.digest)
+	}
+}
+
+func TestAikit2LLBUsesCurrentUnslothDependencies(t *testing.T) {
+	ops := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, fineTuneTestConfig()))
+	dependencyOp := findFineTuneExec(t, ops, "unsloth[cu126-torch2100]")
+	dependencyCommand := strings.Join(dependencyOp.op.GetExec().Meta.Args, "\x00")
+
+	wantFragments := []string{
+		"torch==" + torchVersion,
+		"unsloth[cu126-torch2100]==" + unslothVersion,
+		"unsloth-zoo==" + unslothVersion,
+		"--torch-backend=cu126",
+	}
+	for _, fragment := range wantFragments {
+		if !strings.Contains(dependencyCommand, fragment) {
+			t.Errorf("dependency command does not contain %q: %q", fragment, dependencyCommand)
+		}
+	}
+
+	staleFragments := []string{
+		"transformers==4.44.2",
+		"torch==2.4.0",
+		"torch==2.4.1",
+		"git+https://github.com/unslothai/unsloth.git",
+		"fb77505f8429566f5d21d6ea5318c342e8a67991",
+	}
+	for _, fragment := range staleFragments {
+		if strings.Contains(dependencyCommand, fragment) {
+			t.Errorf("dependency command still contains stale fragment %q: %q", fragment, dependencyCommand)
+		}
+	}
+}
+
+func TestAikit2LLBDiscoversNvidiaDeviceMajors(t *testing.T) {
+	ops := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, fineTuneTestConfig()))
+	trainingOp := findFineTuneExec(t, ops, "python -m target_unsloth")
+	trainingCommand := strings.Join(trainingOp.op.GetExec().Meta.Args, "\x00")
+
+	for _, fragment := range []string{"/proc/devices", "nvidia-frontend", "nvidia-uvm", "$NVIDIA_UVM_MAJOR", "$NVIDIA_MAJOR"} {
+		if !strings.Contains(trainingCommand, fragment) {
+			t.Errorf("training command does not contain dynamic NVIDIA device fragment %q: %q", fragment, trainingCommand)
+		}
+	}
+	if strings.Contains(trainingCommand, "nvidia-uvm c 235") {
+		t.Fatalf("training command still contains the stale hard-coded NVIDIA UVM major: %q", trainingCommand)
+	}
+}
+
+func TestNvidiaPrimaryMajorAWK(t *testing.T) {
+	tests := []struct {
+		name        string
+		devices     string
+		wantMajor   string
+		wantFailure bool
+	}{
+		{
+			name:      "frontend",
+			devices:   "Character devices:\n195 nvidia-frontend\n511 nvidia-uvm\n",
+			wantMajor: "195",
+		},
+		{
+			name:      "legacy fallback",
+			devices:   "Character devices:\n195 nvidia\n511 nvidia-uvm\n",
+			wantMajor: "195",
+		},
+		{
+			name:      "frontend preferred over legacy",
+			devices:   "Character devices:\n195 nvidia\n509 nvidia-frontend\n511 nvidia-uvm\n",
+			wantMajor: "509",
+		},
+		{
+			name:        "missing primary device",
+			devices:     "Character devices:\n511 nvidia-uvm\n",
+			wantFailure: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command("awk", nvidiaPrimaryMajorAWK)
+			cmd.Stdin = strings.NewReader(tt.devices)
+			output, err := cmd.CombinedOutput()
+			if tt.wantFailure {
+				if err == nil {
+					t.Fatalf("device discovery unexpectedly succeeded: %q", output)
+				}
+				if !strings.Contains(string(output), "expected nvidia-frontend or nvidia") {
+					t.Fatalf("device discovery failure = %q, want actionable error", output)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("device discovery failed: %v: %s", err, output)
+			}
+			if got := strings.TrimSpace(string(output)); got != tt.wantMajor {
+				t.Fatalf("device major = %q, want %q", got, tt.wantMajor)
+			}
+		})
 	}
 }
 
@@ -165,17 +285,39 @@ func findFineTuneExec(t *testing.T, ops []fineTuneDefinitionOp, commandFragment 
 func findFineTuneConfigFile(t *testing.T, ops []fineTuneDefinitionOp) (fineTuneDefinitionOp, *pb.FileActionMkFile) {
 	t.Helper()
 
+	return findFineTuneFile(t, ops, "/config.yaml")
+}
+
+func findFineTuneFile(t *testing.T, ops []fineTuneDefinitionOp, path string) (fineTuneDefinitionOp, *pb.FileActionMkFile) {
+	t.Helper()
+
 	for _, graphOp := range ops {
 		if fileOp := graphOp.op.GetFile(); fileOp != nil {
 			for _, action := range fileOp.Actions {
-				if mkfile := action.GetMkfile(); mkfile != nil && mkfile.Path == "/config.yaml" {
+				if mkfile := action.GetMkfile(); mkfile != nil && mkfile.Path == path {
 					return graphOp, mkfile
 				}
 			}
 		}
 	}
-	t.Fatal("config mkfile action not found")
+	t.Fatalf("mkfile action for %q not found", path)
 	return fineTuneDefinitionOp{}, nil
+}
+
+func findFineTuneGGUFCopy(t *testing.T, ops []fineTuneDefinitionOp) *pb.FileActionCopy {
+	t.Helper()
+
+	for _, graphOp := range ops {
+		if fileOp := graphOp.op.GetFile(); fileOp != nil {
+			for _, action := range fileOp.Actions {
+				if copyAction := action.GetCopy(); copyAction != nil && strings.HasSuffix(copyAction.Src, "*.gguf") {
+					return copyAction
+				}
+			}
+		}
+	}
+	t.Fatal("GGUF copy action not found")
+	return nil
 }
 
 func cloneFineTuneDefinition(definition [][]byte) [][]byte {
