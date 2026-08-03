@@ -20,19 +20,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Budgets are amd64 registry-compressed image layers; attestations are excluded.
         include:
           - runner: llama-cpp-cpu
             file: runners/llama-cpp-cpu.yaml
             platforms: linux/amd64,linux/arm64
+            max-compressed-mib: 175
           - runner: llama-cpp-cuda
             file: runners/llama-cpp-cuda.yaml
             platforms: linux/amd64
+            max-compressed-mib: 2000
           - runner: diffusers-cuda
             file: runners/diffusers-cuda.yaml
             platforms: linux/amd64
+            max-compressed-mib: 4350
           - runner: vllm-cuda
             file: runners/vllm-cuda.yaml
             platforms: linux/amd64
+            max-compressed-mib: 5600
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -107,6 +112,17 @@ jobs:
           provenance: true
           platforms: ${{ matrix.platforms }}
 
+      - name: Enforce compressed image size budget
+        env:
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+          IMAGE_TAGS: ${{ steps.docker_meta.outputs.tags }}
+        run: |
+          image=$(printf '%s\n' "$IMAGE_TAGS" | head -n 1)
+          scripts/ci/check-image-size.sh \
+            "${image}@${DIGEST}" \
+            linux/amd64 \
+            "${{ matrix.max-compressed-mib }}"
+
       - name: Sign the images with GitHub OIDC Token
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
@@ -118,4 +134,4 @@ jobs:
         run: |
           cosign verify "ghcr.io/kaito-project/aikit/runners/${{ matrix.runner }}@${DIGEST}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity https://github.com/kaito-project/aikit/.github/workflows/release-runners.yaml@$GITHUB_REF
+            --certificate-identity "https://github.com/kaito-project/aikit/.github/workflows/release-runners.yaml@${GITHUB_REF}"

@@ -51,6 +51,23 @@ jobs:
       - name: list images
         run: docker images
 
+      - name: verify minimal runtime contents
+        env:
+          BACKEND: ${{ matrix.backend }}
+        run: |
+          docker run --rm --entrypoint /bin/bash runner-test:test -c '
+            set -euo pipefail
+            if compgen -G "/var/lib/apt/lists/*" > /dev/null; then
+              echo "APT indexes must not be retained in the final image" >&2
+              exit 1
+            fi
+            test ! -d /root/.cache/pip
+            test ! -e /usr/local/cuda
+          '
+          if [[ "$BACKEND" == diffusers-cuda || "$BACKEND" == vllm-cuda ]]; then
+            docker run --rm --entrypoint /bin/bash runner-test:test -c 'test ! -x /usr/bin/python3'
+          fi
+
       - name: run runner (llama-cpp-cuda)
         if: matrix.backend == 'llama-cpp-cuda'
         run: docker run --name runner-test -d --rm -p 8080:8080 --gpus all runner-test:test https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q2_K.gguf

@@ -9,13 +9,20 @@ import (
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
+const (
+	localAIEntrypointCommand = "local-ai"
+	runnerEntrypointPath     = "/usr/local/bin/aikit-runner"
+	runnerHFHomeEnv          = "HF_HOME=/models/.cache/huggingface"
+)
+
 func NewImageConfig(c *config.InferenceConfig, platform *specs.Platform) *specs.Image {
 	img := emptyImage(c, platform)
 
 	if isRunnerMode(c) {
 		// Runner mode: use the aikit-runner entrypoint script
-		img.Config.Entrypoint = []string{"/usr/local/bin/aikit-runner"}
+		img.Config.Entrypoint = []string{runnerEntrypointPath}
 		img.Config.Cmd = []string{}
+		img.Config.Env = append(img.Config.Env, runnerHFHomeEnv)
 
 		// Add runner labels
 		backendLabel := strings.Join(c.Backends, ",")
@@ -36,7 +43,7 @@ func NewImageConfig(c *config.InferenceConfig, platform *specs.Platform) *specs.
 			cmd = append(cmd, "--config-file=/config.yaml")
 		}
 
-		img.Config.Entrypoint = []string{"local-ai"}
+		img.Config.Entrypoint = []string{localAIEntrypointCommand}
 		img.Config.Cmd = cmd
 	}
 
@@ -59,13 +66,10 @@ func emptyImage(c *config.InferenceConfig, platform *specs.Platform) *specs.Imag
 	}
 
 	cudaEnv := []string{
-		"PATH=" + system.DefaultPathEnv(utils.PlatformLinux) + ":/usr/local/cuda/bin",
 		"NVIDIA_REQUIRE_CUDA=cuda>=12.0",
 		"NVIDIA_DRIVER_CAPABILITIES=compute,utility",
 		"NVIDIA_VISIBLE_DEVICES=all",
-		"LD_LIBRARY_PATH=/usr/local/cuda/lib64",
 		"BUILD_TYPE=cublas",
-		"CUDA_HOME=/usr/local/cuda",
 	}
 	if c.Runtime == utils.RuntimeNVIDIA {
 		img.Config.Env = append(img.Config.Env, cudaEnv...)

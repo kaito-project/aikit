@@ -173,7 +173,6 @@ func TestModelChangesDoNotInvalidateRuntimeBranches(t *testing.T) {
 
 	for _, customNamePrefix := range []string{
 		"Copying local-ai from OCI artifact to /usr/bin",
-		"Copying cuda-keyring_1.1-1_all.deb",
 		"Installing backend diffusers from ",
 		"Creating metadata.json for backend cuda12-diffusers",
 	} {
@@ -184,10 +183,16 @@ func TestModelChangesDoNotInvalidateRuntimeBranches(t *testing.T) {
 		}
 	}
 
-	baseDependencies := findInferenceExecOp(t, baseDefinition, "grpcio-tools==1.71.0")
-	changedDependencies := findInferenceExecOp(t, changedDefinition, "grpcio-tools==1.71.0")
-	if baseDependencies.digest != changedDependencies.digest {
-		t.Fatalf("backend dependency digest changed after a model/config-only change: got %s, want %s", changedDependencies.digest, baseDependencies.digest)
+	for _, definition := range []*llb.Definition{baseDefinition, changedDefinition} {
+		assertInferenceExecCommandsExclude(t, definition,
+			"grpcio-tools",
+			"pip install uv",
+			"python3-venv",
+			"cuda-keyring",
+			"libcublas",
+			"cuda-cudart",
+			"pciutils",
+		)
 	}
 
 	configName := "Creating config for platform linux/amd64"
@@ -206,12 +211,71 @@ func TestRunnerDependenciesAndEntrypointRemainSequential(t *testing.T) {
 	}
 	definition := marshalInferenceConfig(t, cfg, platform)
 
-	dependencies := findInferenceExecOp(t, definition, "huggingface-hub[cli]")
+	dependencies := findInferenceExecOp(t, definition, "huggingface-hub=="+runnerHuggingFaceHubVersion)
+	dependencyCommand := strings.Join(dependencies.op.GetExec().Meta.Args, "\x00")
+	for _, fragment := range []string{
+		"--no-cache-dir",
+		"--no-compile",
+		"rm -rf /var/lib/apt/lists/*",
+		"/root/.cache/pip",
+	} {
+		if !strings.Contains(dependencyCommand, fragment) {
+			t.Fatalf("runner dependency command = %q, want %q", dependencyCommand, fragment)
+		}
+	}
+
 	entrypoint := findInferenceOpByCustomNamePrefix(t, definition, "Creating runner entrypoint script")
 	modelsDirectory := findInferenceOpByCustomNamePrefix(t, definition, "Creating /models directory with correct ownership")
 
 	assertInferenceOpInput(t, entrypoint, dependencies.digest)
 	assertInferenceOpInput(t, modelsDirectory, entrypoint.digest)
+}
+
+func TestSelfContainedPythonBackendsAvoidDuplicateRuntimeLayers(t *testing.T) {
+	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	tests := []struct {
+		name              string
+		backend           string
+		wantCompilerLayer bool
+	}{
+		{name: "Diffusers", backend: utils.BackendDiffusers},
+		{name: "vLLM", backend: utils.BackendVLLM, wantCompilerLayer: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			definition := marshalInferenceConfig(t, &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
+				Backends: []string{tt.backend},
+			}, platform)
+
+			assertInferenceExecCommandsExclude(t, definition,
+				"huggingface-hub",
+				"python3-pip",
+				"python3-venv",
+				"pip install uv",
+				"grpcio-tools",
+				"cuda-keyring",
+				"libcublas",
+				"cuda-cudart",
+				"pciutils",
+			)
+
+			compilerLayers := 0
+			for _, graphOp := range decodeInferenceDefinition(t, definition) {
+				if exec := graphOp.op.GetExec(); exec != nil && strings.Contains(strings.Join(exec.Meta.Args, "\x00"), "gcc libc6-dev") {
+					compilerLayers++
+				}
+			}
+			wantCompilerLayers := 0
+			if tt.wantCompilerLayer {
+				wantCompilerLayers = 1
+			}
+			if compilerLayers != wantCompilerLayers {
+				t.Fatalf("compiler layer count = %d, want %d", compilerLayers, wantCompilerLayers)
+			}
+		})
+	}
 }
 
 func TestLocalModelFollowPaths(t *testing.T) {
@@ -518,6 +582,23 @@ func findInferenceLocalContextOps(t *testing.T, definition *llb.Definition) []in
 		}
 	}
 	return matches
+}
+
+func assertInferenceExecCommandsExclude(t *testing.T, definition *llb.Definition, fragments ...string) {
+	t.Helper()
+
+	for _, graphOp := range decodeInferenceDefinition(t, definition) {
+		exec := graphOp.op.GetExec()
+		if exec == nil {
+			continue
+		}
+		command := strings.Join(exec.Meta.Args, "\x00")
+		for _, fragment := range fragments {
+			if strings.Contains(command, fragment) {
+				t.Fatalf("exec command %q unexpectedly contains %q", command, fragment)
+			}
+		}
+	}
 }
 
 func assertInferenceOpInput(t *testing.T, graphOp inferenceDefinitionOp, want digest.Digest) {

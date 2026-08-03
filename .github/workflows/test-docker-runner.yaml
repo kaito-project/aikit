@@ -82,6 +82,18 @@ jobs:
       - name: list images
         run: docker images
 
+      - name: verify minimal runtime contents
+        run: |
+          docker run --rm --entrypoint /bin/bash runner-test:test -c '
+            set -euo pipefail
+            if compgen -G "/var/lib/apt/lists/*" > /dev/null; then
+              echo "APT indexes must not be retained in the final image" >&2
+              exit 1
+            fi
+            test ! -d /root/.cache/pip
+            test ! -e /usr/local/cuda
+          '
+
       - name: run runner with model
         run: docker run --name runner-test -d -p 8080:8080 runner-test:test https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q2_K.gguf
 
