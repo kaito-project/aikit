@@ -238,7 +238,6 @@ class TrainingPhaseTest(unittest.TestCase):
     def test_trains_and_saves_adapter_and_tokenizer(self):
         train_config = example_train_config()
         base_model = mock.Mock()
-        base_model.config._commit_hash = "a" * 40
         adapter_model = mock.Mock()
         tokenizer = mock.Mock(eos_token="<eos>")
         fast_language_model = mock.Mock()
@@ -248,6 +247,8 @@ class TrainingPhaseTest(unittest.TestCase):
         mapped_dataset = mock.Mock()
         dataset.map.return_value = mapped_dataset
         load_dataset = mock.Mock(return_value=dataset)
+        model_info = mock.Mock(return_value=mock.Mock(sha="a" * 40))
+        resolve_model_name = mock.Mock(return_value="example/resolved-model")
         trainer = mock.Mock()
         sft_trainer = mock.Mock(return_value=trainer)
         sft_config = mock.Mock(return_value="sft-config")
@@ -255,6 +256,8 @@ class TrainingPhaseTest(unittest.TestCase):
             fast_language_model=fast_language_model,
             is_bfloat16_supported=mock.Mock(return_value=True),
             load_dataset=load_dataset,
+            model_info=model_info,
+            resolve_model_name=resolve_model_name,
             sft_config=sft_config,
             sft_trainer=sft_trainer,
         )
@@ -293,8 +296,14 @@ class TrainingPhaseTest(unittest.TestCase):
             random_state=42,
             use_rslora=False,
             loftq_config=None,
+            base_model_name_or_path="example/resolved-model",
             revision="a" * 40,
         )
+        resolve_model_name.assert_called_once_with(
+            "example/model",
+            load_in_4bit=False,
+        )
+        model_info.assert_called_once_with(repo_id="example/resolved-model")
         load_dataset.assert_called_once_with(
             "organization/dataset",
             split="train",
@@ -316,10 +325,9 @@ class TrainingPhaseTest(unittest.TestCase):
         self.assertFalse(sft_config.call_args.kwargs["fp16"])
         self.assertTrue(sft_config.call_args.kwargs["bf16"])
 
-    def test_rejects_training_when_base_revision_is_not_immutable(self):
+    def test_rejects_training_when_export_base_revision_is_not_immutable(self):
         train_config = example_train_config()
         base_model = mock.Mock()
-        base_model.config._commit_hash = None
         fast_language_model = mock.Mock()
         fast_language_model.from_pretrained.return_value = (
             base_model,
@@ -329,13 +337,15 @@ class TrainingPhaseTest(unittest.TestCase):
             fast_language_model=fast_language_model,
             is_bfloat16_supported=mock.Mock(),
             load_dataset=mock.Mock(),
+            model_info=mock.Mock(return_value=mock.Mock(sha=None)),
+            resolve_model_name=mock.Mock(return_value="example/resolved-model"),
             sft_config=mock.Mock(),
             sft_trainer=mock.Mock(),
         )
 
         with self.assertRaisesRegex(
             RuntimeError,
-            "resolved base model revision is not an immutable",
+            "resolved export base model revision is not an immutable",
         ):
             target_unsloth.train_model(
                 train_config,

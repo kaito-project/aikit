@@ -46,6 +46,8 @@ class TrainDependencies(NamedTuple):
     fast_language_model: Any
     is_bfloat16_supported: Callable[[], bool]
     load_dataset: Callable[..., Any]
+    model_info: Callable[..., Any]
+    resolve_model_name: Callable[..., str]
     sft_config: Callable[..., Any]
     sft_trainer: Callable[..., Any]
 
@@ -103,11 +105,26 @@ def require_hf_commit_hash(revision: Any, *, description: str) -> str:
     return revision
 
 
-def resolved_base_model_revision(model: Any) -> str:
-    config = getattr(model, "config", None)
-    return require_hf_commit_hash(
-        getattr(config, "_commit_hash", None),
-        description="resolved base model revision",
+def resolve_export_base_model(
+    model: Any,
+    configured_model_name: str,
+    *,
+    model_info: Callable[..., Any],
+    resolve_model_name: Callable[..., str],
+) -> tuple[str, str]:
+    base_model_name = resolve_model_name(
+        configured_model_name,
+        load_in_4bit=False,
+    )
+    if base_model_name == configured_model_name:
+        config = getattr(model, "config", None)
+        revision = getattr(config, "_commit_hash", None)
+    else:
+        revision = getattr(model_info(repo_id=base_model_name), "sha", None)
+
+    return base_model_name, require_hf_commit_hash(
+        revision,
+        description="resolved export base model revision",
     )
 
 
@@ -207,13 +224,17 @@ def cleanup_gguf_export(export_directory: Path | str) -> None:
 def load_train_dependencies() -> TrainDependencies:
     # Unsloth must be imported before Transformers-based training dependencies.
     from unsloth import FastLanguageModel, is_bfloat16_supported
+    from unsloth.models.loader_utils import get_model_name
     from datasets import load_dataset
+    from huggingface_hub import model_info
     from trl import SFTConfig, SFTTrainer
 
     return TrainDependencies(
         fast_language_model=FastLanguageModel,
         is_bfloat16_supported=is_bfloat16_supported,
         load_dataset=load_dataset,
+        model_info=model_info,
+        resolve_model_name=get_model_name,
         sft_config=SFTConfig,
         sft_trainer=SFTTrainer,
     )
@@ -247,7 +268,12 @@ def train_model(
         dtype=None,
         load_in_4bit=cfg["loadIn4bit"],
     )
-    base_model_revision = resolved_base_model_revision(model)
+    base_model_name, base_model_revision = resolve_export_base_model(
+        model,
+        train_config["baseModel"],
+        model_info=dependencies.model_info,
+        resolve_model_name=dependencies.resolve_model_name,
+    )
 
     model = dependencies.fast_language_model.get_peft_model(
         model,
@@ -268,6 +294,7 @@ def train_model(
         random_state=cfg["seed"],
         use_rslora=False,
         loftq_config=None,
+        base_model_name_or_path=base_model_name,
         revision=base_model_revision,
     )
 
