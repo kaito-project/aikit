@@ -443,6 +443,10 @@ func TestIsImmutableNVIDIACDIDevice(t *testing.T) {
 		{device: "nvidia.com/gpu=all"},
 		{device: "nvidia.com/gpu=gpu0"},
 		{device: "nvidia.com/gpu=mig1:0"},
+		{device: "nvidia.com/gpu=GPU-foo"},
+		{device: "nvidia.com/gpu=GPU-deadbeef"},
+		{device: "nvidia.com/gpu=MIG-custom-alias"},
+		{device: testImmutableCDIDevice + "-extra"},
 		{device: "vendor.example/gpu=GPU-4f684ff2-f5d1-8b33-decf-42fac828778c"},
 	}
 

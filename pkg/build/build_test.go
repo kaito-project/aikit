@@ -708,9 +708,13 @@ func Test_parseFineTuneBuildOptions(t *testing.T) {
 		{name: "shell input", opts: map[string]string{"build-arg:nvidiaDriverVersion": "$(id)"}, wantErr: true},
 		{name: "CDI index", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu=0"}, wantDevice: "nvidia.com/gpu=0"},
 		{name: "CDI UUID", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu=GPU-4f684ff2-f5d1-8b33-decf-42fac828778c"}, wantDevice: "nvidia.com/gpu=GPU-4f684ff2-f5d1-8b33-decf-42fac828778c"},
+		{name: "CDI MIG UUID", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu=MIG-5f9d9b6a-98d1-4f6a-9b49-4a2d4a651369"}, wantDevice: "nvidia.com/gpu=MIG-5f9d9b6a-98d1-4f6a-9b49-4a2d4a651369"},
 		{name: "CDI on demand", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu"}, wantDevice: "nvidia.com/gpu"},
 		{name: "CDI type index GPU", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu=gpu0"}, wantDevice: "nvidia.com/gpu=gpu0"},
 		{name: "CDI type index MIG", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu=mig1:0"}, wantDevice: "nvidia.com/gpu=mig1:0"},
+		{name: "short GPU alias", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu=GPU-deadbeef"}, wantErr: true},
+		{name: "custom MIG alias", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu=MIG-custom-alias"}, wantErr: true},
+		{name: "GPU UUID suffix", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu=GPU-4f684ff2-f5d1-8b33-decf-42fac828778c-extra"}, wantErr: true},
 		{name: "non-NVIDIA CDI device", opts: map[string]string{"build-arg:cdiDevice": "vendor.example/gpu=0"}, wantErr: true},
 		{name: "CDI shell input", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu=$(id)"}, wantErr: true},
 	}

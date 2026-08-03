@@ -5,7 +5,7 @@ title: Fine Tuning
 Fine tuning process allows the adaptation of pre-trained models to domain-specific data. At this time, AIKit fine tuning process is only supported with NVIDIA GPUs; AMD ROCm is not supported yet.
 
 :::note
-Fine tuning requires Docker Engine 27 or later, Buildx 0.22 or later, BuildKit 0.20 or later, and NVIDIA Container Toolkit configured with CDI support. AIKit requests the first GPU as `nvidia.com/gpu=0` for its training and export build steps instead of creating NVIDIA device nodes or installing a matching driver inside the build container.
+Fine tuning requires Docker Engine 27 or later, Buildx 0.22 or later, BuildKit 0.20 or later, and NVIDIA Container Toolkit configured with CDI support. AIKit requests the first GPU as `nvidia.com/gpu=0` by default for its training and export build steps instead of creating NVIDIA device nodes or installing a matching driver inside the build container. Supply an immutable `GPU-...` or `MIG-...` selector through `cdiDevice` when cross-session GPU result-cache reuse is required.
 
 On Windows Subsystem for Linux, use Docker Desktop with WSL2 GPU paravirtualization and Buildx 0.27 or later. Earlier Buildx versions do not expose the WSL driver libraries to a containerized GPU builder. See Docker's [CDI build documentation](https://docs.docker.com/build/building/cdi/).
 
@@ -33,7 +33,7 @@ docker buildx create --name aikit-builder --use \
 docker buildx inspect aikit-builder --bootstrap
 ```
 
-The GPU-capable BuildKit image is experimental. The inspection output must list `nvidia.com/gpu=0` or the on-demand NVIDIA device kind `nvidia.com/gpu` under `Devices`. If it does not, ensure the NVIDIA CDI specification and hook are available to the BuildKit daemon before continuing. The standard CDI directories are `/etc/cdi`, `/var/run/cdi`, and `/etc/buildkit/cdi`.
+The GPU-capable BuildKit image is experimental. The inspection output must list a usable NVIDIA selector such as `nvidia.com/gpu=0`, an immutable UUID selector, or the on-demand NVIDIA device kind `nvidia.com/gpu` under `Devices`. If it does not, ensure the NVIDIA CDI specification and hook are available to the BuildKit daemon before continuing. The standard CDI directories are `/etc/cdi`, `/var/run/cdi`, and `/etc/buildkit/cdi`.
 
 :::tip
 Additionally, you can build using other BuildKit drivers, such as [Kubernetes driver](https://docs.docker.com/build/drivers/kubernetes/) by setting `--driver=kubernetes` if you are interested in building using a Kubernetes cluster. Please see [BuildKit Drivers](https://docs.docker.com/build/drivers/) for more information.
@@ -75,7 +75,7 @@ https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth.yaml
 
 ## Build
 
-Build using following command and make sure to replace `--target` with the fine-tuning implementation of your choice (`unsloth` is the only option supported at this time), `--file` with the path to your configuration YAML and `--output` with the output directory of the finetuned model.
+Build using following command and make sure to replace `--target` with the fine-tuning implementation of your choice (`unsloth` is the only option supported at this time), `--file` with the path to your configuration YAML and `--output` with the output directory of the finetuned model. This example assumes the builder and Docker runtime use the same local NVIDIA device namespace. For a remote or on-demand builder, select a device shown by `docker buildx inspect` and omit `nvidiaDriverVersion` unless its driver version is known.
 
 ```bash
 NVIDIA_DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1)
@@ -119,10 +119,10 @@ https://www.youtube.com/watch?v=FZuVb-9i-94
 
 This is a known issue with BuildKit and might be related to disk speed. For more information, please see https://github.com/moby/buildkit/issues/4327
 
-### Build fails because `nvidia.com/gpu=0` is not registered
+### Build fails because the requested NVIDIA CDI device is not registered
 
-Run `nvidia-ctk cdi list` on the host and `docker buildx inspect aikit-builder --bootstrap`. The device must be present in both outputs. If it is missing from the builder, make the NVIDIA CDI specification and hook available to the BuildKit daemon and recreate or restart the builder.
+Run `nvidia-ctk cdi list` on the host and `docker buildx inspect aikit-builder --bootstrap`. The requested selector must be available in the environment where it is used. A local builder can use the same UUID listed by the host, while an on-demand builder may initially expose only `nvidia.com/gpu`. If no usable selector appears in the builder, make the NVIDIA CDI specification and hook available to the BuildKit daemon and recreate or restart the builder.
 
 ### Build fails with `requested by the build but not allowed`
 
-Enable the `device` entitlement on the BuildKit daemon with `--allow-insecure-entitlement device`, and pass `--allow 'device=nvidia.com/gpu=0'` to the build command.
+Enable the `device` entitlement on the BuildKit daemon with `--allow-insecure-entitlement device`, and pass `--allow "device=${NVIDIA_CDI_DEVICE:-nvidia.com/gpu=0}"` to the build command.

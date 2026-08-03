@@ -36,11 +36,12 @@ const (
 	keyOutput         = "output"
 	keyTargetPlatform = "platform"
 	keyCacheImports   = "cache-imports"
+	nvidiaUUIDPattern = `[A-Fa-f0-9]{8}-(?:[A-Fa-f0-9]{4}-){3}[A-Fa-f0-9]{12}`
 )
 
 var (
 	nvidiaDriverVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+(?:\.[0-9]+)?$`)
-	nvidiaCDIDevicePattern     = regexp.MustCompile(`^nvidia\.com/gpu(?:=(?:all|[0-9]+(?::[0-9]+)?|gpu[0-9]+|mig[0-9]+:[0-9]+|GPU-[A-Fa-f0-9-]+|MIG-[A-Za-z0-9-]+))?$`)
+	nvidiaCDIDevicePattern     = regexp.MustCompile(`^nvidia\.com/gpu(?:=(?:all|[0-9]+(?::[0-9]+)?|gpu[0-9]+|mig[0-9]+:[0-9]+|(?:GPU|MIG)-` + nvidiaUUIDPattern + `))?$`)
 )
 
 func Build(ctx context.Context, c client.Client) (*client.Result, error) {

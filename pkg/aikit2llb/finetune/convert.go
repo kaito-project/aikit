@@ -2,7 +2,7 @@ package finetune
 
 import (
 	"fmt"
-	"strings"
+	"regexp"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	finetunescript "github.com/kaito-project/aikit/pkg/finetune"
@@ -32,6 +32,8 @@ const (
 	uvCacheID          = "aikit-unsloth-uv-" + uvVersion + "-py310-cu126-torch-" + torchVersion + "-unsloth-" + unslothVersion
 	datasetsCachePath  = "/tmp/aikit-datasets-cache"
 )
+
+var immutableNVIDIACDIDevicePattern = regexp.MustCompile(`^nvidia\.com/gpu=(?:GPU|MIG)-[A-Fa-f0-9]{8}-(?:[A-Fa-f0-9]{4}-){3}[A-Fa-f0-9]{12}$`)
 
 type unslothTrainingConfig struct {
 	BaseModel string                    `yaml:"baseModel"`
@@ -147,11 +149,7 @@ func gpuCacheKey(opts Options) string {
 }
 
 func isImmutableNVIDIACDIDevice(cdiDevice string) bool {
-	selector, found := strings.CutPrefix(cdiDevice, "nvidia.com/gpu=")
-	if !found {
-		return false
-	}
-	return strings.HasPrefix(selector, "GPU-") || strings.HasPrefix(selector, "MIG-")
+	return immutableNVIDIACDIDevicePattern.MatchString(cdiDevice)
 }
 
 func runUnslothPhase(state, scriptState, configState llb.State, phase, cdiDevice string, includeLlamaCache bool) llb.State {
