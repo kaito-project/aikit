@@ -2,92 +2,355 @@ name: docker-test-finetune
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Fine-tune coverage to run.
+        required: true
+        type: choice
+        default: smoke
+        options:
+          - smoke
+          - full
 
 permissions: read-all
 
 jobs:
   test:
+    name: fine-tune (${{ inputs.mode }})
     runs-on: [self-hosted, gpu]
     timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        targets:
-          - unsloth
+    env:
+      BUILDX_BUILDER: default
     steps:
-      - name: cleanup workspace
-        run: |
-          rm -rf ./* || true
-          rm -rf ./.??* || true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
 
-      - run: nvidia-smi
-
-        # use default docker driver builder with containerd image store for local aikit image
-        # must have insecure security entitlement for finetuning
-        # these must be setup before running this test
-      - run: docker buildx use default
-
-      - name: build aikit
+      - name: Prepare unique run resources
+        shell: bash
         run: |
-          docker --debug build . -t aikit:test \
-            --load --provenance=false --progress plain
+          set -euo pipefail
 
-      - name: build finetuned model
+          run_mode="${{ inputs.mode }}"
+          case "$run_mode" in
+            smoke|full) ;;
+            *)
+              echo "unsupported fine-tune mode: $run_mode" >&2
+              exit 1
+              ;;
+          esac
+
+          run_key="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${run_mode}"
+          {
+            echo "RUN_MODE=$run_mode"
+            echo "RUN_KEY=$run_key"
+            echo "AIKIT_IMAGE=aikit:finetune-$run_key"
+            echo "CUSTOM_IMAGE=custommodel:finetune-$run_key"
+            echo "CONTAINER_NAME=aikit-finetune-$run_key"
+            echo "OUTPUT_DIR=${RUNNER_TEMP}/aikit-finetune-$run_key-output"
+            echo "FINETUNE_CONFIG=${RUNNER_TEMP}/aikit-finetune-$run_key.yaml"
+            echo "CUSTOM_CONFIG=${RUNNER_TEMP}/aikit-finetune-$run_key-custom.yaml"
+            echo "CONTAINER_LOG_FILE=${RUNNER_TEMP}/aikit-finetune-$run_key-container.log"
+            echo "INFERENCE_LOG_FILE=${RUNNER_TEMP}/aikit-finetune-$run_key-inference.log"
+            echo "DATASET_LOG_FILE=${RUNNER_TEMP}/aikit-finetune-$run_key-dataset.log"
+            echo "DATASET_PID_FILE=${RUNNER_TEMP}/aikit-finetune-$run_key-dataset.pid"
+            echo "DATASET_PORT_FILE=${RUNNER_TEMP}/aikit-finetune-$run_key-dataset.port"
+            echo "SMOKE_DATASET_FILE=${GITHUB_WORKSPACE}/test/fixtures/alpaca-smoke.jsonl"
+          } >> "$GITHUB_ENV"
+
+      - name: Verify GPU and builder
+        shell: bash
         run: |
-          docker --debug build --allow security.insecure \
-            --file test/aikitfile-${{ matrix.targets }}.yaml --output _output \
-            --target ${{ matrix.targets }} --progress plain .
+          set -euo pipefail
+          nvidia-smi
+          driver_version=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1)
+          test -n "$driver_version"
+          echo "NVIDIA_DRIVER_VERSION=$driver_version" >> "$GITHUB_ENV"
+          docker buildx inspect "$BUILDX_BUILDER" --bootstrap
 
-      - name: check if finetuned model exists
+      - name: Start local smoke dataset server
+        if: inputs.mode == 'smoke'
+        shell: bash
         run: |
-          ls -al _output
-          test -f _output/model-q4_k_m.gguf
+          set -euo pipefail
 
-      - name: build custom model
+          python3 - "$SMOKE_DATASET_FILE" "$DATASET_PORT_FILE" >"$DATASET_LOG_FILE" 2>&1 <<'PY' &
+          import sys
+          from functools import partial
+          from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+          from pathlib import Path
+
+          dataset_file = Path(sys.argv[1]).resolve()
+          port_file = Path(sys.argv[2]).resolve()
+          handler = partial(SimpleHTTPRequestHandler, directory=str(dataset_file.parent))
+          server = ThreadingHTTPServer(("0.0.0.0", 0), handler)
+          port_file.write_text(str(server.server_port), encoding="utf-8")
+          server.serve_forever()
+          PY
+          dataset_server_pid=$!
+          echo "$dataset_server_pid" > "$DATASET_PID_FILE"
+
+          for _ in $(seq 1 100); do
+            if [[ -s "$DATASET_PORT_FILE" ]]; then
+              break
+            fi
+            if ! kill -0 "$dataset_server_pid" 2>/dev/null; then
+              cat "$DATASET_LOG_FILE" >&2
+              exit 1
+            fi
+            sleep 0.1
+          done
+
+          test -s "$DATASET_PORT_FILE"
+          dataset_port=$(cat "$DATASET_PORT_FILE")
+          host_ip=$(ip -4 route get 1.1.1.1 | awk '{for (i = 1; i <= NF; i++) if ($i == "src") {print $(i + 1); exit}}')
+          test -n "$host_ip"
+          dataset_url="http://${host_ip}:${dataset_port}/$(basename "$SMOKE_DATASET_FILE")"
+          curl --fail --silent --show-error --retry 5 "$dataset_url" --output /dev/null
+          echo "SMOKE_DATASET_URL=$dataset_url" >> "$GITHUB_ENV"
+
+      - name: Generate mode-specific configs
+        shell: bash
         run: |
-          docker --debug build _output --tag custommodel:test \
-            --file test/aikitfile-${{ matrix.targets }}-custom.yaml \
-            --load --provenance=false --progress plain
+          set -euo pipefail
 
-      - name: list images
-        run: docker images
+          case "$RUN_MODE" in
+            smoke)
+              source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-smoke.yaml"
+              dataset_url="${SMOKE_DATASET_URL:?smoke dataset URL is required}"
+              ;;
+            full)
+              source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth.yaml"
+              dataset_url=""
+              ;;
+          esac
 
-      - name: run test model
-        run: docker run --name custommodel -d --rm -p 8080:8080 --gpus all custommodel:test
+          python3 - \
+            "$source_config" \
+            "$FINETUNE_CONFIG" \
+            "$GITHUB_WORKSPACE/test/aikitfile-unsloth-custom.yaml" \
+            "$CUSTOM_CONFIG" \
+            "$AIKIT_IMAGE" \
+            "$dataset_url" \
+            "$GITHUB_ENV" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
 
-      - name: run test
+          (
+              source_path,
+              output_path,
+              custom_source_path,
+              custom_output_path,
+              image,
+              dataset_url,
+              environment_path,
+          ) = sys.argv[1:]
+          dataset_placeholder = "__AIKIT_SMOKE_DATASET_URL__"
+          gguf_placeholder = "__AIKIT_GGUF_OUTPUT__"
+          safe_output_component = re.compile(r"[A-Za-z0-9._-]+")
+
+          def render_syntax(source):
+              text = Path(source).read_text(encoding="utf-8")
+              lines = text.splitlines(keepends=True)
+              if not lines or not lines[0].startswith("#syntax="):
+                  raise RuntimeError(f"{source} must begin with a #syntax directive")
+              lines[0] = f"#syntax={image}\n"
+              return "".join(lines)
+
+          def output_scalar(config_text, key):
+              output_headers = [
+                  index
+                  for index, line in enumerate(config_text.splitlines())
+                  if re.fullmatch(r"output:\s*(?:#.*)?", line)
+              ]
+              if len(output_headers) != 1:
+                  raise RuntimeError("rendered fine-tune config must contain exactly one output mapping")
+
+              values = []
+              for line in config_text.splitlines()[output_headers[0] + 1:]:
+                  stripped = line.strip()
+                  if not stripped or stripped.startswith("#"):
+                      continue
+                  if line == line.lstrip():
+                      break
+                  match = re.fullmatch(rf"\s+{re.escape(key)}:\s*([^#]+?)\s*(?:#.*)?", line)
+                  if match:
+                      value = match.group(1).strip()
+                      if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                          value = value[1:-1]
+                      values.append(value)
+
+              if len(values) != 1 or not safe_output_component.fullmatch(values[0]):
+                  raise RuntimeError(f"rendered fine-tune config must contain one safe output.{key} value")
+              return values[0]
+
+          finetune_text = render_syntax(source_path)
+          if dataset_url:
+              if finetune_text.count(dataset_placeholder) != 1:
+                  raise RuntimeError(f"{source_path} must contain exactly one smoke dataset placeholder")
+              finetune_text = finetune_text.replace(dataset_placeholder, dataset_url)
+          elif dataset_placeholder in finetune_text:
+              raise RuntimeError(f"{source_path} contains an unresolved smoke dataset placeholder")
+          Path(output_path).write_text(finetune_text, encoding="utf-8")
+
+          expected_gguf_filename = (
+              f"{output_scalar(finetune_text, 'name')}-"
+              f"{output_scalar(finetune_text, 'quantize')}.gguf"
+          )
+
+          custom_text = render_syntax(custom_source_path)
+          if custom_text.count(gguf_placeholder) != 2:
+              raise RuntimeError(f"{custom_source_path} must contain exactly two GGUF output placeholders")
+          custom_text = custom_text.replace(gguf_placeholder, expected_gguf_filename)
+          Path(custom_output_path).write_text(custom_text, encoding="utf-8")
+
+          with Path(environment_path).open("a", encoding="utf-8") as environment_file:
+              environment_file.write(f"EXPECTED_GGUF_FILENAME={expected_gguf_filename}\n")
+          PY
+
+      - name: Build AIKit frontend
+        shell: bash
         run: |
-          result=$(curl --fail --retry 10 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
-            "model": "custom",
-            "messages": [{"role": "user", "content": "Compose a haiku about cats"}]
-          }')
-          echo $result
+          set -euo pipefail
+          docker buildx build \
+            --builder "$BUILDX_BUILDER" \
+            --tag "$AIKIT_IMAGE" \
+            --load \
+            --provenance=false \
+            --progress=plain \
+            .
 
-          choices=$(echo "$result" | jq '.choices')
-          if [ -z "$choices" ]; then
-            exit 1
+      - name: Build fine-tuned model
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf -- "$OUTPUT_DIR"
+          docker buildx build \
+            --builder "$BUILDX_BUILDER" \
+            --allow security.insecure \
+            --build-arg "nvidiaDriverVersion=$NVIDIA_DRIVER_VERSION" \
+            --file "$FINETUNE_CONFIG" \
+            --output "type=local,dest=$OUTPUT_DIR" \
+            --target unsloth \
+            --progress=plain \
+            .
+
+      - name: Verify fine-tuned model
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -al "$OUTPUT_DIR"
+          test -s "$OUTPUT_DIR/$EXPECTED_GGUF_FILENAME"
+
+      - name: Build custom model image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --builder "$BUILDX_BUILDER" \
+            --tag "$CUSTOM_IMAGE" \
+            --file "$CUSTOM_CONFIG" \
+            --load \
+            --provenance=false \
+            --progress=plain \
+            "$OUTPUT_DIR"
+
+      - name: Run test model
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run \
+            --name "$CONTAINER_NAME" \
+            --detach \
+            --publish 127.0.0.1::8080 \
+            --gpus all \
+            "$CUSTOM_IMAGE"
+
+          inference_port=$(docker port "$CONTAINER_NAME" 8080/tcp | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p')
+          test -n "$inference_port"
+          echo "INFERENCE_URL=http://127.0.0.1:${inference_port}" >> "$GITHUB_ENV"
+
+      - name: Test inference response
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --retry 20 \
+            --retry-all-errors \
+            --retry-delay 5 \
+            --retry-max-time 600 \
+            "$INFERENCE_URL/v1/chat/completions" \
+            --header "Content-Type: application/json" \
+            --data '{
+              "model": "custom",
+              "messages": [{"role": "user", "content": "Compose a haiku about cats"}]
+            }' \
+            --output "$INFERENCE_LOG_FILE"
+
+          cat "$INFERENCE_LOG_FILE"
+          jq -e '
+            (.error? == null) and
+            (.choices | type == "array") and
+            (.choices | length > 0) and
+            (.choices[0].message.content | type == "string") and
+            (.choices[0].message.content | length > 0)
+          ' "$INFERENCE_LOG_FILE" > /dev/null
+
+      - name: Save container logs
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "fine-tune mode: $RUN_MODE"
+            if docker inspect "$CONTAINER_NAME" > /dev/null 2>&1; then
+              docker logs "$CONTAINER_NAME" 2>&1 || true
+            else
+              echo "container $CONTAINER_NAME was not created"
+            fi
+          } > "$CONTAINER_LOG_FILE"
+
+      - name: Clean up run resources
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          if [[ -s "$DATASET_PID_FILE" ]]; then
+            dataset_server_pid=$(cat "$DATASET_PID_FILE")
+            dataset_server_command=$(ps -p "$dataset_server_pid" -o args= 2>/dev/null || true)
+            if [[ "$dataset_server_command" == *"$SMOKE_DATASET_FILE"* ]]; then
+              kill "$dataset_server_pid" 2>/dev/null || true
+              for _ in $(seq 1 20); do
+                kill -0 "$dataset_server_pid" 2>/dev/null || break
+                sleep 0.1
+              done
+              kill -9 "$dataset_server_pid" 2>/dev/null || true
+            elif [[ -n "$dataset_server_command" ]]; then
+              echo "refusing to stop unexpected process $dataset_server_pid: $dataset_server_command" >&2
+            fi
           fi
 
-      - name: save logs
-        if: always()
-        run: docker logs custommodel > /tmp/docker.log
+          docker rm --force "$CONTAINER_NAME" > /dev/null 2>&1 || true
+          docker image rm --force "$CUSTOM_IMAGE" > /dev/null 2>&1 || true
+          docker image rm --force "$AIKIT_IMAGE" > /dev/null 2>&1 || true
 
-      - run: docker stop custommodel
-        if: always()
+          for generated_path in "$OUTPUT_DIR" "$FINETUNE_CONFIG" "$CUSTOM_CONFIG" "$DATASET_PID_FILE" "$DATASET_PORT_FILE"; do
+            case "$generated_path" in
+              "$RUNNER_TEMP"/*) rm -rf -- "$generated_path" || true ;;
+              *) echo "refusing to remove path outside runner temp: $generated_path" >&2 ;;
+            esac
+          done
 
-      - run: docker system prune -a -f --volumes || true
-        if: always()
-
-      - name: clean up output
-        if: always()
-        run: rm -rf _output
-
-      - name: publish test artifacts
+      - name: Publish test artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: test
+          name: fine-tune-${{ inputs.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            /tmp/*.log
+            ${{ runner.temp }}/aikit-finetune-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.mode }}*.log
+          if-no-files-found: warn
+          retention-days: 7

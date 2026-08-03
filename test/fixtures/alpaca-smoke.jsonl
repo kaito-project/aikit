@@ -1,0 +1,8 @@
+{"instruction":"Name one benefit of unit tests.","input":"","output":"Unit tests catch regressions early and make code changes safer."}
+{"instruction":"Rewrite the sentence in a friendly tone.","input":"Send the report today.","output":"Could you please send the report today? Thank you!"}
+{"instruction":"Give a short definition.","input":"What is a container image?","output":"A container image is an immutable package containing an application and its runtime dependencies."}
+{"instruction":"Answer with one word.","input":"What color is a clear daytime sky?","output":"Blue."}
+{"instruction":"Summarize the input in five words or fewer.","input":"Backups help restore data after accidental deletion.","output":"Backups enable data recovery."}
+{"instruction":"Provide a safe shell practice.","input":"Deleting a generated directory","output":"Validate the path before running a recursive removal command."}
+{"instruction":"Convert the phrase to uppercase.","input":"fast feedback","output":"FAST FEEDBACK"}
+{"instruction":"Complete the analogy.","input":"Bird is to sky as fish is to...","output":"water."}

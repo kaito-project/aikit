@@ -1,0 +1,24 @@
+#syntax=aikit:test
+apiVersion: v1alpha1
+baseModel: unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit
+datasets:
+  - source: "__AIKIT_SMOKE_DATASET_URL__"
+    type: alpaca
+config:
+  unsloth:
+    packing: false
+    maxSeqLength: 512
+    loadIn4bit: true
+    batchSize: 1
+    gradientAccumulationSteps: 1
+    warmupSteps: 1
+    maxSteps: 1
+    learningRate: 0.0002
+    loggingSteps: 1
+    optimizer: adamw_8bit
+    weightDecay: 0.01
+    lrSchedulerType: linear
+    seed: 42
+output:
+  quantize: q4_k_m
+  name: model

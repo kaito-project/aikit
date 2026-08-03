@@ -15,7 +15,6 @@ import (
 	"github.com/moby/buildkit/solver/pb"
 	"github.com/moby/buildkit/util/system"
 	digest "github.com/opencontainers/go-digest"
-	"gopkg.in/yaml.v2"
 )
 
 type fineTuneDefinitionOp struct {
@@ -50,50 +49,72 @@ func TestAikit2LLBDefinitionIsDeterministic(t *testing.T) {
 	}
 }
 
-func TestAikit2LLBMaterializesConfigAfterDependencies(t *testing.T) {
+func TestAikit2LLBSeparatesTrainingAndExportPhases(t *testing.T) {
 	cfg := fineTuneTestConfig()
 	cfg.BaseModel = "model with \"quotes\"\nand $HOME `literal`"
 	cfg.Datasets = []config.Dataset{{Source: "https://example.invalid/data?value=$x&other=`y`", Type: utils.DatasetAlpaca}}
 
-	definition := marshalFineTuneDefinition(t, cfg)
-	ops := decodeFineTuneDefinition(t, definition)
-
+	ops := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, cfg))
 	wantEnv := []string{
 		"PATH=" + system.DefaultPathEnv("linux") + ":/usr/local/cuda/bin",
 		"NVIDIA_REQUIRE_CUDA=cuda>=12.6",
 		"NVIDIA_DRIVER_CAPABILITIES=compute,utility",
 		"NVIDIA_VISIBLE_DEVICES=all",
 		"LD_LIBRARY_PATH=/usr/local/cuda/lib64",
+		"UV_CACHE_DIR=/root/.cache/uv",
+		"UV_LINK_MODE=copy",
+		"HF_HOME=/root/.cache/huggingface",
+		"HF_DATASETS_CACHE=" + datasetsCachePath,
 	}
 	for _, graphOp := range ops {
-		if exec := graphOp.op.GetExec(); exec != nil && !slices.Equal(exec.Meta.Env, wantEnv) {
-			t.Fatalf("exec environment = %#v, want %#v", exec.Meta.Env, wantEnv)
+		if execOp := graphOp.op.GetExec(); execOp != nil && !slices.Equal(execOp.Meta.Env, wantEnv) {
+			t.Fatalf("exec environment = %#v, want %#v", execOp.Meta.Env, wantEnv)
 		}
 	}
 
-	dependencyOp := findFineTuneExec(t, ops, "unsloth[cu126-torch2100]")
-	scriptOp, scriptFile := findFineTuneFile(t, ops, "/target_unsloth.py")
-	trainingOp := findFineTuneExec(t, ops, "python -m target_unsloth")
-	configOp, configFile := findFineTuneConfigFile(t, ops)
+	dependencyOp := findFineTuneExec(t, ops, "uv pip sync")
+	trainingOp := findFineTuneExec(t, ops, "target_unsloth.py train")
+	exportOp := findFineTuneExec(t, ops, "target_unsloth.py export")
+	if dependencyOp.index >= trainingOp.index || trainingOp.index >= exportOp.index {
+		t.Fatalf("dependency, training, and export op indexes must be ordered: dependency=%d training=%d export=%d", dependencyOp.index, trainingOp.index, exportOp.index)
+	}
+
+	_, scriptFile := findFineTuneFile(t, ops, "/target_unsloth.py")
 	if scriptFile.Mode != 0o755 || !slices.Equal(scriptFile.Data, finetunescript.TargetUnsloth) {
 		t.Fatalf("script mkfile = mode %o data %q, want mode %o embedded script", scriptFile.Mode, string(scriptFile.Data), 0o755)
 	}
-	wantConfig, err := yaml.Marshal(cfg)
-	if err != nil {
-		t.Fatalf("marshal expected config: %v", err)
+	_, pylockFile := findFineTuneFile(t, ops, "/pylock.toml")
+	if pylockFile.Mode != 0o644 || !slices.Equal(pylockFile.Data, finetunescript.UnslothPylock) {
+		t.Fatalf("pylock mkfile = mode %o, want mode %o and embedded lock", pylockFile.Mode, 0o644)
 	}
-	if configFile.Mode != 0o644 || !slices.Equal(configFile.Data, wantConfig) {
-		t.Fatalf("config mkfile = mode %o data %q, want mode %o data %q", configFile.Mode, string(configFile.Data), 0o644, string(wantConfig))
+	_, bootstrapFile := findFineTuneFile(t, ops, "/uv-bootstrap.txt")
+	if bootstrapFile.Mode != 0o644 || !slices.Equal(bootstrapFile.Data, finetunescript.UVBootstrap) {
+		t.Fatalf("uv bootstrap mkfile = mode %o, want mode %o and embedded requirement", bootstrapFile.Mode, 0o644)
 	}
-	if dependencyOp.index >= configOp.index {
-		t.Fatalf("dependency op index %d must precede config op index %d", dependencyOp.index, configOp.index)
+
+	_, trainingConfigFile := findFineTuneFile(t, ops, "/train-config.yaml")
+	wantTrainingConfig := mustMarshalYAML(unslothTrainingConfig{
+		BaseModel: cfg.BaseModel,
+		Datasets:  cfg.Datasets,
+		Config:    cfg.Config,
+	})
+	if trainingConfigFile.Mode != 0o600 || !slices.Equal(trainingConfigFile.Data, wantTrainingConfig) {
+		t.Fatalf("training config = mode %o data %q, want mode %o data %q", trainingConfigFile.Mode, string(trainingConfigFile.Data), 0o600, string(wantTrainingConfig))
 	}
-	if dependencyOp.index >= scriptOp.index || scriptOp.index >= configOp.index {
-		t.Fatalf("dependency, script, and config op indexes must be ordered: dependency=%d script=%d config=%d", dependencyOp.index, scriptOp.index, configOp.index)
+
+	_, exportConfigFile := findFineTuneFile(t, ops, "/export-config.yaml")
+	wantExportConfig := unslothExportConfig{BaseModel: cfg.BaseModel, Config: cfg.Config}
+	wantExportConfig.Output.Quantize = cfg.Output.Quantize
+	wantExportData := mustMarshalYAML(wantExportConfig)
+	if exportConfigFile.Mode != 0o600 || !slices.Equal(exportConfigFile.Data, wantExportData) {
+		t.Fatalf("export config = mode %o data %q, want mode %o data %q", exportConfigFile.Mode, string(exportConfigFile.Data), 0o600, string(wantExportData))
 	}
-	if len(trainingOp.op.Inputs) != 1 || trainingOp.op.Inputs[0].Digest != configOp.digest.String() {
-		t.Fatalf("training op inputs = %#v, want config digest %s", trainingOp.op.Inputs, configOp.digest)
-	}
+
+	assertReadonlyMount(t, trainingOp, "/aikit-bin")
+	assertReadonlyMount(t, trainingOp, "/aikit-config")
+	assertReadonlyMount(t, exportOp, "/aikit-bin")
+	assertReadonlyMount(t, exportOp, "/aikit-config")
+
 	outputCopy := findFineTuneGGUFCopy(t, ops)
 	if strings.TrimPrefix(outputCopy.Src, "/") != "model/*.gguf" {
 		t.Errorf("GGUF copy source = %q, want model/*.gguf", outputCopy.Src)
@@ -101,66 +122,93 @@ func TestAikit2LLBMaterializesConfigAfterDependencies(t *testing.T) {
 	if strings.TrimPrefix(outputCopy.Dest, "/") != "output-q4_k_m.gguf" {
 		t.Errorf("GGUF copy destination = %q, want output-q4_k_m.gguf", outputCopy.Dest)
 	}
-	for _, graphOp := range ops {
-		if exec := graphOp.op.GetExec(); exec != nil {
-			command := strings.Join(exec.Meta.Args, "\x00")
-			if strings.Contains(command, "echo -n") && strings.Contains(command, "/config.yaml") {
-				t.Fatalf("config unexpectedly materialized by shell command %q", command)
-			}
-		}
-	}
-
-	changedConfig := *cfg
-	changedConfig.BaseModel = "a config-only change"
-	changedOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, &changedConfig))
-	changedDependencyOp := findFineTuneExec(t, changedOps, "unsloth[cu126-torch2100]")
-	changedScriptOp, _ := findFineTuneFile(t, changedOps, "/target_unsloth.py")
-	changedConfigOp, _ := findFineTuneConfigFile(t, changedOps)
-	if dependencyOp.digest != changedDependencyOp.digest {
-		t.Fatalf("config-only change invalidated dependency op: got %s, want %s", changedDependencyOp.digest, dependencyOp.digest)
-	}
-	if configOp.digest == changedConfigOp.digest {
-		t.Fatalf("config file op digest did not change after config change: %s", configOp.digest)
-	}
-	if scriptOp.digest != changedScriptOp.digest {
-		t.Fatalf("config-only change invalidated script op: got %s, want %s", changedScriptOp.digest, scriptOp.digest)
-	}
 }
 
-func TestAikit2LLBUsesCurrentUnslothDependencies(t *testing.T) {
+func TestAikit2LLBUsesFrozenIsolatedEnvironmentAndCaches(t *testing.T) {
 	ops := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, fineTuneTestConfig()))
-	dependencyOp := findFineTuneExec(t, ops, "unsloth[cu126-torch2100]")
+	dependencyOp := findFineTuneExec(t, ops, "uv pip sync")
 	dependencyCommand := strings.Join(dependencyOp.op.GetExec().Meta.Args, "\x00")
-
-	wantFragments := []string{
-		"torch==" + torchVersion,
-		"unsloth[cu126-torch2100]==" + unslothVersion,
-		"unsloth-zoo==" + unslothVersion,
-		"--torch-backend=cu126",
-	}
-	for _, fragment := range wantFragments {
+	for _, fragment := range []string{
+		"--require-hashes",
+		"/aikit-lock/uv-bootstrap.txt",
+		"uv venv --python /usr/bin/python3 " + pythonVenv,
+		"uv pip sync --preview-features pylock --require-hashes --python " + pythonVenv + "/bin/python /aikit-lock/pylock.toml",
+	} {
 		if !strings.Contains(dependencyCommand, fragment) {
 			t.Errorf("dependency command does not contain %q: %q", fragment, dependencyCommand)
 		}
 	}
-
-	staleFragments := []string{
-		"transformers==4.44.2",
-		"torch==2.4.0",
-		"torch==2.4.1",
-		"git+https://github.com/unslothai/unsloth.git",
-		"fb77505f8429566f5d21d6ea5318c342e8a67991",
-	}
-	for _, fragment := range staleFragments {
-		if strings.Contains(dependencyCommand, fragment) {
-			t.Errorf("dependency command still contains stale fragment %q: %q", fragment, dependencyCommand)
+	for _, stale := range []string{"--system-site-packages", "pip install --upgrade", "git+https://github.com/unslothai/unsloth.git"} {
+		if strings.Contains(dependencyCommand, stale) {
+			t.Errorf("dependency command still contains non-reproducible fragment %q: %q", stale, dependencyCommand)
 		}
+	}
+	for _, fragment := range []string{
+		`name = "torch"`, `version = "2.10.0+cu126"`,
+		`name = "unsloth"`, `version = "2026.8.1"`,
+		`name = "unsloth-zoo"`, `name = "xformers"`,
+	} {
+		if !strings.Contains(string(finetunescript.UnslothPylock), fragment) {
+			t.Errorf("embedded pylock does not contain %q", fragment)
+		}
+	}
+	if !strings.Contains(string(finetunescript.UVBootstrap), "uv=="+uvVersion) || !strings.Contains(string(finetunescript.UVBootstrap), "--hash=sha256:") {
+		t.Fatalf("uv bootstrap is not versioned and hashed: %q", finetunescript.UVBootstrap)
+	}
+
+	assertCacheMount(t, dependencyOp, "/root/.cache/uv", uvCacheID, pb.CacheSharingOpt_SHARED)
+	trainingOp := findFineTuneExec(t, ops, "target_unsloth.py train")
+	assertCacheMount(t, trainingOp, "/root/.cache/huggingface", huggingFaceCacheID, pb.CacheSharingOpt_SHARED)
+	assertCacheMount(t, trainingOp, datasetsCachePath, datasetsCacheID, pb.CacheSharingOpt_SHARED)
+	assertCacheMount(t, trainingOp, "/root/.cache/torch", torchCacheID, pb.CacheSharingOpt_SHARED)
+	assertCacheMount(t, trainingOp, "/root/.triton", tritonCacheID, pb.CacheSharingOpt_SHARED)
+	exportOp := findFineTuneExec(t, ops, "target_unsloth.py export")
+	assertCacheMount(t, exportOp, "/root/.unsloth", llamaCacheID, pb.CacheSharingOpt_SHARED)
+}
+
+func TestAikit2LLBCacheBoundaries(t *testing.T) {
+	base := fineTuneTestConfig()
+	baseOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, base))
+	baseTrain := findFineTuneExec(t, baseOps, "target_unsloth.py train")
+	baseExport := findFineTuneExec(t, baseOps, "target_unsloth.py export")
+
+	nameChanged := *base
+	nameChanged.Output.Name = "renamed"
+	nameOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, &nameChanged))
+	if got := findFineTuneExec(t, nameOps, "target_unsloth.py train").digest; got != baseTrain.digest {
+		t.Fatalf("output name change invalidated training: got %s, want %s", got, baseTrain.digest)
+	}
+	if got := findFineTuneExec(t, nameOps, "target_unsloth.py export").digest; got != baseExport.digest {
+		t.Fatalf("output name change invalidated export: got %s, want %s", got, baseExport.digest)
+	}
+	if got := strings.TrimPrefix(findFineTuneGGUFCopy(t, nameOps).Dest, "/"); got != "renamed-q4_k_m.gguf" {
+		t.Fatalf("renamed output destination = %q, want renamed-q4_k_m.gguf", got)
+	}
+
+	quantizeChanged := *base
+	quantizeChanged.Output.Quantize = "q8_0"
+	quantizeOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, &quantizeChanged))
+	if got := findFineTuneExec(t, quantizeOps, "target_unsloth.py train").digest; got != baseTrain.digest {
+		t.Fatalf("quantization change invalidated training: got %s, want %s", got, baseTrain.digest)
+	}
+	if got := findFineTuneExec(t, quantizeOps, "target_unsloth.py export").digest; got == baseExport.digest {
+		t.Fatalf("quantization change did not invalidate export: %s", got)
+	}
+
+	trainingChanged := *base
+	trainingChanged.BaseModel = "different-model"
+	trainingOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, &trainingChanged))
+	if got := findFineTuneExec(t, trainingOps, "target_unsloth.py train").digest; got == baseTrain.digest {
+		t.Fatalf("training config change did not invalidate training: %s", got)
+	}
+	if got := findFineTuneExec(t, trainingOps, "target_unsloth.py export").digest; got == baseExport.digest {
+		t.Fatalf("training config change did not invalidate export: %s", got)
 	}
 }
 
 func TestAikit2LLBDiscoversNvidiaDeviceMajors(t *testing.T) {
 	ops := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, fineTuneTestConfig()))
-	trainingOp := findFineTuneExec(t, ops, "python -m target_unsloth")
+	trainingOp := findFineTuneExec(t, ops, "target_unsloth.py train")
 	trainingCommand := strings.Join(trainingOp.op.GetExec().Meta.Args, "\x00")
 
 	for _, fragment := range []string{"/proc/devices", "nvidia-frontend", "nvidia-uvm", "$NVIDIA_UVM_MAJOR", "$NVIDIA_MAJOR"} {
@@ -170,6 +218,54 @@ func TestAikit2LLBDiscoversNvidiaDeviceMajors(t *testing.T) {
 	}
 	if strings.Contains(trainingCommand, "nvidia-uvm c 235") {
 		t.Fatalf("training command still contains the stale hard-coded NVIDIA UVM major: %q", trainingCommand)
+	}
+}
+
+func TestAikit2LLBUsesExplicitNvidiaDriverVersion(t *testing.T) {
+	definition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{NVIDIADriverVersion: "590.48.01"})
+	ops := decodeFineTuneDefinition(t, definition)
+	driverOp := findFineTuneExec(t, ops, "NVIDIA-Linux-x86_64-$VERSION.run")
+	driverCommand := strings.Join(driverOp.op.GetExec().Meta.Args, "\x00")
+
+	if !strings.Contains(driverCommand, "VERSION='590.48.01'") {
+		t.Fatalf("driver command does not contain explicit version: %q", driverCommand)
+	}
+	if strings.Contains(driverCommand, "/proc/driver/nvidia/version") {
+		t.Fatalf("explicit driver command still reads host version: %q", driverCommand)
+	}
+}
+
+func TestAikit2LLBCachesNvidiaInstallerAtomically(t *testing.T) {
+	definition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{NVIDIADriverVersion: "590.48.01"})
+	ops := decodeFineTuneDefinition(t, definition)
+	driverOp := findFineTuneExec(t, ops, "NVIDIA-Linux-x86_64-$VERSION.run")
+	driverCommand := strings.Join(driverOp.op.GetExec().Meta.Args, "\x00")
+
+	for _, fragment := range []string{
+		"CHECKSUM_URL=$DOWNLOAD_URL.sha256sum",
+		`DOWNLOAD_DIR=$(mktemp -d "$DRIVER_CACHE/.${INSTALLER_NAME}.download.XXXXXX")`,
+		`INSTALLER_TMP=$DOWNLOAD_DIR/$INSTALLER_NAME`,
+		`CHECKSUM_TMP=$DOWNLOAD_DIR/$INSTALLER_NAME.sha256sum`,
+		`trap 'rm -rf "$DOWNLOAD_DIR"' 0 HUP INT TERM`,
+		`wget --no-verbose "$CHECKSUM_URL" -O "$CHECKSUM_TMP"`,
+		`(cd "$DRIVER_CACHE" && sha256sum --check --status "$CHECKSUM_TMP")`,
+		`wget --no-verbose "$DOWNLOAD_URL" -O "$INSTALLER_TMP"`,
+		`(cd "$DOWNLOAD_DIR" && sha256sum --check --status "$CHECKSUM_TMP")`,
+		`mv "$INSTALLER_TMP" "$INSTALLER"`,
+		`rm -rf "$DOWNLOAD_DIR"`,
+	} {
+		if !strings.Contains(driverCommand, fragment) {
+			t.Errorf("driver command does not contain atomic cache fragment %q: %q", fragment, driverCommand)
+		}
+	}
+	if strings.Contains(driverCommand, `-O "$INSTALLER"`) {
+		t.Fatalf("driver command downloads directly to the final cache path: %q", driverCommand)
+	}
+	downloadIndex := strings.Index(driverCommand, `wget --no-verbose "$DOWNLOAD_URL" -O "$INSTALLER_TMP"`)
+	verifyIndex := strings.LastIndex(driverCommand, `(cd "$DOWNLOAD_DIR" && sha256sum --check --status "$CHECKSUM_TMP")`)
+	renameIndex := strings.Index(driverCommand, `mv "$INSTALLER_TMP" "$INSTALLER"`)
+	if downloadIndex == -1 || verifyIndex <= downloadIndex || renameIndex <= verifyIndex {
+		t.Fatalf("driver installer must be downloaded to a temporary path, verified, then atomically renamed: %q", driverCommand)
 	}
 }
 
@@ -248,8 +344,13 @@ func fineTuneTestConfig() *config.FineTuneConfig {
 
 func marshalFineTuneDefinition(t *testing.T, cfg *config.FineTuneConfig) *llb.Definition {
 	t.Helper()
+	return marshalFineTuneDefinitionWithOptions(t, cfg, Options{})
+}
 
-	definition, err := Aikit2LLB(cfg).Marshal(context.Background())
+func marshalFineTuneDefinitionWithOptions(t *testing.T, cfg *config.FineTuneConfig, options Options) *llb.Definition {
+	t.Helper()
+
+	definition, err := Aikit2LLB(cfg, options).Marshal(context.Background())
 	if err != nil {
 		t.Fatalf("marshal fine-tune definition: %v", err)
 	}
@@ -282,12 +383,6 @@ func findFineTuneExec(t *testing.T, ops []fineTuneDefinitionOp, commandFragment 
 	return fineTuneDefinitionOp{}
 }
 
-func findFineTuneConfigFile(t *testing.T, ops []fineTuneDefinitionOp) (fineTuneDefinitionOp, *pb.FileActionMkFile) {
-	t.Helper()
-
-	return findFineTuneFile(t, ops, "/config.yaml")
-}
-
 func findFineTuneFile(t *testing.T, ops []fineTuneDefinitionOp, path string) (fineTuneDefinitionOp, *pb.FileActionMkFile) {
 	t.Helper()
 
@@ -318,6 +413,43 @@ func findFineTuneGGUFCopy(t *testing.T, ops []fineTuneDefinitionOp) *pb.FileActi
 	}
 	t.Fatal("GGUF copy action not found")
 	return nil
+}
+
+func findFineTuneMount(t *testing.T, graphOp fineTuneDefinitionOp, destination string) *pb.Mount {
+	t.Helper()
+
+	execOp := graphOp.op.GetExec()
+	if execOp == nil {
+		t.Fatalf("op %s is not an exec op", graphOp.digest)
+	}
+	for _, mount := range execOp.Mounts {
+		if mount.Dest == destination {
+			return mount
+		}
+	}
+	t.Fatalf("mount %q not found in exec op %s", destination, graphOp.digest)
+	return nil
+}
+
+func assertReadonlyMount(t *testing.T, graphOp fineTuneDefinitionOp, destination string) {
+	t.Helper()
+
+	mount := findFineTuneMount(t, graphOp, destination)
+	if !mount.Readonly || mount.MountType != pb.MountType_BIND {
+		t.Fatalf("mount %q = readonly %t type %s, want readonly bind mount", destination, mount.Readonly, mount.MountType)
+	}
+}
+
+func assertCacheMount(t *testing.T, graphOp fineTuneDefinitionOp, destination, id string, sharing pb.CacheSharingOpt) {
+	t.Helper()
+
+	mount := findFineTuneMount(t, graphOp, destination)
+	if mount.MountType != pb.MountType_CACHE || mount.CacheOpt == nil {
+		t.Fatalf("mount %q = type %s cacheOpt %#v, want cache mount", destination, mount.MountType, mount.CacheOpt)
+	}
+	if mount.CacheOpt.ID != id || mount.CacheOpt.Sharing != sharing {
+		t.Fatalf("cache mount %q = id %q sharing %s, want id %q sharing %s", destination, mount.CacheOpt.ID, mount.CacheOpt.Sharing, id, sharing)
+	}
 }
 
 func cloneFineTuneDefinition(definition [][]byte) [][]byte {

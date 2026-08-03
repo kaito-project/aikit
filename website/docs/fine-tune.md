@@ -69,8 +69,20 @@ https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth.yaml
 Build using following command and make sure to replace `--target` with the fine-tuning implementation of your choice (`unsloth` is the only option supported at this time), `--file` with the path to your configuration YAML and `--output` with the output directory of the finetuned model.
 
 ```bash
-docker buildx build --builder aikit-builder --allow security.insecure --file "/path/to/config.yaml" --output "/path/to/output" --target unsloth --progress plain .
+NVIDIA_DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1)
+
+docker buildx build --builder aikit-builder \
+  --allow security.insecure \
+  --build-arg "nvidiaDriverVersion=${NVIDIA_DRIVER_VERSION}" \
+  --file "/path/to/config.yaml" \
+  --output "/path/to/output" \
+  --target unsloth \
+  --progress plain .
 ```
+
+Passing `nvidiaDriverVersion` makes the host-specific driver layer cacheable. If the argument is omitted, AIKit detects the driver version during the build and deliberately bypasses that layer's cache so a host driver upgrade cannot reuse incompatible libraries.
+
+The training and GGUF export phases are cached separately. Changing only `output.name` reuses both phases, while changing only `output.quantize` reuses training and reruns export.
 
 Depending on your setup and configuration, build process may take some time. At the end of the build, the fine-tuned model will automatically be quantized with the specified format and output to the path specified in the `--output`.
 

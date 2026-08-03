@@ -208,6 +208,12 @@ AIKit supports various model configurations. Test files are located in the `test
 - `aikitfile-unsloth.yaml`: Fine-tuning configuration
 - `aikitfile-diffusers.yaml`: Diffusion model for image generation
 
+The Unsloth Python environment is fully resolved in `pkg/finetune/pylock.toml`. After changing `pkg/finetune/requirements.in`, install the required uv version and regenerate the lock with:
+
+```bash
+make update-unsloth-lock
+```
+
 To test a specific configuration:
 
 ```bash

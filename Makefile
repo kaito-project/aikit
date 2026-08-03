@@ -64,6 +64,18 @@ run-test-model-applesilicon:
 test:
 	go test -v ./... -race -coverprofile=coverage.txt -covermode=atomic
 
+.PHONY: test-python
+test-python:
+	python3 -m unittest discover -s pkg/finetune -p 'test_*.py' -v
+
+.PHONY: update-unsloth-lock
+update-unsloth-lock:
+	./scripts/update-unsloth-lock.sh
+
+.PHONY: check-unsloth-lock
+check-unsloth-lock:
+	./scripts/update-unsloth-lock.sh --check
+
 .PHONY: test-e2e-dependencies
 test-e2e-dependencies:
 	mkdir -p ${GITHUB_WORKSPACE}/bin

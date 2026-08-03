@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -36,6 +38,8 @@ const (
 	keyCacheImports   = "cache-imports"
 )
 
+var nvidiaDriverVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+
 func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	opts := c.BuildOpts().Opts
 	if t, ok := opts[keyTarget]; ok {
@@ -67,14 +71,12 @@ func buildFineTune(ctx context.Context, c client.Client, cfg *config.FineTuneCon
 		return nil, errors.Wrap(err, "validating aikitfile")
 	}
 
-	// set defaults for unsloth and finetune config
-	if cfg.Target == utils.TargetUnsloth {
-		cfg = defaultsUnslothConfig(cfg)
-	}
-	cfg = defaultsFineTune(cfg)
-
 	buildOpts := c.BuildOpts()
 	opts := buildOpts.Opts
+	finetuneOpts, err := parseFineTuneBuildOptions(opts)
+	if err != nil {
+		return nil, errors.Wrap(err, "parsing fine-tune build options")
+	}
 
 	// Parse cache imports
 	cacheImports, err := parseCacheOptions(opts)
@@ -82,7 +84,7 @@ func buildFineTune(ctx context.Context, c client.Client, cfg *config.FineTuneCon
 		return nil, errors.Wrap(err, "failed to parse cache import options")
 	}
 
-	st := finetune.Aikit2LLB(cfg)
+	st := finetune.Aikit2LLB(cfg, finetuneOpts)
 
 	def, err := st.Marshal(ctx)
 	if err != nil {
@@ -384,9 +386,19 @@ func getBuildArg(opts map[string]string, k string) string {
 	return ""
 }
 
+func parseFineTuneBuildOptions(opts map[string]string) (finetune.Options, error) {
+	driverVersion := strings.TrimSpace(getBuildArg(opts, "nvidiaDriverVersion"))
+	if driverVersion != "" && !nvidiaDriverVersionPattern.MatchString(driverVersion) {
+		return finetune.Options{}, errors.Errorf("nvidiaDriverVersion %q must use major.minor.patch format", driverVersion)
+	}
+	return finetune.Options{NVIDIADriverVersion: driverVersion}, nil
+}
+
 // validateFinetuneConfig validates the finetune config.
 func validateFinetuneConfig(c *config.FineTuneConfig) error {
-	supportedFineTuneTargets := []string{utils.TargetUnsloth}
+	if c == nil {
+		return errors.New("fine-tune config is not defined")
+	}
 
 	if c.APIVersion == "" {
 		return errors.New("apiVersion is not defined")
@@ -396,8 +408,12 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 		return errors.Errorf("apiVersion %s is not supported", c.APIVersion)
 	}
 
-	if !slices.Contains(supportedFineTuneTargets, c.Target) {
+	if c.Target != utils.TargetUnsloth {
 		return errors.Errorf("target %s is not supported", c.Target)
+	}
+
+	if strings.TrimSpace(c.BaseModel) == "" {
+		return errors.New("baseModel is not defined")
 	}
 
 	if len(c.Datasets) == 0 {
@@ -408,62 +424,123 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 		return errors.New("only one dataset is supported at this time")
 	}
 
-	// only alpaca dataset is supported at this time
-	for _, d := range c.Datasets {
-		if d.Type != utils.DatasetAlpaca {
-			return errors.Errorf("dataset type %s is not supported", d.Type)
+	for _, dataset := range c.Datasets {
+		if strings.TrimSpace(dataset.Source) == "" {
+			return errors.New("dataset source is not defined")
+		}
+		if dataset.Type != utils.DatasetAlpaca {
+			return errors.Errorf("dataset type %s is not supported", dataset.Type)
 		}
 	}
+
+	unsloth := c.Config.Unsloth
+	if unsloth.MaxSeqLength <= 0 {
+		return errors.New("config.unsloth.maxSeqLength must be greater than zero")
+	}
+	if unsloth.BatchSize <= 0 {
+		return errors.New("config.unsloth.batchSize must be greater than zero")
+	}
+	if unsloth.GradientAccumulationSteps <= 0 {
+		return errors.New("config.unsloth.gradientAccumulationSteps must be greater than zero")
+	}
+	if unsloth.WarmupSteps < 0 {
+		return errors.New("config.unsloth.warmupSteps must be zero or greater")
+	}
+	if unsloth.MaxSteps <= 0 {
+		return errors.New("config.unsloth.maxSteps must be greater than zero")
+	}
+	if unsloth.LearningRate <= 0 || math.IsNaN(unsloth.LearningRate) || math.IsInf(unsloth.LearningRate, 0) {
+		return errors.New("config.unsloth.learningRate must be a finite value greater than zero")
+	}
+	if unsloth.LoggingSteps <= 0 {
+		return errors.New("config.unsloth.loggingSteps must be greater than zero")
+	}
+	if strings.TrimSpace(unsloth.Optimizer) == "" {
+		return errors.New("config.unsloth.optimizer is not defined")
+	}
+	if !isSupportedUnslothOptimizer(unsloth.Optimizer) {
+		return errors.Errorf("config.unsloth.optimizer %s is not supported", unsloth.Optimizer)
+	}
+	if unsloth.WeightDecay < 0 || math.IsNaN(unsloth.WeightDecay) || math.IsInf(unsloth.WeightDecay, 0) {
+		return errors.New("config.unsloth.weightDecay must be a finite value zero or greater")
+	}
+	if strings.TrimSpace(unsloth.LrSchedulerType) == "" {
+		return errors.New("config.unsloth.lrSchedulerType is not defined")
+	}
+	if !isSupportedUnslothScheduler(unsloth.LrSchedulerType) {
+		return errors.Errorf("config.unsloth.lrSchedulerType %s is not supported", unsloth.LrSchedulerType)
+	}
+	if unsloth.Seed < 0 {
+		return errors.New("config.unsloth.seed must be zero or greater")
+	}
+
+	if !isSupportedUnslothQuantization(c.Output.Quantize) {
+		return errors.Errorf("output quantization %s is not supported", c.Output.Quantize)
+	}
+	if !isPathSafeOutputName(c.Output.Name) {
+		return errors.New("output name must be a safe filename containing only letters, numbers, dots, hyphens, or underscores")
+	}
+
 	return nil
 }
 
-// defaultsUnslothConfig sets default values for the unsloth config.
-func defaultsUnslothConfig(c *config.FineTuneConfig) *config.FineTuneConfig {
-	if c.Config.Unsloth.MaxSeqLength == 0 {
-		c.Config.Unsloth.MaxSeqLength = 2048
+// isSupportedUnslothOptimizer mirrors OptimizerNames from the pinned Transformers version.
+func isSupportedUnslothOptimizer(optimizer string) bool {
+	switch optimizer {
+	case "adamw_torch", "adamw_torch_fused", "adamw_torch_xla", "adamw_torch_npu_fused", "adamw_apex_fused",
+		"adafactor", "adamw_anyprecision", "adamw_torch_4bit", "adamw_torch_8bit", "ademamix", "sgd", "adagrad",
+		"adamw_bnb_8bit", "adamw_8bit", "ademamix_8bit", "lion_8bit", "lion_32bit", "paged_adamw_32bit",
+		"paged_adamw_8bit", "paged_ademamix_32bit", "paged_ademamix_8bit", "paged_lion_32bit", "paged_lion_8bit",
+		"rmsprop", "rmsprop_bnb", "rmsprop_bnb_8bit", "rmsprop_bnb_32bit", "galore_adamw", "galore_adamw_8bit",
+		"galore_adafactor", "galore_adamw_layerwise", "galore_adamw_8bit_layerwise", "galore_adafactor_layerwise",
+		"lomo", "adalomo", "grokadamw", "schedule_free_radam", "schedule_free_adamw", "schedule_free_sgd",
+		"apollo_adamw", "apollo_adamw_layerwise", "stable_adamw":
+		return true
+	default:
+		return false
 	}
-	if c.Config.Unsloth.BatchSize == 0 {
-		c.Config.Unsloth.BatchSize = 2
-	}
-	if c.Config.Unsloth.GradientAccumulationSteps == 0 {
-		c.Config.Unsloth.GradientAccumulationSteps = 4
-	}
-	if c.Config.Unsloth.WarmupSteps == 0 {
-		c.Config.Unsloth.WarmupSteps = 10
-	}
-	if c.Config.Unsloth.MaxSteps == 0 {
-		c.Config.Unsloth.MaxSteps = 60
-	}
-	if c.Config.Unsloth.LearningRate == 0 {
-		c.Config.Unsloth.LearningRate = 0.0002
-	}
-	if c.Config.Unsloth.LoggingSteps == 0 {
-		c.Config.Unsloth.LoggingSteps = 1
-	}
-	if c.Config.Unsloth.Optimizer == "" {
-		c.Config.Unsloth.Optimizer = "adamw_8bit"
-	}
-	if c.Config.Unsloth.WeightDecay == 0 {
-		c.Config.Unsloth.WeightDecay = 0.01
-	}
-	if c.Config.Unsloth.LrSchedulerType == "" {
-		c.Config.Unsloth.LrSchedulerType = "linear"
-	}
-	if c.Config.Unsloth.Seed == 0 {
-		c.Config.Unsloth.Seed = 42
-	}
-	return c
 }
 
-// defaultsFineTune sets default values for the fine-tune config.
-func defaultsFineTune(c *config.FineTuneConfig) *config.FineTuneConfig {
-	if c.Output.Quantize == "" {
-		c.Output.Quantize = "q4_k_m"
+// isSupportedUnslothScheduler mirrors SchedulerType from the pinned Transformers version.
+func isSupportedUnslothScheduler(scheduler string) bool {
+	switch scheduler {
+	case "linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup",
+		"inverse_sqrt", "reduce_lr_on_plateau", "cosine_with_min_lr", "cosine_warmup_with_min_lr",
+		"warmup_stable_decay", "greedy":
+		return true
+	default:
+		return false
 	}
-	if c.Output.Name == "" {
-		c.Output.Name = "aikit-model"
+}
+
+// isSupportedUnslothQuantization mirrors the quantization methods supported by the pinned Unsloth integration.
+func isSupportedUnslothQuantization(quantization string) bool {
+	switch strings.ToLower(quantization) {
+	case "not_quantized", "fast_quantized", "quantized", "f32", "bf16", "f16", "q8_0", "q4_k_m", "q5_k_m",
+		"q2_k", "q2_k_l", "q3_k_l", "q3_k_m", "q3_k_s", "q4_0", "q4_1", "q4_k_s", "q4_k", "q5_k",
+		"q5_0", "q5_1", "q5_k_s", "q6_k", "q3_k_xs":
+		return true
+	default:
+		return false
 	}
-	return c
+}
+
+func isPathSafeOutputName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+
+	for _, character := range name {
+		if character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' ||
+			character == '.' || character == '-' || character == '_' {
+			continue
+		}
+		return false
+	}
+
+	return true
 }
 
 // validateInferenceConfig validates the inference config.
