@@ -239,6 +239,8 @@ class TrainingPhaseTest(unittest.TestCase):
         train_config = example_train_config()
         base_model = mock.Mock()
         adapter_model = mock.Mock()
+        adapter_config = mock.Mock()
+        adapter_model.peft_config = {"default": adapter_config}
         tokenizer = mock.Mock(eos_token="<eos>")
         fast_language_model = mock.Mock()
         fast_language_model.from_pretrained.return_value = (base_model, tokenizer)
@@ -304,6 +306,11 @@ class TrainingPhaseTest(unittest.TestCase):
             load_in_4bit=False,
         )
         model_info.assert_called_once_with(repo_id="example/resolved-model")
+        self.assertEqual(
+            adapter_config.base_model_name_or_path,
+            "example/resolved-model",
+        )
+        self.assertEqual(adapter_config.revision, "a" * 40)
         load_dataset.assert_called_once_with(
             "organization/dataset",
             split="train",

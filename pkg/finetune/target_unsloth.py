@@ -128,6 +128,21 @@ def resolve_export_base_model(
     )
 
 
+def pin_peft_base_model(
+    model: Any,
+    *,
+    base_model_name: str,
+    revision: str,
+) -> None:
+    peft_configs = getattr(model, "peft_config", None)
+    if not isinstance(peft_configs, Mapping) or not peft_configs:
+        raise RuntimeError("trained model does not expose a PEFT configuration")
+
+    for peft_config in peft_configs.values():
+        peft_config.base_model_name_or_path = base_model_name
+        peft_config.revision = revision
+
+
 def pin_adapter_base_model_snapshot(
     trained_model_directory: Path | str,
     *,
@@ -295,6 +310,11 @@ def train_model(
         use_rslora=False,
         loftq_config=None,
         base_model_name_or_path=base_model_name,
+        revision=base_model_revision,
+    )
+    pin_peft_base_model(
+        model,
+        base_model_name=base_model_name,
         revision=base_model_revision,
     )
 
