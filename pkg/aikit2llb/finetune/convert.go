@@ -50,12 +50,17 @@ type unslothExportConfig struct {
 type Options struct {
 	NVIDIADriverVersion string
 	BuildSessionID      string
+	CDIDevice           string
 }
 
 func Aikit2LLB(c *config.FineTuneConfig, opts Options) (llb.State, error) {
 	cacheKey := gpuCacheKey(opts)
 	if cacheKey == "" {
 		return llb.State{}, errors.New("GPU cache key requires an NVIDIA driver version or BuildKit session ID")
+	}
+	cdiDevice := opts.CDIDevice
+	if cdiDevice == "" {
+		cdiDevice = nvidiaCDIDevice
 	}
 
 	env := []struct {
@@ -110,7 +115,7 @@ func Aikit2LLB(c *config.FineTuneConfig, opts Options) (llb.State, error) {
 		Config:    c.Config,
 	}
 	trainingConfigState := llb.Scratch().File(llb.Mkfile("/train-config.yaml", 0o600, mustMarshalYAML(trainingConfig)))
-	state = runUnslothPhase(state, scriptState, trainingConfigState, "train", false)
+	state = runUnslothPhase(state, scriptState, trainingConfigState, "train", cdiDevice, false)
 
 	exportConfig := unslothExportConfig{
 		BaseModel: c.BaseModel,
@@ -118,7 +123,7 @@ func Aikit2LLB(c *config.FineTuneConfig, opts Options) (llb.State, error) {
 	}
 	exportConfig.Output.Quantize = c.Output.Quantize
 	exportConfigState := llb.Scratch().File(llb.Mkfile("/export-config.yaml", 0o600, mustMarshalYAML(exportConfig)))
-	state = runUnslothPhase(state, scriptState, exportConfigState, "export", true)
+	state = runUnslothPhase(state, scriptState, exportConfigState, "export", cdiDevice, true)
 
 	const inputFile = "model/*.gguf"
 	copyOpts := []llb.CopyOption{&llb.CopyInfo{AllowWildcard: true}}
@@ -136,10 +141,10 @@ func gpuCacheKey(opts Options) string {
 	return ""
 }
 
-func runUnslothPhase(state, scriptState, configState llb.State, phase string, includeLlamaCache bool) llb.State {
+func runUnslothPhase(state, scriptState, configState llb.State, phase, cdiDevice string, includeLlamaCache bool) llb.State {
 	runOptions := []llb.RunOption{
 		utils.Shf("nvidia-smi && %[1]s && python /aikit-bin/target_unsloth.py %[2]s", sourceVenv, phase),
-		llb.AddCDIDevice(llb.CDIDeviceName(nvidiaCDIDevice)),
+		llb.AddCDIDevice(llb.CDIDeviceName(cdiDevice)),
 		llb.AddMount("/aikit-bin", scriptState, llb.Readonly),
 		llb.AddMount("/aikit-config", configState, llb.Readonly),
 		persistentCacheMount("/root/.cache/huggingface", huggingFaceCacheID, llb.CacheMountShared),

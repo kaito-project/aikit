@@ -38,7 +38,10 @@ const (
 	keyCacheImports   = "cache-imports"
 )
 
-var nvidiaDriverVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+var (
+	nvidiaDriverVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+	nvidiaCDIDevicePattern     = regexp.MustCompile(`^nvidia\.com/gpu(?:=(?:all|[0-9]+(?::[0-9]+)?|gpu[0-9]+|mig[0-9]+:[0-9]+|GPU-[A-Fa-f0-9-]+|MIG-[A-Za-z0-9-]+))?$`)
+)
 
 func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	opts := c.BuildOpts().Opts
@@ -395,7 +398,11 @@ func parseFineTuneBuildOptions(opts map[string]string) (finetune.Options, error)
 	if driverVersion != "" && !nvidiaDriverVersionPattern.MatchString(driverVersion) {
 		return finetune.Options{}, errors.Errorf("nvidiaDriverVersion %q must use major.minor.patch format", driverVersion)
 	}
-	return finetune.Options{NVIDIADriverVersion: driverVersion}, nil
+	cdiDevice := strings.TrimSpace(getBuildArg(opts, "cdiDevice"))
+	if cdiDevice != "" && !nvidiaCDIDevicePattern.MatchString(cdiDevice) {
+		return finetune.Options{}, errors.Errorf("cdiDevice %q must be an NVIDIA GPU CDI device name", cdiDevice)
+	}
+	return finetune.Options{NVIDIADriverVersion: driverVersion, CDIDevice: cdiDevice}, nil
 }
 
 // validateFinetuneConfig validates the finetune config.

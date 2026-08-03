@@ -264,6 +264,25 @@ func TestAikit2LLBUsesNvidiaCDIWithoutInsecureSecurity(t *testing.T) {
 	}
 }
 
+func TestAikit2LLBUsesConfiguredCDIDevice(t *testing.T) {
+	const configuredDevice = "nvidia.com/gpu=GPU-4f684ff2-f5d1-8b33-decf-42fac828778c"
+	definition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{
+		NVIDIADriverVersion: "590.48.01",
+		CDIDevice:           configuredDevice,
+	})
+	ops := decodeFineTuneDefinition(t, definition)
+
+	for _, phase := range []fineTuneDefinitionOp{
+		findFineTuneExec(t, ops, "target_unsloth.py train"),
+		findFineTuneExec(t, ops, "target_unsloth.py export"),
+	} {
+		devices := phase.op.GetExec().GetCdiDevices()
+		if len(devices) != 1 || devices[0].Name != configuredDevice {
+			t.Fatalf("CDI devices = %#v, want configured device %q", devices, configuredDevice)
+		}
+	}
+}
+
 func TestAikit2LLBUsesDriverVersionOnlyAsGPUCacheKey(t *testing.T) {
 	baseDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{NVIDIADriverVersion: "590.48.01", BuildSessionID: "session-a"})
 	baseOps := decodeFineTuneDefinition(t, baseDefinition)

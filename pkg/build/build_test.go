@@ -676,6 +676,7 @@ func Test_parseFineTuneBuildOptions(t *testing.T) {
 		name        string
 		opts        map[string]string
 		wantVersion string
+		wantDevice  string
 		wantErr     bool
 	}{
 		{name: "omitted"},
@@ -683,6 +684,13 @@ func Test_parseFineTuneBuildOptions(t *testing.T) {
 		{name: "trimmed", opts: map[string]string{"build-arg:nvidiaDriverVersion": " 590.48.01 "}, wantVersion: "590.48.01"},
 		{name: "missing patch", opts: map[string]string{"build-arg:nvidiaDriverVersion": "590.48"}, wantErr: true},
 		{name: "shell input", opts: map[string]string{"build-arg:nvidiaDriverVersion": "$(id)"}, wantErr: true},
+		{name: "CDI index", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu=0"}, wantDevice: "nvidia.com/gpu=0"},
+		{name: "CDI UUID", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu=GPU-4f684ff2-f5d1-8b33-decf-42fac828778c"}, wantDevice: "nvidia.com/gpu=GPU-4f684ff2-f5d1-8b33-decf-42fac828778c"},
+		{name: "CDI on demand", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu"}, wantDevice: "nvidia.com/gpu"},
+		{name: "CDI type index GPU", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu=gpu0"}, wantDevice: "nvidia.com/gpu=gpu0"},
+		{name: "CDI type index MIG", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu=mig1:0"}, wantDevice: "nvidia.com/gpu=mig1:0"},
+		{name: "non-NVIDIA CDI device", opts: map[string]string{"build-arg:cdiDevice": "vendor.example/gpu=0"}, wantErr: true},
+		{name: "CDI shell input", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu=$(id)"}, wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -693,6 +701,9 @@ func Test_parseFineTuneBuildOptions(t *testing.T) {
 			}
 			if options.NVIDIADriverVersion != tt.wantVersion {
 				t.Fatalf("driver version = %q, want %q", options.NVIDIADriverVersion, tt.wantVersion)
+			}
+			if options.CDIDevice != tt.wantDevice {
+				t.Fatalf("CDI device = %q, want %q", options.CDIDevice, tt.wantDevice)
 			}
 		})
 	}
