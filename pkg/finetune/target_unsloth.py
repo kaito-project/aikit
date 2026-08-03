@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
+import re
 import shutil
 from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
@@ -14,6 +16,8 @@ EXPORT_CONFIG_PATH = Path("/aikit-config/export-config.yaml")
 TRAINED_MODEL_DIRECTORY = Path("/aikit-trained-model")
 EXPORT_DIRECTORY = Path("/aikit-unsloth-export")
 ARTIFACT_DIRECTORY = Path("/model")
+ADAPTER_CONFIG_FILENAME = "adapter_config.json"
+HF_COMMIT_HASH_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 # Alpaca is the only dataset type currently supported by the AIKit fine-tuning API.
 ALPACA_PROMPT = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -48,6 +52,7 @@ class TrainDependencies(NamedTuple):
 
 class ExportDependencies(NamedTuple):
     fast_language_model: Any
+    snapshot_download: Callable[..., str]
 
 
 def parse_config(
@@ -84,6 +89,56 @@ def unsloth_config(train_config: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def output_config(export_config: Mapping[str, Any]) -> Mapping[str, Any]:
     return export_config["output"]
+
+
+def require_hf_commit_hash(revision: Any, *, description: str) -> str:
+    if (
+        not isinstance(revision, str)
+        or HF_COMMIT_HASH_PATTERN.fullmatch(revision) is None
+    ):
+        raise RuntimeError(
+            f"{description} is not an immutable Hugging Face commit hash"
+        )
+
+    return revision
+
+
+def resolved_base_model_revision(model: Any) -> str:
+    config = getattr(model, "config", None)
+    return require_hf_commit_hash(
+        getattr(config, "_commit_hash", None),
+        description="resolved base model revision",
+    )
+
+
+def pin_adapter_base_model_snapshot(
+    trained_model_directory: Path | str,
+    *,
+    snapshot_download: Callable[..., str],
+) -> Path:
+    adapter_config_path = Path(trained_model_directory) / ADAPTER_CONFIG_FILENAME
+    adapter_config = dict(load_config(adapter_config_path, loader=json.loads))
+
+    base_model = adapter_config.get("base_model_name_or_path")
+    if not isinstance(base_model, str) or not base_model.strip():
+        raise RuntimeError("saved adapter does not identify its base model")
+
+    revision = require_hf_commit_hash(
+        adapter_config.get("revision"),
+        description="saved adapter base model revision",
+    )
+    snapshot_path = Path(
+        snapshot_download(repo_id=base_model, revision=revision)
+    )
+
+    # Pinned Unsloth ignores PEFT's base-model revision, but correctly loads
+    # an immutable local snapshot.
+    adapter_config["base_model_name_or_path"] = str(snapshot_path)
+    adapter_config_path.write_text(
+        json.dumps(adapter_config, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return snapshot_path
 
 
 def classify_dataset_source(source: str) -> DatasetSourceKind:
@@ -165,9 +220,13 @@ def load_train_dependencies() -> TrainDependencies:
 
 
 def load_export_dependencies() -> ExportDependencies:
+    from huggingface_hub import snapshot_download
     from unsloth import FastLanguageModel
 
-    return ExportDependencies(fast_language_model=FastLanguageModel)
+    return ExportDependencies(
+        fast_language_model=FastLanguageModel,
+        snapshot_download=snapshot_download,
+    )
 
 
 def train_model(
@@ -188,6 +247,7 @@ def train_model(
         dtype=None,
         load_in_4bit=cfg["loadIn4bit"],
     )
+    base_model_revision = resolved_base_model_revision(model)
 
     model = dependencies.fast_language_model.get_peft_model(
         model,
@@ -208,6 +268,7 @@ def train_model(
         random_state=cfg["seed"],
         use_rslora=False,
         loftq_config=None,
+        revision=base_model_revision,
     )
 
     source = train_config["datasets"][0]["source"]
@@ -269,11 +330,17 @@ def export_model(
     trained_model_path = Path(trained_model_directory)
     export_path = Path(export_directory)
 
+    pin_adapter_base_model_snapshot(
+        trained_model_path,
+        snapshot_download=dependencies.snapshot_download,
+    )
+
     model, tokenizer = dependencies.fast_language_model.from_pretrained(
         model_name=str(trained_model_path),
         max_seq_length=cfg["maxSeqLength"],
         dtype=None,
         load_in_4bit=cfg["loadIn4bit"],
+        local_files_only=True,
     )
     export_result = model.save_pretrained_gguf(
         export_path,

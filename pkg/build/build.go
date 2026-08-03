@@ -39,7 +39,7 @@ const (
 )
 
 var (
-	nvidiaDriverVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+	nvidiaDriverVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+(?:\.[0-9]+)?$`)
 	nvidiaCDIDevicePattern     = regexp.MustCompile(`^nvidia\.com/gpu(?:=(?:all|[0-9]+(?::[0-9]+)?|gpu[0-9]+|mig[0-9]+:[0-9]+|GPU-[A-Fa-f0-9-]+|MIG-[A-Za-z0-9-]+))?$`)
 )
 
@@ -396,7 +396,7 @@ func getBuildArg(opts map[string]string, k string) string {
 func parseFineTuneBuildOptions(opts map[string]string) (finetune.Options, error) {
 	driverVersion := strings.TrimSpace(getBuildArg(opts, "nvidiaDriverVersion"))
 	if driverVersion != "" && !nvidiaDriverVersionPattern.MatchString(driverVersion) {
-		return finetune.Options{}, errors.Errorf("nvidiaDriverVersion %q must use major.minor.patch format", driverVersion)
+		return finetune.Options{}, errors.Errorf("nvidiaDriverVersion %q must use major.minor or major.minor.patch format", driverVersion)
 	}
 	cdiDevice := strings.TrimSpace(getBuildArg(opts, "cdiDevice"))
 	if cdiDevice != "" && !nvidiaCDIDevicePattern.MatchString(cdiDevice) {
@@ -488,9 +488,11 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 	if strings.TrimSpace(c.Output.Quantize) == "" {
 		return errors.New("output.quantize is not defined")
 	}
-	if !isSupportedUnslothQuantization(c.Output.Quantize) {
+	normalizedQuantization := strings.ToLower(c.Output.Quantize)
+	if !isSupportedUnslothQuantization(normalizedQuantization) {
 		return errors.Errorf("output.quantize %q is not supported", c.Output.Quantize)
 	}
+	c.Output.Quantize = normalizedQuantization
 	if !isPathSafeOutputName(c.Output.Name) {
 		return errors.New("output name must be a safe filename containing only letters, numbers, dots, hyphens, or underscores")
 	}
@@ -498,29 +500,24 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 	return nil
 }
 
-// isSupportedUnslothOptimizer mirrors OptimizerNames from the pinned Transformers version.
+// isSupportedUnslothOptimizer limits OptimizerNames to dependencies in the frozen environment.
 func isSupportedUnslothOptimizer(optimizer string) bool {
 	switch optimizer {
-	case "adamw_torch", "adamw_torch_fused", "adamw_torch_xla", "adamw_torch_npu_fused", "adamw_apex_fused",
-		"adafactor", "adamw_anyprecision", "adamw_torch_4bit", "adamw_torch_8bit", "ademamix", "sgd", "adagrad",
+	case "adamw_torch", "adamw_torch_fused", "adafactor", "adamw_torch_4bit", "adamw_torch_8bit", "ademamix", "sgd", "adagrad",
 		"adamw_bnb_8bit", "adamw_8bit", "ademamix_8bit", "lion_8bit", "lion_32bit", "paged_adamw_32bit",
 		"paged_adamw_8bit", "paged_ademamix_32bit", "paged_ademamix_8bit", "paged_lion_32bit", "paged_lion_8bit",
-		"rmsprop", "rmsprop_bnb", "rmsprop_bnb_8bit", "rmsprop_bnb_32bit", "galore_adamw", "galore_adamw_8bit",
-		"galore_adafactor", "galore_adamw_layerwise", "galore_adamw_8bit_layerwise", "galore_adafactor_layerwise",
-		"lomo", "adalomo", "grokadamw", "schedule_free_radam", "schedule_free_adamw", "schedule_free_sgd",
-		"apollo_adamw", "apollo_adamw_layerwise", "stable_adamw":
+		"rmsprop", "rmsprop_bnb", "rmsprop_bnb_8bit", "rmsprop_bnb_32bit":
 		return true
 	default:
 		return false
 	}
 }
 
-// isSupportedUnslothScheduler mirrors SchedulerType from the pinned Transformers version.
+// isSupportedUnslothScheduler limits SchedulerType to schedulers supported by the current API.
 func isSupportedUnslothScheduler(scheduler string) bool {
 	switch scheduler {
 	case "linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup",
-		"inverse_sqrt", "reduce_lr_on_plateau", "cosine_with_min_lr", "cosine_warmup_with_min_lr",
-		"warmup_stable_decay", "greedy":
+		"inverse_sqrt":
 		return true
 	default:
 		return false

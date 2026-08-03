@@ -575,16 +575,24 @@ datasets:
 	}
 }
 
+func Test_validateFineTuneConfigNormalizesQuantization(t *testing.T) {
+	config := validFineTuneConfig()
+	config.Output.Quantize = "Q4_K_M"
+
+	if err := validateFinetuneConfig(config); err != nil {
+		t.Fatalf("validateFinetuneConfig() error = %v", err)
+	}
+	if config.Output.Quantize != "q4_k_m" {
+		t.Fatalf("normalized quantization = %q, want q4_k_m", config.Output.Quantize)
+	}
+}
+
 func Test_isSupportedUnslothOptimizer(t *testing.T) {
 	supported := []string{
-		"adamw_torch", "adamw_torch_fused", "adamw_torch_xla", "adamw_torch_npu_fused", "adamw_apex_fused",
-		"adafactor", "adamw_anyprecision", "adamw_torch_4bit", "adamw_torch_8bit", "ademamix", "sgd", "adagrad",
+		"adamw_torch", "adamw_torch_fused", "adafactor", "adamw_torch_4bit", "adamw_torch_8bit", "ademamix", "sgd", "adagrad",
 		"adamw_bnb_8bit", "adamw_8bit", "ademamix_8bit", "lion_8bit", "lion_32bit", "paged_adamw_32bit",
 		"paged_adamw_8bit", "paged_ademamix_32bit", "paged_ademamix_8bit", "paged_lion_32bit", "paged_lion_8bit",
-		"rmsprop", "rmsprop_bnb", "rmsprop_bnb_8bit", "rmsprop_bnb_32bit", "galore_adamw", "galore_adamw_8bit",
-		"galore_adafactor", "galore_adamw_layerwise", "galore_adamw_8bit_layerwise", "galore_adafactor_layerwise",
-		"lomo", "adalomo", "grokadamw", "schedule_free_radam", "schedule_free_adamw", "schedule_free_sgd",
-		"apollo_adamw", "apollo_adamw_layerwise", "stable_adamw",
+		"rmsprop", "rmsprop_bnb", "rmsprop_bnb_8bit", "rmsprop_bnb_32bit",
 	}
 	for _, optimizer := range supported {
 		t.Run(optimizer, func(t *testing.T) {
@@ -594,16 +602,24 @@ func Test_isSupportedUnslothOptimizer(t *testing.T) {
 		})
 	}
 
-	if isSupportedUnslothOptimizer("unsupported") {
-		t.Error("isSupportedUnslothOptimizer(\"unsupported\") = true, want false")
+	unsupported := []string{
+		"unsupported", "adamw_torch_xla", "adamw_torch_npu_fused", "adamw_apex_fused", "adamw_anyprecision",
+		"galore_adamw", "galore_adamw_8bit", "galore_adafactor", "galore_adamw_layerwise",
+		"galore_adamw_8bit_layerwise", "galore_adafactor_layerwise", "lomo", "adalomo", "grokadamw",
+		"schedule_free_radam", "schedule_free_adamw", "schedule_free_sgd", "apollo_adamw",
+		"apollo_adamw_layerwise", "stable_adamw",
+	}
+	for _, optimizer := range unsupported {
+		if isSupportedUnslothOptimizer(optimizer) {
+			t.Errorf("isSupportedUnslothOptimizer(%q) = true, want false", optimizer)
+		}
 	}
 }
 
 func Test_isSupportedUnslothScheduler(t *testing.T) {
 	supported := []string{
 		"linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup",
-		"inverse_sqrt", "reduce_lr_on_plateau", "cosine_with_min_lr", "cosine_warmup_with_min_lr",
-		"warmup_stable_decay", "greedy",
+		"inverse_sqrt",
 	}
 	for _, scheduler := range supported {
 		t.Run(scheduler, func(t *testing.T) {
@@ -613,8 +629,13 @@ func Test_isSupportedUnslothScheduler(t *testing.T) {
 		})
 	}
 
-	if isSupportedUnslothScheduler("unsupported") {
-		t.Error("isSupportedUnslothScheduler(\"unsupported\") = true, want false")
+	for _, scheduler := range []string{
+		"unsupported", "cosine_with_min_lr", "cosine_warmup_with_min_lr", "reduce_lr_on_plateau",
+		"warmup_stable_decay", "greedy",
+	} {
+		if isSupportedUnslothScheduler(scheduler) {
+			t.Errorf("isSupportedUnslothScheduler(%q) = true, want false", scheduler)
+		}
 	}
 }
 
@@ -682,7 +703,8 @@ func Test_parseFineTuneBuildOptions(t *testing.T) {
 		{name: "omitted"},
 		{name: "valid", opts: map[string]string{"build-arg:nvidiaDriverVersion": "590.48.01"}, wantVersion: "590.48.01"},
 		{name: "trimmed", opts: map[string]string{"build-arg:nvidiaDriverVersion": " 590.48.01 "}, wantVersion: "590.48.01"},
-		{name: "missing patch", opts: map[string]string{"build-arg:nvidiaDriverVersion": "590.48"}, wantErr: true},
+		{name: "two-component WSL version", opts: map[string]string{"build-arg:nvidiaDriverVersion": "572.83"}, wantVersion: "572.83"},
+		{name: "missing minor", opts: map[string]string{"build-arg:nvidiaDriverVersion": "590"}, wantErr: true},
 		{name: "shell input", opts: map[string]string{"build-arg:nvidiaDriverVersion": "$(id)"}, wantErr: true},
 		{name: "CDI index", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu=0"}, wantDevice: "nvidia.com/gpu=0"},
 		{name: "CDI UUID", opts: map[string]string{"build-arg:cdiDevice": "nvidia.com/gpu=GPU-4f684ff2-f5d1-8b33-decf-42fac828778c"}, wantDevice: "nvidia.com/gpu=GPU-4f684ff2-f5d1-8b33-decf-42fac828778c"},
