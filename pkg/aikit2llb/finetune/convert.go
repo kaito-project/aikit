@@ -4,17 +4,29 @@ import (
 	"fmt"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	finetunescript "github.com/kaito-project/aikit/pkg/finetune"
 	"github.com/kaito-project/aikit/pkg/utils"
-	"github.com/kaito-project/aikit/pkg/version"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/util/system"
 	"gopkg.in/yaml.v2"
 )
 
 const (
-	unslothCommitOrTag = "fb77505f8429566f5d21d6ea5318c342e8a67991" // September-2024
-	nvidiaMknod        = "mknod --mode 666 /dev/nvidiactl c 195 255 && mknod --mode 666 /dev/nvidia-uvm c 235 0 && mknod --mode 666 /dev/nvidia-uvm-tools c 235 1 && mknod --mode 666 /dev/nvidia0 c 195 0 && nvidia-smi"
-	sourceVenv         = ". .venv/bin/activate"
+	unslothVersion = "2026.8.1"
+	torchVersion   = "2.10.0"
+	sourceVenv     = ". .venv/bin/activate"
+
+	nvidiaPrimaryMajorAWK = `$2 == "nvidia-frontend" { frontend = $1 } $2 == "nvidia" { legacy = $1 } ` +
+		`END { if (frontend != "") { print frontend } else if (legacy != "") { print legacy } ` +
+		`else { print "failed to find NVIDIA primary character device major (expected nvidia-frontend or nvidia)" > "/dev/stderr"; exit 1 } }`
+	nvidiaMknod = "NVIDIA_MAJOR=$(awk '" + nvidiaPrimaryMajorAWK + "' /proc/devices) && " +
+		"NVIDIA_UVM_MAJOR=$(awk '$2 == \"nvidia-uvm\" { print $1; exit }' /proc/devices) && " +
+		"test -n \"$NVIDIA_UVM_MAJOR\" && " +
+		"rm -f /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia0 && " +
+		"mknod --mode 666 /dev/nvidiactl c \"$NVIDIA_MAJOR\" 255 && " +
+		"mknod --mode 666 /dev/nvidia-uvm c \"$NVIDIA_UVM_MAJOR\" 0 && " +
+		"mknod --mode 666 /dev/nvidia-uvm-tools c \"$NVIDIA_UVM_MAJOR\" 1 && " +
+		"mknod --mode 666 /dev/nvidia0 c \"$NVIDIA_MAJOR\" 0 && nvidia-smi"
 )
 
 func Aikit2LLB(c *config.FineTuneConfig) llb.State {
@@ -23,7 +35,7 @@ func Aikit2LLB(c *config.FineTuneConfig) llb.State {
 		value string
 	}{
 		{key: "PATH", value: system.DefaultPathEnv("linux") + ":/usr/local/cuda/bin"},
-		{key: "NVIDIA_REQUIRE_CUDA", value: "cuda>=12.0"},
+		{key: "NVIDIA_REQUIRE_CUDA", value: "cuda>=12.6"},
 		{key: "NVIDIA_DRIVER_CAPABILITIES", value: "compute,utility"},
 		{key: "NVIDIA_VISIBLE_DEVICES", value: "all"},
 		{key: "LD_LIBRARY_PATH", value: "/usr/local/cuda/lib64"},
@@ -36,25 +48,24 @@ func Aikit2LLB(c *config.FineTuneConfig) llb.State {
 
 	// installing dependencies
 	// due to buildkit run limitations, we need to install nvidia drivers and driver version must match the host
-	state = state.Run(utils.Sh("apt-get update && apt-get install -y --no-install-recommends python3-dev python3 python3-pip python-is-python3 git wget kmod && cd /root && VERSION=$(cat /proc/driver/nvidia/version | sed -n 's/.*NVIDIA UNIX x86_64 Kernel Module  \\([0-9]\\+\\.[0-9]\\+\\.[0-9]\\+\\).*/\\1/p') && wget --no-verbose https://download.nvidia.com/XFree86/Linux-x86_64/$VERSION/NVIDIA-Linux-x86_64-$VERSION.run && chmod +x NVIDIA-Linux-x86_64-$VERSION.run && ./NVIDIA-Linux-x86_64-$VERSION.run -x && rm NVIDIA-Linux-x86_64-$VERSION.run && /root/NVIDIA-Linux-x86_64-$VERSION/nvidia-installer -a -s --skip-depmod --no-dkms --no-nvidia-modprobe --no-questions --no-systemd --no-x-check --no-kernel-modules --no-kernel-module-source && rm -rf /root/NVIDIA-Linux-x86_64-$VERSION")).Root()
+	state = state.Run(utils.Sh("apt-get update && apt-get install -y --no-install-recommends cmake python3-dev python3 python3-pip python-is-python3 git wget kmod && cd /root && VERSION=$(cat /proc/driver/nvidia/version | sed -n 's/.*NVIDIA UNIX x86_64 Kernel Module  \\([0-9]\\+\\.[0-9]\\+\\.[0-9]\\+\\).*/\\1/p') && wget --no-verbose https://download.nvidia.com/XFree86/Linux-x86_64/$VERSION/NVIDIA-Linux-x86_64-$VERSION.run && chmod +x NVIDIA-Linux-x86_64-$VERSION.run && ./NVIDIA-Linux-x86_64-$VERSION.run -x && rm NVIDIA-Linux-x86_64-$VERSION.run && /root/NVIDIA-Linux-x86_64-$VERSION/nvidia-installer -a -s --skip-depmod --no-dkms --no-nvidia-modprobe --no-questions --no-systemd --no-x-check --no-kernel-modules --no-kernel-module-source && rm -rf /root/NVIDIA-Linux-x86_64-$VERSION")).Root()
 
 	var scratch llb.State
 	if c.Target == utils.TargetUnsloth {
-		// installing unsloth and its dependencies
-		// uv does not support installing xformers via unsloth pyproject
-		state = state.Run(utils.Shf("pip install --upgrade pip uv && uv venv --system-site-packages && %[1]s && uv pip install --upgrade --force-reinstall packaging torch==2.4.0 ipython ninja packaging bitsandbytes setuptools==69.5.1 wheel psutil transformers==4.44.2 numpy==2.0.2 && uv pip install flash-attn --no-build-isolation && python -m pip install 'unsloth[cu121_ampere_torch240] @ git+https://github.com/unslothai/unsloth.git@%[2]s'", sourceVenv, unslothCommitOrTag)).Root()
+		// Install the latest tested Unsloth release and its matching CUDA 12.6/PyTorch 2.10 dependencies.
+		state = state.Run(utils.Shf(
+			"pip install --upgrade pip uv && "+
+				"uv venv --system-site-packages && %[1]s && "+
+				"uv pip install --torch-backend=cu126 'torch==%[2]s' "+
+				"'unsloth[cu126-torch2100]==%[3]s' 'unsloth-zoo==%[3]s'",
+			sourceVenv,
+			torchVersion,
+			unslothVersion,
+		)).Root()
 
-		version := version.Version
-		if version == "" {
-			version = "main"
-		}
-		unslothScriptURL := fmt.Sprintf("https://raw.githubusercontent.com/kaito-project/aikit/%s/pkg/finetune/target_unsloth.py", version)
-		var opts []llb.HTTPOption
-		opts = append(opts, llb.Chmod(0o755))
-		unslothScript := llb.HTTP(unslothScriptURL, opts...)
 		state = state.File(
-			llb.Copy(unslothScript, utils.FileNameFromURL(unslothScriptURL), "/"),
-			llb.WithCustomName("Copying "+utils.FileNameFromURL(unslothScriptURL)),
+			llb.Mkfile("/target_unsloth.py", 0o755, finetunescript.TargetUnsloth),
+			llb.WithCustomName("Copying target_unsloth.py"),
 		)
 	}
 

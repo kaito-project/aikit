@@ -9,6 +9,35 @@ type FineTuneConfig struct {
 	Output     FineTuneOutputSpec `yaml:"output"`
 }
 
+// UnmarshalYAML applies nested fine-tuning defaults even when optional config sections are omitted.
+func (c *FineTuneConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type plain FineTuneConfig
+
+	var decoded plain
+	if err := unmarshal(&decoded); err != nil {
+		return err
+	}
+
+	var fields struct {
+		Config *struct {
+			Unsloth *struct {
+				LoadIn4bit *bool `yaml:"loadIn4bit"`
+			} `yaml:"unsloth"`
+		} `yaml:"config"`
+	}
+	if err := unmarshal(&fields); err != nil {
+		return err
+	}
+
+	decoded.Config.Unsloth.LoadIn4bit = true
+	if fields.Config != nil && fields.Config.Unsloth != nil && fields.Config.Unsloth.LoadIn4bit != nil {
+		decoded.Config.Unsloth.LoadIn4bit = *fields.Config.Unsloth.LoadIn4bit
+	}
+
+	*c = FineTuneConfig(decoded)
+	return nil
+}
+
 type FineTuneConfigSpec struct {
 	Unsloth FineTuneConfigUnslothSpec `yaml:"unsloth"`
 }
@@ -32,6 +61,19 @@ type FineTuneConfigUnslothSpec struct {
 	WeightDecay               float64 `yaml:"weightDecay"`
 	LrSchedulerType           string  `yaml:"lrSchedulerType"`
 	Seed                      int     `yaml:"seed"`
+}
+
+// UnmarshalYAML applies the documented four-bit loading default while preserving explicit false values.
+func (c *FineTuneConfigUnslothSpec) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type plain FineTuneConfigUnslothSpec
+
+	decoded := plain{LoadIn4bit: true}
+	if err := unmarshal(&decoded); err != nil {
+		return err
+	}
+
+	*c = FineTuneConfigUnslothSpec(decoded)
+	return nil
 }
 
 type FineTuneOutputSpec struct {
