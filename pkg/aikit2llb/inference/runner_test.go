@@ -279,10 +279,11 @@ func TestGenerateHFModelConfig(t *testing.T) {
 				t.Error("should normalize fragments, queries, and trailing slashes before deriving the model name")
 			}
 
-			// Cached configs should match both the new alias and the requested model.
+			// Cached configs should match the alias, backend, and requested model source.
 			if !strings.Contains(script, `grep -qxF "name: ${MODEL_NAME}"`) ||
+				!strings.Contains(script, `grep -qxF "backend: `+tt.backend+`"`) ||
 				!strings.Contains(script, `grep -qxF "  model: ${MODEL}"`) {
-				t.Error("should validate the cached model name and source")
+				t.Error("should validate the cached model name, backend, and source")
 			}
 
 			// Should contain correct backend reference
@@ -295,9 +296,10 @@ func TestGenerateHFModelConfig(t *testing.T) {
 				t.Error("should respect HF_TOKEN")
 			}
 
-			// Should handle model mismatch
-			if !strings.Contains(script, "does not match requested model") {
-				t.Error("should detect and handle model mismatch on cached volume")
+			// Cache logs should identify the backend that matched or changed.
+			if !strings.Contains(script, "Found existing "+tt.backend+" model config") ||
+				!strings.Contains(script, "does not match requested backend/model ("+tt.backend) {
+				t.Error("should identify the backend in cache hit and mismatch logs")
 			}
 		})
 	}
