@@ -1,6 +1,7 @@
 package inference
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -270,15 +271,18 @@ func TestGenerateHFModelConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			script := generateHFModelConfig(tt.backend)
 
-			// Model names should use the repository basename so API callers do not
-			// need to include the HuggingFace organization prefix.
-			if !strings.Contains(script, `MODEL_NAME="${MODEL##*/}"`) {
-				t.Error("should derive the model name from the repository basename")
+			// Model names should use the normalized repository basename so API callers
+			// do not need to include the HuggingFace organization prefix.
+			if !strings.Contains(script, `MODEL_NAME_SOURCE="${MODEL%%\#*}"`) ||
+				!strings.Contains(script, `MODEL_NAME_SOURCE="${MODEL_NAME_SOURCE%%\?*}"`) ||
+				!strings.Contains(script, `MODEL_NAME_SOURCE="${MODEL_NAME_SOURCE%/}"`) {
+				t.Error("should normalize fragments, queries, and trailing slashes before deriving the model name")
 			}
 
-			// Should verify cached config matches the requested model
-			if !strings.Contains(script, "grep -qF") {
-				t.Error("should use fixed-string grep to verify cached config matches requested model")
+			// Cached configs should match both the new alias and the requested model.
+			if !strings.Contains(script, `grep -qxF "name: ${MODEL_NAME}"`) ||
+				!strings.Contains(script, `grep -qxF "  model: ${MODEL}"`) {
+				t.Error("should validate the cached model name and source")
 			}
 
 			// Should contain correct backend reference
@@ -294,6 +298,43 @@ func TestGenerateHFModelConfig(t *testing.T) {
 			// Should handle model mismatch
 			if !strings.Contains(script, "does not match requested model") {
 				t.Error("should detect and handle model mismatch on cached volume")
+			}
+		})
+	}
+}
+
+func TestRunnerModelNameScript(t *testing.T) {
+	const wantRepositoryName = "repo"
+
+	tests := []struct {
+		name      string
+		model     string
+		want      string
+		wantError bool
+	}{
+		{name: "huggingface repository", model: "org/repo", want: wantRepositoryName},
+		{name: "trailing slash", model: "org/repo/", want: wantRepositoryName},
+		{name: "URL query containing slashes", model: "https://example.com/models/repo/?revision=refs/pr/1", want: wantRepositoryName},
+		{name: "URL fragment containing slashes", model: "https://example.com/models/repo#refs/pr/1", want: wantRepositoryName},
+		{name: "empty normalized path", model: "////?revision=refs/pr/1", wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command("bash", "-eu", "-o", "pipefail", "-c", runnerModelNameScript+"\nprintf '%s' \"$MODEL_NAME\"")
+			cmd.Env = append(cmd.Environ(), "MODEL="+tt.model)
+			output, err := cmd.CombinedOutput()
+			if tt.wantError {
+				if err == nil {
+					t.Fatalf("model %q unexpectedly produced %q", tt.model, output)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("normalize model %q: %v: %s", tt.model, err, output)
+			}
+			if got := string(output); got != tt.want {
+				t.Fatalf("normalize model %q = %q, want %q", tt.model, got, tt.want)
 			}
 		})
 	}
