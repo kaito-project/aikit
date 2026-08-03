@@ -2,7 +2,6 @@ package finetune
 
 import (
 	"context"
-	"os/exec"
 	"reflect"
 	"slices"
 	"strings"
@@ -49,6 +48,13 @@ func TestAikit2LLBDefinitionIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestAikit2LLBRequiresGPUCacheKey(t *testing.T) {
+	_, err := Aikit2LLB(fineTuneTestConfig(), Options{})
+	if err == nil || !strings.Contains(err.Error(), "GPU cache key") {
+		t.Fatalf("Aikit2LLB() error = %v, want missing GPU cache key error", err)
+	}
+}
+
 func TestAikit2LLBSeparatesTrainingAndExportPhases(t *testing.T) {
 	cfg := fineTuneTestConfig()
 	cfg.BaseModel = "model with \"quotes\"\nand $HOME `literal`"
@@ -57,18 +63,16 @@ func TestAikit2LLBSeparatesTrainingAndExportPhases(t *testing.T) {
 	ops := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, cfg))
 	wantEnv := []string{
 		"PATH=" + system.DefaultPathEnv("linux") + ":/usr/local/cuda/bin",
-		"NVIDIA_REQUIRE_CUDA=cuda>=12.6",
-		"NVIDIA_DRIVER_CAPABILITIES=compute,utility",
-		"NVIDIA_VISIBLE_DEVICES=all",
 		"LD_LIBRARY_PATH=/usr/local/cuda/lib64",
 		"UV_CACHE_DIR=/root/.cache/uv",
 		"UV_LINK_MODE=copy",
 		"HF_HOME=/root/.cache/huggingface",
 		"HF_DATASETS_CACHE=" + datasetsCachePath,
 	}
+	wantGPUEnv := append(slices.Clone(wantEnv), nvidiaCacheKey+"=session:test-session")
 	for _, graphOp := range ops {
-		if execOp := graphOp.op.GetExec(); execOp != nil && !slices.Equal(execOp.Meta.Env, wantEnv) {
-			t.Fatalf("exec environment = %#v, want %#v", execOp.Meta.Env, wantEnv)
+		if execOp := graphOp.op.GetExec(); execOp != nil && !slices.Equal(execOp.Meta.Env, wantEnv) && !slices.Equal(execOp.Meta.Env, wantGPUEnv) {
+			t.Fatalf("exec environment = %#v, want base %#v or GPU %#v", execOp.Meta.Env, wantEnv, wantGPUEnv)
 		}
 	}
 
@@ -206,141 +210,121 @@ func TestAikit2LLBCacheBoundaries(t *testing.T) {
 	}
 }
 
-func TestAikit2LLBDiscoversNvidiaDeviceMajors(t *testing.T) {
-	ops := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, fineTuneTestConfig()))
-	trainingOp := findFineTuneExec(t, ops, "target_unsloth.py train")
-	trainingCommand := strings.Join(trainingOp.op.GetExec().Meta.Args, "\x00")
-
-	for _, fragment := range []string{"/proc/devices", "nvidia-frontend", "nvidia-uvm", "$NVIDIA_UVM_MAJOR", "$NVIDIA_MAJOR"} {
-		if !strings.Contains(trainingCommand, fragment) {
-			t.Errorf("training command does not contain dynamic NVIDIA device fragment %q: %q", fragment, trainingCommand)
-		}
-	}
-	if strings.Contains(trainingCommand, "nvidia-uvm c 235") {
-		t.Fatalf("training command still contains the stale hard-coded NVIDIA UVM major: %q", trainingCommand)
-	}
-}
-
-func TestAikit2LLBUsesExplicitNvidiaDriverVersion(t *testing.T) {
-	definition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{NVIDIADriverVersion: "590.48.01"})
-	ops := decodeFineTuneDefinition(t, definition)
-	driverOp := findFineTuneExec(t, ops, "NVIDIA-Linux-x86_64-$VERSION.run")
-	driverCommand := strings.Join(driverOp.op.GetExec().Meta.Args, "\x00")
-
-	if !strings.Contains(driverCommand, "VERSION='590.48.01'") {
-		t.Fatalf("driver command does not contain explicit version: %q", driverCommand)
-	}
-	if strings.Contains(driverCommand, `VERSION=$(sed -n`) {
-		t.Fatalf("explicit driver command still reads host version: %q", driverCommand)
-	}
-}
-
-func TestAikit2LLBAutoDriverVersionHasActionableFailure(t *testing.T) {
+func TestAikit2LLBUsesNvidiaCDIWithoutInsecureSecurity(t *testing.T) {
 	definition := marshalFineTuneDefinition(t, fineTuneTestConfig())
 	ops := decodeFineTuneDefinition(t, definition)
-	driverOp := findFineTuneExec(t, ops, "NVIDIA-Linux-x86_64-$VERSION.run")
-	driverCommand := strings.Join(driverOp.op.GetExec().Meta.Args, "\x00")
+	trainingOp := findFineTuneExec(t, ops, "target_unsloth.py train")
+	exportOp := findFineTuneExec(t, ops, "target_unsloth.py export")
+	dependencyOp := findFineTuneExec(t, ops, "uv pip sync")
 
-	for _, fragment := range []string{
-		`/proc/driver/nvidia/version 2>/dev/null || true)`,
-		`if [ -z "$VERSION" ]; then`,
-		`failed to resolve NVIDIA driver version from /proc/driver/nvidia/version`,
-		`--build-arg nvidiaDriverVersion=<major.minor.patch>`,
-	} {
-		if !strings.Contains(driverCommand, fragment) {
-			t.Errorf("driver command does not contain actionable failure fragment %q: %q", fragment, driverCommand)
-		}
+	if devices := dependencyOp.op.GetExec().GetCdiDevices(); len(devices) != 0 {
+		t.Fatalf("dependency installation requested CDI devices: %#v", devices)
 	}
-	if strings.Contains(driverCommand, `test -n "$VERSION"`) {
-		t.Fatalf("driver command still uses a silent version check: %q", driverCommand)
-	}
-}
 
-func TestAikit2LLBCachesNvidiaInstallerAtomically(t *testing.T) {
-	definition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{NVIDIADriverVersion: "590.48.01"})
-	ops := decodeFineTuneDefinition(t, definition)
-	driverOp := findFineTuneExec(t, ops, "NVIDIA-Linux-x86_64-$VERSION.run")
-	driverCommand := strings.Join(driverOp.op.GetExec().Meta.Args, "\x00")
-
-	for _, fragment := range []string{
-		"CHECKSUM_URL=$DOWNLOAD_URL.sha256sum",
-		`DOWNLOAD_DIR=$(mktemp -d "$DRIVER_CACHE/.${INSTALLER_NAME}.download.XXXXXX")`,
-		`INSTALLER_TMP=$DOWNLOAD_DIR/$INSTALLER_NAME`,
-		`CHECKSUM_TMP=$DOWNLOAD_DIR/$INSTALLER_NAME.sha256sum`,
-		`trap 'rm -rf "$DOWNLOAD_DIR"' 0 HUP INT TERM`,
-		`wget --no-verbose "$CHECKSUM_URL" -O "$CHECKSUM_TMP"`,
-		`(cd "$DRIVER_CACHE" && sha256sum --check --status "$CHECKSUM_TMP")`,
-		`wget --no-verbose "$DOWNLOAD_URL" -O "$INSTALLER_TMP"`,
-		`(cd "$DOWNLOAD_DIR" && sha256sum --check --status "$CHECKSUM_TMP")`,
-		`mv "$INSTALLER_TMP" "$INSTALLER"`,
-		`rm -rf "$DOWNLOAD_DIR"`,
-	} {
-		if !strings.Contains(driverCommand, fragment) {
-			t.Errorf("driver command does not contain atomic cache fragment %q: %q", fragment, driverCommand)
-		}
-	}
-	if strings.Contains(driverCommand, `-O "$INSTALLER"`) {
-		t.Fatalf("driver command downloads directly to the final cache path: %q", driverCommand)
-	}
-	downloadIndex := strings.Index(driverCommand, `wget --no-verbose "$DOWNLOAD_URL" -O "$INSTALLER_TMP"`)
-	verifyIndex := strings.LastIndex(driverCommand, `(cd "$DOWNLOAD_DIR" && sha256sum --check --status "$CHECKSUM_TMP")`)
-	renameIndex := strings.Index(driverCommand, `mv "$INSTALLER_TMP" "$INSTALLER"`)
-	if downloadIndex == -1 || verifyIndex <= downloadIndex || renameIndex <= verifyIndex {
-		t.Fatalf("driver installer must be downloaded to a temporary path, verified, then atomically renamed: %q", driverCommand)
-	}
-}
-
-func TestNvidiaPrimaryMajorAWK(t *testing.T) {
-	tests := []struct {
-		name        string
-		devices     string
-		wantMajor   string
-		wantFailure bool
+	for _, phase := range []struct {
+		name string
+		op   fineTuneDefinitionOp
 	}{
-		{
-			name:      "frontend",
-			devices:   "Character devices:\n195 nvidia-frontend\n511 nvidia-uvm\n",
-			wantMajor: "195",
-		},
-		{
-			name:      "legacy fallback",
-			devices:   "Character devices:\n195 nvidia\n511 nvidia-uvm\n",
-			wantMajor: "195",
-		},
-		{
-			name:      "frontend preferred over legacy",
-			devices:   "Character devices:\n195 nvidia\n509 nvidia-frontend\n511 nvidia-uvm\n",
-			wantMajor: "509",
-		},
-		{
-			name:        "missing primary device",
-			devices:     "Character devices:\n511 nvidia-uvm\n",
-			wantFailure: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cmd := exec.Command("awk", nvidiaPrimaryMajorAWK)
-			cmd.Stdin = strings.NewReader(tt.devices)
-			output, err := cmd.CombinedOutput()
-			if tt.wantFailure {
-				if err == nil {
-					t.Fatalf("device discovery unexpectedly succeeded: %q", output)
-				}
-				if !strings.Contains(string(output), "expected nvidia-frontend or nvidia") {
-					t.Fatalf("device discovery failure = %q, want actionable error", output)
-				}
-				return
+		{name: "training", op: trainingOp},
+		{name: "export", op: exportOp},
+	} {
+		t.Run(phase.name, func(t *testing.T) {
+			execOp := phase.op.op.GetExec()
+			devices := execOp.GetCdiDevices()
+			if len(devices) != 1 || devices[0].Name != nvidiaCDIDevice || devices[0].Optional {
+				t.Fatalf("CDI devices = %#v, want required %q", devices, nvidiaCDIDevice)
 			}
-
-			if err != nil {
-				t.Fatalf("device discovery failed: %v: %s", err, output)
+			if execOp.Security != pb.SecurityMode_SANDBOX {
+				t.Fatalf("security mode = %s, want sandbox", execOp.Security)
 			}
-			if got := strings.TrimSpace(string(output)); got != tt.wantMajor {
-				t.Fatalf("device major = %q, want %q", got, tt.wantMajor)
+			if command := strings.Join(execOp.Meta.Args, "\x00"); !strings.Contains(command, "nvidia-smi") {
+				t.Fatalf("phase command does not verify CDI GPU access: %q", command)
+			}
+			metadata, ok := definition.Metadata[phase.op.digest]
+			if !ok {
+				t.Fatalf("metadata for operation %s not found", phase.op.digest)
+			}
+			if !metadata.Caps[pb.CapExecMetaCDI] {
+				t.Fatal("exec.meta.cdi capability is not set")
 			}
 		})
+	}
+
+	for _, graphOp := range ops {
+		execOp := graphOp.op.GetExec()
+		if execOp == nil {
+			continue
+		}
+		command := strings.Join(execOp.Meta.Args, "\x00")
+		for _, stale := range []string{"/proc/devices", "mknod", "NVIDIA-Linux-x86_64", "/proc/driver/nvidia/version"} {
+			if strings.Contains(command, stale) {
+				t.Errorf("exec command still contains manual NVIDIA setup fragment %q: %q", stale, command)
+			}
+		}
+	}
+}
+
+func TestAikit2LLBUsesDriverVersionOnlyAsGPUCacheKey(t *testing.T) {
+	baseDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{NVIDIADriverVersion: "590.48.01", BuildSessionID: "session-a"})
+	baseOps := decodeFineTuneDefinition(t, baseDefinition)
+	baseDependency := findFineTuneExec(t, baseOps, "uv pip sync")
+	baseTraining := findFineTuneExec(t, baseOps, "target_unsloth.py train")
+	baseExport := findFineTuneExec(t, baseOps, "target_unsloth.py export")
+
+	if slices.Contains(baseDependency.op.GetExec().Meta.Env, nvidiaCacheKey+"=driver:590.48.01") {
+		t.Fatal("driver cache key invalidated dependency installation")
+	}
+	for _, phase := range []fineTuneDefinitionOp{baseTraining, baseExport} {
+		if !slices.Contains(phase.op.GetExec().Meta.Env, nvidiaCacheKey+"=driver:590.48.01") {
+			t.Fatalf("GPU phase environment does not contain driver cache key: %#v", phase.op.GetExec().Meta.Env)
+		}
+		if baseDefinition.Metadata[phase.digest].IgnoreCache {
+			t.Fatal("GPU phase ignored cache despite an explicit driver version")
+		}
+	}
+
+	changedDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{NVIDIADriverVersion: "590.50.02", BuildSessionID: "session-b"})
+	changedOps := decodeFineTuneDefinition(t, changedDefinition)
+	if got := findFineTuneExec(t, changedOps, "uv pip sync").digest; got != baseDependency.digest {
+		t.Fatalf("driver version change invalidated dependency installation: got %s, want %s", got, baseDependency.digest)
+	}
+	if got := findFineTuneExec(t, changedOps, "target_unsloth.py train").digest; got == baseTraining.digest {
+		t.Fatalf("driver version change did not invalidate training: %s", got)
+	}
+	if got := findFineTuneExec(t, changedOps, "target_unsloth.py export").digest; got == baseExport.digest {
+		t.Fatalf("driver version change did not invalidate export: %s", got)
+	}
+}
+
+func TestAikit2LLBUsesSessionCacheKeyWithoutDriverVersion(t *testing.T) {
+	baseDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{BuildSessionID: "session-a"})
+	baseOps := decodeFineTuneDefinition(t, baseDefinition)
+	baseDependency := findFineTuneExec(t, baseOps, "uv pip sync")
+	baseTraining := findFineTuneExec(t, baseOps, "target_unsloth.py train")
+	baseExport := findFineTuneExec(t, baseOps, "target_unsloth.py export")
+
+	if slices.Contains(baseDependency.op.GetExec().Meta.Env, nvidiaCacheKey+"=session:session-a") {
+		t.Fatal("session cache key invalidated dependency installation")
+	}
+	for _, phase := range []fineTuneDefinitionOp{baseTraining, baseExport} {
+		if !slices.Contains(phase.op.GetExec().Meta.Env, nvidiaCacheKey+"=session:session-a") {
+			t.Fatalf("GPU phase environment does not contain session cache key: %#v", phase.op.GetExec().Meta.Env)
+		}
+		if baseDefinition.Metadata[phase.digest].IgnoreCache {
+			t.Fatal("GPU phase prunes persistent caches when using a session cache key")
+		}
+	}
+
+	changedDefinition := marshalFineTuneDefinitionWithOptions(t, fineTuneTestConfig(), Options{BuildSessionID: "session-b"})
+	changedOps := decodeFineTuneDefinition(t, changedDefinition)
+	if got := findFineTuneExec(t, changedOps, "uv pip sync").digest; got != baseDependency.digest {
+		t.Fatalf("session change invalidated dependency installation: got %s, want %s", got, baseDependency.digest)
+	}
+	if got := findFineTuneExec(t, changedOps, "target_unsloth.py train").digest; got == baseTraining.digest {
+		t.Fatalf("session change did not invalidate training: %s", got)
+	}
+	if got := findFineTuneExec(t, changedOps, "target_unsloth.py export").digest; got == baseExport.digest {
+		t.Fatalf("session change did not invalidate export: %s", got)
 	}
 }
 
@@ -365,13 +349,17 @@ func fineTuneTestConfig() *config.FineTuneConfig {
 
 func marshalFineTuneDefinition(t *testing.T, cfg *config.FineTuneConfig) *llb.Definition {
 	t.Helper()
-	return marshalFineTuneDefinitionWithOptions(t, cfg, Options{})
+	return marshalFineTuneDefinitionWithOptions(t, cfg, Options{BuildSessionID: "test-session"})
 }
 
 func marshalFineTuneDefinitionWithOptions(t *testing.T, cfg *config.FineTuneConfig, options Options) *llb.Definition {
 	t.Helper()
 
-	definition, err := Aikit2LLB(cfg, options).Marshal(context.Background())
+	state, err := Aikit2LLB(cfg, options)
+	if err != nil {
+		t.Fatalf("convert fine-tune config: %v", err)
+	}
+	definition, err := state.Marshal(context.Background())
 	if err != nil {
 		t.Fatalf("marshal fine-tune definition: %v", err)
 	}

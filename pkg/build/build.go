@@ -77,6 +77,7 @@ func buildFineTune(ctx context.Context, c client.Client, cfg *config.FineTuneCon
 	if err != nil {
 		return nil, errors.Wrap(err, "parsing fine-tune build options")
 	}
+	finetuneOpts.BuildSessionID = buildOpts.SessionID
 
 	// Parse cache imports
 	cacheImports, err := parseCacheOptions(opts)
@@ -84,7 +85,10 @@ func buildFineTune(ctx context.Context, c client.Client, cfg *config.FineTuneCon
 		return nil, errors.Wrap(err, "failed to parse cache import options")
 	}
 
-	st := finetune.Aikit2LLB(cfg, finetuneOpts)
+	st, err := finetune.Aikit2LLB(cfg, finetuneOpts)
+	if err != nil {
+		return nil, errors.Wrap(err, "converting fine-tune config to LLB")
+	}
 
 	def, err := st.Marshal(ctx)
 	if err != nil {
