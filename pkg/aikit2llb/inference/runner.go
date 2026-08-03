@@ -219,22 +219,35 @@ fi
 `
 }
 
+const runnerModelNameScript = `MODEL_NAME_SOURCE="${MODEL%%\#*}"
+MODEL_NAME_SOURCE="${MODEL_NAME_SOURCE%%\?*}"
+while [[ "$MODEL_NAME_SOURCE" == */ ]]; do
+  MODEL_NAME_SOURCE="${MODEL_NAME_SOURCE%/}"
+done
+MODEL_NAME="${MODEL_NAME_SOURCE##*/}"
+if [[ -z "$MODEL_NAME" ]]; then
+  echo "Error: cannot derive a model name from '$MODEL'" >&2
+  exit 1
+fi`
+
 // generateHFModelConfig generates the download and config logic for diffusers/vllm backends.
 // These backends pass the HuggingFace model ID through to LocalAI config at runtime.
 func generateHFModelConfig(backend string) string {
 	return fmt.Sprintf(`# Check if model config matches the requested model (volume mount caching)
-MODEL_NAME=$(echo "$MODEL" | tr '/' '-')
-if [[ -f "/models/aikit-model.yaml" ]] && grep -qF "model: ${MODEL}" /models/aikit-model.yaml 2>/dev/null; then
+%[1]s
+if [[ -f "/models/aikit-model.yaml" ]] &&
+  grep -qxF "name: ${MODEL_NAME}" /models/aikit-model.yaml 2>/dev/null &&
+  grep -qxF "  model: ${MODEL}" /models/aikit-model.yaml 2>/dev/null; then
   echo "Found existing model config matching $MODEL in /models, skipping setup"
 else
   if [[ -f "/models/aikit-model.yaml" ]]; then
     echo "Cached config does not match requested model ($MODEL), regenerating"
   fi
-  # For %[1]s backend, generate a LocalAI model config pointing to the HF model
-  echo "Generating LocalAI config for %[1]s backend with model: $MODEL"
+  # For %[2]s backend, generate a LocalAI model config pointing to the HF model
+  echo "Generating LocalAI config for %[2]s backend with model: $MODEL"
   cat > /models/aikit-model.yaml <<MODELEOF
 name: ${MODEL_NAME}
-backend: %[1]s
+backend: %[2]s
 parameters:
   model: ${MODEL}
 MODELEOF
@@ -250,5 +263,5 @@ MODELEOF
     huggingface-cli "${HF_ARGS[@]}" || echo "Pre-download skipped (model will be downloaded by backend)"
   fi
 fi
-`, backend)
+`, runnerModelNameScript, backend)
 }
