@@ -83,12 +83,13 @@ jobs:
 
           builder_info=$(docker buildx inspect "$BUILDX_BUILDER" --bootstrap)
           printf '%s\n' "$builder_info"
-          nvidia_cdi_device=$(awk '
-            $1 == "Name:" && $2 ~ /^nvidia\.com\/gpu=(GPU|MIG)-/ {
-              print $2
-              exit
-            }
-          ' <<< "$builder_info")
+          nvidia_cdi_device=""
+          while read -r builder_device; do
+            if [[ "$builder_device" =~ ^nvidia\.com/gpu=(GPU|MIG)-[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
+              nvidia_cdi_device="$builder_device"
+              break
+            fi
+          done < <(awk '$1 == "Name:" { print $2 }' <<< "$builder_info")
           if [[ -z "$nvidia_cdi_device" ]]; then
             nvidia_cdi_device=$(awk '
               $1 == "Name:" { device = $2; next }
