@@ -237,8 +237,9 @@ func TestAikit2LLBUsesNvidiaCDIWithoutInsecureSecurity(t *testing.T) {
 			if execOp.Security != pb.SecurityMode_SANDBOX {
 				t.Fatalf("security mode = %s, want sandbox", execOp.Security)
 			}
-			if command := strings.Join(execOp.Meta.Args, "\x00"); !strings.Contains(command, "nvidia-smi") {
-				t.Fatalf("phase command does not verify CDI GPU access: %q", command)
+			command := strings.Join(execOp.Meta.Args, "\x00")
+			if !strings.Contains(command, "ldconfig && nvidia-smi") {
+				t.Fatalf("phase command does not link CDI libraries and verify GPU access: %q", command)
 			}
 			metadata, ok := definition.Metadata[phase.op.digest]
 			if !ok {

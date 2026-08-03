@@ -143,7 +143,7 @@ func gpuCacheKey(opts Options) string {
 
 func runUnslothPhase(state, scriptState, configState llb.State, phase, cdiDevice string, includeLlamaCache bool) llb.State {
 	runOptions := []llb.RunOption{
-		utils.Shf("nvidia-smi && %[1]s && python /aikit-bin/target_unsloth.py %[2]s", sourceVenv, phase),
+		utils.Shf("ldconfig && nvidia-smi && %[1]s && python /aikit-bin/target_unsloth.py %[2]s", sourceVenv, phase),
 		llb.AddCDIDevice(llb.CDIDeviceName(cdiDevice)),
 		llb.AddMount("/aikit-bin", scriptState, llb.Readonly),
 		llb.AddMount("/aikit-config", configState, llb.Readonly),
