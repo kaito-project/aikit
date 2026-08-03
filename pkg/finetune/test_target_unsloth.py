@@ -59,6 +59,22 @@ class ConfigTest(unittest.TestCase):
             expected,
         )
 
+    def test_parse_config_rejects_non_mapping_roots(self):
+        cases = (
+            ("", lambda _: None),
+            ("null", json.loads),
+            ("[]", json.loads),
+            ('"value"', json.loads),
+        )
+
+        for config_text, loader in cases:
+            with self.subTest(config_text=config_text):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "configuration root must be a mapping",
+                ):
+                    target_unsloth.parse_config(config_text, loader=loader)
+
     def test_load_config_reads_utf8_content(self):
         expected = {"baseModel": "organization/mödel"}
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -5,6 +5,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 readonly ROOT_DIR
 readonly FINETUNE_DIR="$ROOT_DIR/pkg/finetune"
 readonly REQUIRED_UV_VERSION="0.12.1"
+readonly RESOLUTION_CUTOFF="2026-08-03T00:00:00Z"
 readonly LOCK_FILE="pylock.toml"
 
 if ! command -v uv > /dev/null 2>&1; then
@@ -27,6 +28,7 @@ compile_lock() {
       --torch-backend=cu126 \
       --python-version 3.10 \
       --python-platform x86_64-manylinux_2_28 \
+      --exclude-newer "$RESOLUTION_CUTOFF" \
       --only-binary=:all: \
       --format pylock.toml \
       -o "$LOCK_FILE"

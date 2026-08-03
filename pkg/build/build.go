@@ -474,8 +474,11 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 		return errors.New("config.unsloth.seed must be zero or greater")
 	}
 
+	if strings.TrimSpace(c.Output.Quantize) == "" {
+		return errors.New("output.quantize is not defined")
+	}
 	if !isSupportedUnslothQuantization(c.Output.Quantize) {
-		return errors.Errorf("output quantization %s is not supported", c.Output.Quantize)
+		return errors.Errorf("output.quantize %q is not supported", c.Output.Quantize)
 	}
 	if !isPathSafeOutputName(c.Output.Name) {
 		return errors.New("output name must be a safe filename containing only letters, numbers, dots, hyphens, or underscores")

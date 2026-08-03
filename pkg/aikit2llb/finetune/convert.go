@@ -138,13 +138,16 @@ func Aikit2LLB(c *config.FineTuneConfig, options ...Options) llb.State {
 }
 
 func nvidiaDriverInstallOptions(version string) []llb.RunOption {
-	resolveVersion := `VERSION=$(sed -n 's/.*NVIDIA UNIX x86_64 Kernel Module  \([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p' /proc/driver/nvidia/version)`
+	resolveVersion := `VERSION=$(sed -n 's/.*NVIDIA UNIX x86_64 Kernel Module  \([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p' /proc/driver/nvidia/version 2>/dev/null || true)`
 	if version != "" {
 		resolveVersion = "VERSION=" + shellQuote(version)
 	}
 
 	command := fmt.Sprintf(`%s &&
-test -n "$VERSION" &&
+if [ -z "$VERSION" ]; then
+	echo "failed to resolve NVIDIA driver version from /proc/driver/nvidia/version; expose the host NVIDIA procfs entry or pass --build-arg nvidiaDriverVersion=<major.minor.patch>" >&2
+	exit 1
+fi &&
 DRIVER_CACHE=/root/.cache/nvidia-driver &&
 INSTALLER_NAME=NVIDIA-Linux-x86_64-$VERSION.run &&
 INSTALLER=$DRIVER_CACHE/$INSTALLER_NAME &&

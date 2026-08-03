@@ -461,11 +461,25 @@ func Test_validateFineTuneConfig(t *testing.T) {
 			wantErr: "config.unsloth.seed must be zero or greater",
 		},
 		{
+			name: "missing quantization",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Output.Quantize = ""
+			},
+			wantErr: "output.quantize is not defined",
+		},
+		{
+			name: "whitespace quantization",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Output.Quantize = " \t"
+			},
+			wantErr: "output.quantize is not defined",
+		},
+		{
 			name: "unsupported quantization",
 			mutate: func(c *config.FineTuneConfig) {
 				c.Output.Quantize = "q1_unsupported"
 			},
-			wantErr: "output quantization q1_unsupported is not supported",
+			wantErr: `output.quantize "q1_unsupported" is not supported`,
 		},
 		{
 			name: "empty output name",

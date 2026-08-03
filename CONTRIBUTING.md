@@ -214,6 +214,8 @@ The Unsloth Python environment is fully resolved in `pkg/finetune/pylock.toml`. 
 make update-unsloth-lock
 ```
 
+The resolution cutoff in `scripts/update-unsloth-lock.sh` is intentionally pinned. Advance it deliberately when updating dependencies, then regenerate the lock.
+
 To test a specific configuration:
 
 ```bash

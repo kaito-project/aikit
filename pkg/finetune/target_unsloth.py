@@ -53,20 +53,26 @@ class ExportDependencies(NamedTuple):
 def parse_config(
     config_text: str,
     *,
-    loader: Callable[[str], Mapping[str, Any]] | None = None,
+    loader: Callable[[str], Any] | None = None,
 ) -> Mapping[str, Any]:
     if loader is None:
         import yaml
 
         loader = yaml.safe_load
 
-    return loader(config_text)
+    config = loader(config_text)
+    if not isinstance(config, Mapping):
+        raise ValueError(
+            f"configuration root must be a mapping, got {type(config).__name__}"
+        )
+
+    return config
 
 
 def load_config(
     config_path: Path | str,
     *,
-    loader: Callable[[str], Mapping[str, Any]] | None = None,
+    loader: Callable[[str], Any] | None = None,
 ) -> Mapping[str, Any]:
     config_text = Path(config_path).read_text(encoding="utf-8")
     return parse_config(config_text, loader=loader)

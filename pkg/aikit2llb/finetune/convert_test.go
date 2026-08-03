@@ -230,8 +230,29 @@ func TestAikit2LLBUsesExplicitNvidiaDriverVersion(t *testing.T) {
 	if !strings.Contains(driverCommand, "VERSION='590.48.01'") {
 		t.Fatalf("driver command does not contain explicit version: %q", driverCommand)
 	}
-	if strings.Contains(driverCommand, "/proc/driver/nvidia/version") {
+	if strings.Contains(driverCommand, `VERSION=$(sed -n`) {
 		t.Fatalf("explicit driver command still reads host version: %q", driverCommand)
+	}
+}
+
+func TestAikit2LLBAutoDriverVersionHasActionableFailure(t *testing.T) {
+	definition := marshalFineTuneDefinition(t, fineTuneTestConfig())
+	ops := decodeFineTuneDefinition(t, definition)
+	driverOp := findFineTuneExec(t, ops, "NVIDIA-Linux-x86_64-$VERSION.run")
+	driverCommand := strings.Join(driverOp.op.GetExec().Meta.Args, "\x00")
+
+	for _, fragment := range []string{
+		`/proc/driver/nvidia/version 2>/dev/null || true)`,
+		`if [ -z "$VERSION" ]; then`,
+		`failed to resolve NVIDIA driver version from /proc/driver/nvidia/version`,
+		`--build-arg nvidiaDriverVersion=<major.minor.patch>`,
+	} {
+		if !strings.Contains(driverCommand, fragment) {
+			t.Errorf("driver command does not contain actionable failure fragment %q: %q", fragment, driverCommand)
+		}
+	}
+	if strings.Contains(driverCommand, `test -n "$VERSION"`) {
+		t.Fatalf("driver command still uses a silent version check: %q", driverCommand)
 	}
 }
 
