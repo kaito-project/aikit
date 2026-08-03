@@ -106,7 +106,6 @@ def require_hf_commit_hash(revision: Any, *, description: str) -> str:
 
 
 def resolve_export_base_model(
-    model: Any,
     configured_model_name: str,
     *,
     model_info: Callable[..., Any],
@@ -116,11 +115,7 @@ def resolve_export_base_model(
         configured_model_name,
         load_in_4bit=False,
     )
-    if base_model_name == configured_model_name:
-        config = getattr(model, "config", None)
-        revision = getattr(config, "_commit_hash", None)
-    else:
-        revision = getattr(model_info(repo_id=base_model_name), "sha", None)
+    revision = getattr(model_info(repo_id=base_model_name), "sha", None)
 
     return base_model_name, require_hf_commit_hash(
         revision,
@@ -284,7 +279,6 @@ def train_model(
         load_in_4bit=cfg["loadIn4bit"],
     )
     base_model_name, base_model_revision = resolve_export_base_model(
-        model,
         train_config["baseModel"],
         model_info=dependencies.model_info,
         resolve_model_name=dependencies.resolve_model_name,
