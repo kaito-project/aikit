@@ -279,7 +279,7 @@ func TestGenerateHFModelConfig(t *testing.T) {
 				t.Error("should normalize fragments, queries, and trailing slashes before deriving the model name")
 			}
 
-			// Cached configs should match both the new alias and the requested model.
+			// Cached configs should match the alias, backend, and requested model source.
 			if !strings.Contains(script, `grep -qxF "name: ${MODEL_NAME}"`) ||
 				!strings.Contains(script, `grep -qxF "backend: `+tt.backend+`"`) ||
 				!strings.Contains(script, `grep -qxF "  model: ${MODEL}"`) {

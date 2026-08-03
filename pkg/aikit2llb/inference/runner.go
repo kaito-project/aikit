@@ -233,7 +233,7 @@ fi`
 // generateHFModelConfig generates the download and config logic for diffusers/vllm backends.
 // These backends pass the HuggingFace model ID through to LocalAI config at runtime.
 func generateHFModelConfig(backend string) string {
-	return fmt.Sprintf(`# Check if model config matches the requested model (volume mount caching)
+	return fmt.Sprintf(`# Check if model config matches the requested name, backend, and source (volume mount caching)
 %[1]s
 if [[ -f "/models/aikit-model.yaml" ]] &&
   grep -qxF "name: ${MODEL_NAME}" /models/aikit-model.yaml 2>/dev/null &&
