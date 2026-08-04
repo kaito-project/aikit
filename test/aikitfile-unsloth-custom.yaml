@@ -4,7 +4,7 @@ debug: true
 runtime: cuda
 models:
   - name: custom
-    source: model-q4_k_m.gguf
+    source: "__AIKIT_GGUF_OUTPUT__"
     promptTemplates:
     - name: instruct
       template: |
@@ -18,7 +18,7 @@ config: |
   - name: custom
     backend: llama
     parameters:
-      model: model-q4_k_m.gguf
+      model: "__AIKIT_GGUF_OUTPUT__"
     context_size: 4096
     f16: true
     mmap: true

@@ -66,19 +66,34 @@ foo
 	}
 }
 
-func TestNewFromBytesDefaultsFourBitLoading(t *testing.T) {
+func TestNewFromBytesNormalizesFineTuneDefaults(t *testing.T) {
 	tests := []struct {
-		name           string
-		config         string
-		wantLoadIn4bit bool
+		name     string
+		sections string
 	}{
-		{name: "config omitted", wantLoadIn4bit: true},
-		{name: "config null", config: "config:\n", wantLoadIn4bit: true},
-		{name: "config empty", config: "config: {}\n", wantLoadIn4bit: true},
-		{name: "unsloth null", config: "config:\n  unsloth:\n", wantLoadIn4bit: true},
-		{name: "unsloth empty", config: "config:\n  unsloth: {}\n", wantLoadIn4bit: true},
-		{name: "load setting false", config: "config:\n  unsloth:\n    loadIn4bit: false\n", wantLoadIn4bit: false},
+		{name: "sections omitted"},
+		{name: "sections null", sections: "config:\noutput:\n"},
+		{name: "sections empty", sections: "config: {}\noutput: {}\n"},
+		{name: "unsloth null", sections: "config:\n  unsloth:\noutput: {}\n"},
+		{name: "unsloth empty", sections: "config:\n  unsloth: {}\noutput: {}\n"},
 	}
+
+	wantUnsloth := FineTuneConfigUnslothSpec{
+		Packing:                   false,
+		MaxSeqLength:              2048,
+		LoadIn4bit:                true,
+		BatchSize:                 2,
+		GradientAccumulationSteps: 4,
+		WarmupSteps:               10,
+		MaxSteps:                  60,
+		LearningRate:              0.0002,
+		LoggingSteps:              1,
+		Optimizer:                 "adamw_8bit",
+		WeightDecay:               0.01,
+		LrSchedulerType:           "linear",
+		Seed:                      42,
+	}
+	wantOutput := FineTuneOutputSpec{Quantize: "q4_k_m", Name: "aikit-model"}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -87,7 +102,7 @@ func TestNewFromBytesDefaultsFourBitLoading(t *testing.T) {
 				"datasets:\n" +
 				"  - source: test-dataset\n" +
 				"    type: alpaca\n" +
-				tt.config
+				tt.sections
 			_, fineTuneConfig, err := NewFromBytes([]byte(input))
 			if err != nil {
 				t.Fatalf("NewFromBytes() error = %v", err)
@@ -95,9 +110,56 @@ func TestNewFromBytesDefaultsFourBitLoading(t *testing.T) {
 			if fineTuneConfig == nil {
 				t.Fatal("NewFromBytes() returned no fine-tune config")
 			}
-			if fineTuneConfig.Config.Unsloth.LoadIn4bit != tt.wantLoadIn4bit {
-				t.Fatalf("loadIn4bit = %t, want %t", fineTuneConfig.Config.Unsloth.LoadIn4bit, tt.wantLoadIn4bit)
+			if !reflect.DeepEqual(fineTuneConfig.Config.Unsloth, wantUnsloth) {
+				t.Errorf("unsloth config = %#v, want %#v", fineTuneConfig.Config.Unsloth, wantUnsloth)
+			}
+			if !reflect.DeepEqual(fineTuneConfig.Output, wantOutput) {
+				t.Errorf("output config = %#v, want %#v", fineTuneConfig.Output, wantOutput)
 			}
 		})
+	}
+}
+
+func TestNewFromBytesPreservesExplicitFineTuneZeroValues(t *testing.T) {
+	input := []byte(`
+apiVersion: v1alpha1
+baseModel: test-model
+datasets:
+  - source: test-dataset
+    type: alpaca
+config:
+  unsloth:
+    packing: false
+    maxSeqLength: 0
+    loadIn4bit: false
+    batchSize: 0
+    gradientAccumulationSteps: 0
+    warmupSteps: 0
+    maxSteps: 0
+    learningRate: 0
+    loggingSteps: 0
+    optimizer: ""
+    weightDecay: 0
+    lrSchedulerType: ""
+    seed: 0
+output:
+  quantize: ""
+  name: ""
+`)
+
+	_, fineTuneConfig, err := NewFromBytes(input)
+	if err != nil {
+		t.Fatalf("NewFromBytes() error = %v", err)
+	}
+	if fineTuneConfig == nil {
+		t.Fatal("NewFromBytes() returned no fine-tune config")
+	}
+
+	wantUnsloth := FineTuneConfigUnslothSpec{}
+	if !reflect.DeepEqual(fineTuneConfig.Config.Unsloth, wantUnsloth) {
+		t.Errorf("unsloth config = %#v, want explicit zero values %#v", fineTuneConfig.Config.Unsloth, wantUnsloth)
+	}
+	if fineTuneConfig.Output != (FineTuneOutputSpec{}) {
+		t.Errorf("output config = %#v, want explicit empty values", fineTuneConfig.Output)
 	}
 }

@@ -13,7 +13,9 @@ import (
 
 const (
 	runnerHuggingFaceHubVersion = "1.26.0"
-	runnerDependenciesCommand   = "apt-get update && " +
+	runnerDependenciesCommand   = "sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g; " +
+		"s|http://security.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list && " +
+		"apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update && " +
 		"apt-get install --no-install-recommends -y curl ca-certificates python3 python3-pip && " +
 		"(pip install --no-cache-dir --no-compile --break-system-packages huggingface-hub==" + runnerHuggingFaceHubVersion + " 2>/dev/null || " +
 		"pip install --no-cache-dir --no-compile huggingface-hub==" + runnerHuggingFaceHubVersion + ") && " +

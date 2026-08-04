@@ -131,7 +131,10 @@ func TestInstallRunnerDependencies(t *testing.T) {
 			}
 			command := commands[0]
 			for _, expected := range []string{
-				"apt-get update",
+				"http://azure.archive.ubuntu.com/ubuntu",
+				"s|http://security.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g",
+				"Acquire::Retries=5",
+				"APT::Update::Error-Mode=any",
 				"apt-get install --no-install-recommends -y curl ca-certificates python3 python3-pip",
 				"huggingface-hub==" + runnerHuggingFaceHubVersion,
 				"apt-get clean",

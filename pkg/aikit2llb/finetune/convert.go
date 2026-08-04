@@ -2,43 +2,80 @@ package finetune
 
 import (
 	"fmt"
+	"regexp"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	finetunescript "github.com/kaito-project/aikit/pkg/finetune"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/util/system"
+	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
 )
 
 const (
-	unslothVersion = "2026.8.1"
-	torchVersion   = "2.10.0"
-	sourceVenv     = ". .venv/bin/activate"
+	unslothVersion  = "2026.8.1"
+	torchVersion    = "2.10.0"
+	uvVersion       = "0.12.1"
+	pythonVenv      = "/opt/aikit-venv"
+	sourceVenv      = ". " + pythonVenv + "/bin/activate"
+	nvidiaCDIDevice = "nvidia.com/gpu=0"
+	nvidiaCacheKey  = "AIKIT_NVIDIA_CACHE_KEY"
 
-	nvidiaPrimaryMajorAWK = `$2 == "nvidia-frontend" { frontend = $1 } $2 == "nvidia" { legacy = $1 } ` +
-		`END { if (frontend != "") { print frontend } else if (legacy != "") { print legacy } ` +
-		`else { print "failed to find NVIDIA primary character device major (expected nvidia-frontend or nvidia)" > "/dev/stderr"; exit 1 } }`
-	nvidiaMknod = "NVIDIA_MAJOR=$(awk '" + nvidiaPrimaryMajorAWK + "' /proc/devices) && " +
-		"NVIDIA_UVM_MAJOR=$(awk '$2 == \"nvidia-uvm\" { print $1; exit }' /proc/devices) && " +
-		"test -n \"$NVIDIA_UVM_MAJOR\" && " +
-		"rm -f /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia0 && " +
-		"mknod --mode 666 /dev/nvidiactl c \"$NVIDIA_MAJOR\" 255 && " +
-		"mknod --mode 666 /dev/nvidia-uvm c \"$NVIDIA_UVM_MAJOR\" 0 && " +
-		"mknod --mode 666 /dev/nvidia-uvm-tools c \"$NVIDIA_UVM_MAJOR\" 1 && " +
-		"mknod --mode 666 /dev/nvidia0 c \"$NVIDIA_MAJOR\" 0 && nvidia-smi"
+	aptCacheID         = "aikit-finetune-apt-v1"
+	aptListsCacheID    = "aikit-finetune-apt-lists-v1"
+	huggingFaceCacheID = "aikit-unsloth-huggingface-v1"
+	datasetsCacheID    = "aikit-unsloth-datasets-v1"
+	torchCacheID       = "aikit-unsloth-torch-v1"
+	tritonCacheID      = "aikit-unsloth-triton-v1"
+	llamaCacheID       = "aikit-unsloth-llama-v1"
+	uvCacheID          = "aikit-unsloth-uv-" + uvVersion + "-py310-cu126-torch-" + torchVersion + "-unsloth-" + unslothVersion
+	datasetsCachePath  = "/tmp/aikit-datasets-cache"
 )
 
-func Aikit2LLB(c *config.FineTuneConfig) llb.State {
+var immutableNVIDIACDIDevicePattern = regexp.MustCompile(`^nvidia\.com/gpu=(?:GPU|MIG)-[A-Fa-f0-9]{8}-(?:[A-Fa-f0-9]{4}-){3}[A-Fa-f0-9]{12}$`)
+
+type unslothTrainingConfig struct {
+	BaseModel string                    `yaml:"baseModel"`
+	Datasets  []config.Dataset          `yaml:"datasets"`
+	Config    config.FineTuneConfigSpec `yaml:"config"`
+}
+
+type unslothExportConfig struct {
+	BaseModel string                    `yaml:"baseModel"`
+	Config    config.FineTuneConfigSpec `yaml:"config"`
+	Output    struct {
+		Quantize string `yaml:"quantize"`
+	} `yaml:"output"`
+}
+
+// Options configures host-specific fine-tuning cache behavior.
+type Options struct {
+	NVIDIADriverVersion string
+	BuildSessionID      string
+	CDIDevice           string
+}
+
+func Aikit2LLB(c *config.FineTuneConfig, opts Options) (llb.State, error) {
+	cacheKey := gpuCacheKey(opts)
+	if cacheKey == "" {
+		return llb.State{}, errors.New("GPU cache key requires an NVIDIA driver version or BuildKit session ID")
+	}
+	cdiDevice := opts.CDIDevice
+	if cdiDevice == "" {
+		cdiDevice = nvidiaCDIDevice
+	}
+
 	env := []struct {
 		key   string
 		value string
 	}{
 		{key: "PATH", value: system.DefaultPathEnv("linux") + ":/usr/local/cuda/bin"},
-		{key: "NVIDIA_REQUIRE_CUDA", value: "cuda>=12.6"},
-		{key: "NVIDIA_DRIVER_CAPABILITIES", value: "compute,utility"},
-		{key: "NVIDIA_VISIBLE_DEVICES", value: "all"},
 		{key: "LD_LIBRARY_PATH", value: "/usr/local/cuda/lib64"},
+		{key: "UV_CACHE_DIR", value: "/root/.cache/uv"},
+		{key: "UV_LINK_MODE", value: "copy"},
+		{key: "HF_HOME", value: "/root/.cache/huggingface"},
+		{key: "HF_DATASETS_CACHE", value: datasetsCachePath},
 	}
 
 	state := llb.Image(utils.CudaDevel)
@@ -46,48 +83,100 @@ func Aikit2LLB(c *config.FineTuneConfig) llb.State {
 		state = state.AddEnv(entry.key, entry.value)
 	}
 
-	// installing dependencies
-	// due to buildkit run limitations, we need to install nvidia drivers and driver version must match the host
-	state = state.Run(utils.Sh("apt-get update && apt-get install -y --no-install-recommends cmake python3-dev python3 python3-pip python-is-python3 git wget kmod && cd /root && VERSION=$(cat /proc/driver/nvidia/version | sed -n 's/.*NVIDIA UNIX x86_64 Kernel Module  \\([0-9]\\+\\.[0-9]\\+\\.[0-9]\\+\\).*/\\1/p') && wget --no-verbose https://download.nvidia.com/XFree86/Linux-x86_64/$VERSION/NVIDIA-Linux-x86_64-$VERSION.run && chmod +x NVIDIA-Linux-x86_64-$VERSION.run && ./NVIDIA-Linux-x86_64-$VERSION.run -x && rm NVIDIA-Linux-x86_64-$VERSION.run && /root/NVIDIA-Linux-x86_64-$VERSION/nvidia-installer -a -s --skip-depmod --no-dkms --no-nvidia-modprobe --no-questions --no-systemd --no-x-check --no-kernel-modules --no-kernel-module-source && rm -rf /root/NVIDIA-Linux-x86_64-$VERSION")).Root()
+	// Keep OS package installation cacheable across fine-tuning builds.
+	state = state.Run(
+		utils.Sh("rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update && apt-get install -y --no-install-recommends cmake git python-is-python3 python3 python3-dev python3-pip"),
+		persistentCacheMount("/var/cache/apt", aptCacheID, llb.CacheMountLocked),
+		persistentCacheMount("/var/lib/apt/lists", aptListsCacheID, llb.CacheMountLocked),
+	).Root()
 
-	var scratch llb.State
-	if c.Target == utils.TargetUnsloth {
-		// Install the latest tested Unsloth release and its matching CUDA 12.6/PyTorch 2.10 dependencies.
-		state = state.Run(utils.Shf(
-			"pip install --upgrade pip uv && "+
-				"uv venv --system-site-packages && %[1]s && "+
-				"uv pip install --torch-backend=cu126 'torch==%[2]s' "+
-				"'unsloth[cu126-torch2100]==%[3]s' 'unsloth-zoo==%[3]s'",
-			sourceVenv,
-			torchVersion,
-			unslothVersion,
-		)).Root()
-
-		state = state.File(
-			llb.Mkfile("/target_unsloth.py", 0o755, finetunescript.TargetUnsloth),
-			llb.WithCustomName("Copying target_unsloth.py"),
-		)
+	if c.Target != utils.TargetUnsloth {
+		return llb.Scratch(), nil
 	}
 
-	// Write config after invariant setup so config-only changes reuse dependency layers.
-	cfg, err := yaml.Marshal(c)
+	lockState := llb.Scratch().
+		File(llb.Mkfile("/pylock.toml", 0o644, finetunescript.UnslothPylock)).
+		File(llb.Mkfile("/uv-bootstrap.txt", 0o644, finetunescript.UVBootstrap))
+	dependencyCommand := "python3 -m pip install --disable-pip-version-check --no-deps --only-binary=:all: " +
+		"--require-hashes -r /aikit-lock/uv-bootstrap.txt && " +
+		"uv venv --python /usr/bin/python3 %[1]s && " +
+		"uv pip sync --preview-features pylock --require-hashes --python %[1]s/bin/python /aikit-lock/pylock.toml"
+	state = state.Run(
+		utils.Shf(dependencyCommand, pythonVenv),
+		llb.AddMount("/aikit-lock", lockState, llb.Readonly),
+		persistentCacheMount("/root/.cache/uv", uvCacheID, llb.CacheMountShared),
+	).Root()
+
+	// CDI injects the host driver at execution time. Keep host identity in
+	// the GPU phase cache key without invalidating OS or Python dependencies.
+	state = state.AddEnv(nvidiaCacheKey, cacheKey)
+
+	scriptState := llb.Scratch().File(llb.Mkfile("/target_unsloth.py", 0o755, finetunescript.TargetUnsloth))
+	trainingConfig := unslothTrainingConfig{
+		BaseModel: c.BaseModel,
+		Datasets:  c.Datasets,
+		Config:    c.Config,
+	}
+	trainingConfigState := llb.Scratch().File(llb.Mkfile("/train-config.yaml", 0o600, mustMarshalYAML(trainingConfig)))
+	state = runUnslothPhase(state, scriptState, trainingConfigState, "train", cdiDevice, false)
+
+	exportConfig := unslothExportConfig{
+		BaseModel: c.BaseModel,
+		Config:    c.Config,
+	}
+	exportConfig.Output.Quantize = c.Output.Quantize
+	exportConfigState := llb.Scratch().File(llb.Mkfile("/export-config.yaml", 0o600, mustMarshalYAML(exportConfig)))
+	state = runUnslothPhase(state, scriptState, exportConfigState, "export", cdiDevice, true)
+
+	const inputFile = "model/*.gguf"
+	copyOpts := []llb.CopyOption{&llb.CopyInfo{AllowWildcard: true}}
+	outputFile := fmt.Sprintf("%s-%s.gguf", c.Output.Name, c.Output.Quantize)
+	return llb.Scratch().File(llb.Copy(state, inputFile, outputFile, copyOpts...)), nil
+}
+
+func gpuCacheKey(opts Options) string {
+	cdiDevice := opts.CDIDevice
+	if cdiDevice == "" {
+		cdiDevice = nvidiaCDIDevice
+	}
+	if opts.NVIDIADriverVersion != "" && isImmutableNVIDIACDIDevice(cdiDevice) {
+		return fmt.Sprintf("device:%s;driver:%s", cdiDevice, opts.NVIDIADriverVersion)
+	}
+	if opts.BuildSessionID != "" {
+		return "session:" + opts.BuildSessionID
+	}
+	return ""
+}
+
+func isImmutableNVIDIACDIDevice(cdiDevice string) bool {
+	return immutableNVIDIACDIDevicePattern.MatchString(cdiDevice)
+}
+
+func runUnslothPhase(state, scriptState, configState llb.State, phase, cdiDevice string, includeLlamaCache bool) llb.State {
+	runOptions := []llb.RunOption{
+		utils.Shf("ldconfig && nvidia-smi && %[1]s && python /aikit-bin/target_unsloth.py %[2]s", sourceVenv, phase),
+		llb.AddCDIDevice(llb.CDIDeviceName(cdiDevice)),
+		llb.AddMount("/aikit-bin", scriptState, llb.Readonly),
+		llb.AddMount("/aikit-config", configState, llb.Readonly),
+		persistentCacheMount("/root/.cache/huggingface", huggingFaceCacheID, llb.CacheMountShared),
+		persistentCacheMount(datasetsCachePath, datasetsCacheID, llb.CacheMountShared),
+		persistentCacheMount("/root/.cache/torch", torchCacheID, llb.CacheMountShared),
+		persistentCacheMount("/root/.triton", tritonCacheID, llb.CacheMountShared),
+	}
+	if includeLlamaCache {
+		runOptions = append(runOptions, persistentCacheMount("/root/.unsloth", llamaCacheID, llb.CacheMountShared))
+	}
+	return state.Run(runOptions...).Root()
+}
+
+func persistentCacheMount(target, id string, sharing llb.CacheMountSharingMode) llb.RunOption {
+	return llb.AddMount(target, llb.Scratch(), llb.AsPersistentCacheDir(id, sharing))
+}
+
+func mustMarshalYAML(value interface{}) []byte {
+	data, err := yaml.Marshal(value)
 	if err != nil {
 		panic(err)
 	}
-	state = state.File(llb.Mkfile("/config.yaml", 0o644, cfg))
-
-	if c.Target == utils.TargetUnsloth {
-		// setup nvidia devices and run unsloth
-		// due to buildkit run limitations, we need to create the devices manually and run unsloth in the same command
-		state = state.Run(utils.Shf("%[1]s && %[2]s && python -m target_unsloth", nvidiaMknod, sourceVenv), llb.Security(llb.SecurityModeInsecure)).Root()
-
-		// copy gguf to scratch which will be the output
-		const inputFile = "model/*.gguf"
-		copyOpts := []llb.CopyOption{}
-		copyOpts = append(copyOpts, &llb.CopyInfo{AllowWildcard: true})
-		outputFile := fmt.Sprintf("%s-%s.gguf", c.Output.Name, c.Output.Quantize)
-		scratch = llb.Scratch().File(llb.Copy(state, inputFile, outputFile, copyOpts...))
-	}
-
-	return scratch
+	return data
 }
