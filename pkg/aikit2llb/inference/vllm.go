@@ -5,14 +5,16 @@ import (
 	"github.com/moby/buildkit/client/llb"
 )
 
-// installVLLMDependencies installs Python dependencies and a C compiler required for vLLM backend.
-// vLLM's Triton kernels need a C compiler (gcc) for JIT compilation at runtime.
+// installVLLMDependencies installs the host C compiler required by vLLM's
+// Triton runtime compilation. The backend artifact already contains portable
+// Python, its virtual environment, generated gRPC bindings, and CUDA runtime
+// libraries, so installing a second Python or CUDA environment is unnecessary.
 func installVLLMDependencies(s llb.State, merge llb.State) llb.State {
-	merge = installPythonBaseDependencies(s, merge)
-
 	savedState := s
-	s = s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y gcc libc6-dev && apt-get clean"),
+	s = s.Run(
+		utils.Sh("apt-get update && apt-get install --no-install-recommends -y gcc libc6-dev && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*"),
 		llb.WithCustomName("Installing C compiler for vLLM Triton JIT"),
+		llb.IgnoreCache,
 	).Root()
 
 	diff := llb.Diff(savedState, s)

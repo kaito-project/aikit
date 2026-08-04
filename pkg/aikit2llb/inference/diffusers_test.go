@@ -1,28 +1,34 @@
 package inference
 
 import (
+	"context"
 	"testing"
 
 	"github.com/moby/buildkit/client/llb"
 )
 
-func TestInstallDiffusersDependencies(t *testing.T) {
-	// Create a simple base state for testing
+func TestInstallDiffusersDependenciesDoesNotAddRuntimePackages(t *testing.T) {
 	baseState := llb.Image("ubuntu:22.04")
-	mergeState := baseState
+	result := installDiffusersDependencies(baseState, baseState)
 
-	// Call the function to install dependencies
-	// This should execute without panicking
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("installDiffusersDependencies panicked: %v", r)
-		}
-	}()
+	baseDefinition, err := baseState.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal base state: %v", err)
+	}
+	resultDefinition, err := result.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal Diffusers dependencies: %v", err)
+	}
 
-	result := installDiffusersDependencies(baseState, mergeState)
-
-	// The function should return a valid LLB state
-	// We can't easily test the actual installation without running BuildKit,
-	// but we can verify the function executes without panicking
-	_ = result // Use the result to avoid unused variable warning
+	baseHead, err := baseDefinition.Head()
+	if err != nil {
+		t.Fatalf("resolve base head: %v", err)
+	}
+	resultHead, err := resultDefinition.Head()
+	if err != nil {
+		t.Fatalf("resolve Diffusers head: %v", err)
+	}
+	if resultHead != baseHead {
+		t.Fatalf("Diffusers dependencies changed state head: got %s, want %s", resultHead, baseHead)
+	}
 }

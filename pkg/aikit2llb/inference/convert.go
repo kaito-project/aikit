@@ -19,7 +19,6 @@ const (
 	localAILegacyBackendVersion   = "v3.12.1"
 	localAIROCmBackendVersion     = "rocm7"
 	localAIRepo                   = "ghcr.io/kaito-project/aikit/localai:"
-	cudaVersion                   = "12-5"
 	rocmVersion                   = "7.2"
 )
 
@@ -67,11 +66,6 @@ func Aikit2LLBWithPlatforms(c *config.InferenceConfig, buildPlatform, targetPlat
 		return state, nil, err
 	}
 
-	// install cuda if runtime is nvidia and architecture is amd64
-	if c.Runtime == utils.RuntimeNVIDIA && targetPlatform.Architecture == utils.PlatformAMD64 {
-		state, merge = installCuda(c, state, merge)
-	}
-
 	// install rocm if runtime is rocm and architecture is amd64
 	if c.Runtime == utils.RuntimeROCm && targetPlatform.Architecture == utils.PlatformAMD64 {
 		state, merge = installRocm(c, state, merge)
@@ -93,9 +87,18 @@ func getBaseImage(c *config.InferenceConfig, platform *specs.Platform) llb.State
 		// Use Ubuntu 24.04 for ROCm to match noble repository.
 		return llb.Image(utils.Ubuntu24Base, llb.Platform(*platform))
 	}
-	if len(c.Backends) > 0 {
+	// Runner images need a package-capable base for their runtime downloader.
+	if isRunnerMode(c) {
 		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
 	}
+
+	// LocalAI and the llama-cpp backend are self-contained. Keep the full Ubuntu
+	// base only for Python backends whose portable environments still rely on
+	// additional system runtime libraries.
+	if len(c.Backends) > 1 || (len(c.Backends) == 1 && c.Backends[0] != utils.BackendLlamaCpp) {
+		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
+	}
+
 	return llb.Image(distrolessBase, llb.Platform(*platform))
 }
 
@@ -182,36 +185,11 @@ func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, buildPla
 	return s, merge, nil
 }
 
-// installCuda installs cuda libraries and dependencies.
-func installCuda(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.State, llb.State) {
-	cudaKeyringURL := "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb"
-	cudaKeyring := llb.HTTP(cudaKeyringURL)
-	s = s.File(
-		llb.Copy(cudaKeyring, utils.FileNameFromURL(cudaKeyringURL), "/"),
-		llb.WithCustomName("Copying "+utils.FileNameFromURL(cudaKeyringURL)), //nolint: goconst
-	)
-	s = s.Run(utils.Sh("dpkg -i cuda-keyring_1.1-1_all.deb && rm cuda-keyring_1.1-1_all.deb")).Root()
-
-	savedState := s
-	// running apt-get update twice due to nvidia repo
-	s = s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y ca-certificates && apt-get update"), llb.IgnoreCache).Root()
-
-	// install cuda libraries for llama-cpp (default) and vllm backends
-	if len(c.Backends) == 0 || slices.Contains(c.Backends, utils.BackendLlamaCpp) || slices.Contains(c.Backends, utils.BackendVLLM) {
-		// install cuda libraries and pciutils for gpu detection
-		s = s.Run(utils.Shf("apt-get install -y --no-install-recommends pciutils libcublas-%[1]s cuda-cudart-%[1]s && apt-get clean", cudaVersion)).Root()
-		// TODO: clean up /var/lib/dpkg/status
-	}
-
-	diff := llb.Diff(savedState, s)
-	return s, llb.Merge([]llb.State{merge, diff})
-}
-
 func installRocm(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.State, llb.State) {
 	savedState := s
 
 	// Set up ROCm repository
-	s = s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y ca-certificates curl gnupg"), llb.IgnoreCache).Root()
+	s = s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y ca-certificates curl gnupg && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*"), llb.IgnoreCache).Root()
 
 	// Add ROCm GPG key and repository
 	s = s.Run(utils.Sh("curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/rocm.gpg")).Root()
@@ -228,7 +206,7 @@ Pin-Priority: 600
 	// install rocm libraries and pciutils for gpu detection when using the default
 	// llama-cpp backend or when it is configured explicitly
 	if len(c.Backends) == 0 || slices.Contains(c.Backends, utils.BackendLlamaCpp) {
-		s = s.Run(utils.Sh("apt-get install -y pciutils rocm && apt-get clean")).Root()
+		s = s.Run(utils.Sh("apt-get install -y --no-install-recommends pciutils rocm && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*")).Root()
 	}
 
 	// hipblaslt soname compatibility: backend may be linked against .so.0 while ROCm 7.2 ships .so.1

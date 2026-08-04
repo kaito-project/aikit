@@ -42,19 +42,21 @@ func getEffectiveBackend(backend, runtime string, platform specs.Platform) strin
 }
 
 // getBackendVersion returns the backend OCI tag version to use for the
-// effective runtime/platform backend. Keep non-llama and Apple Silicon
-// backends pinned to the legacy tag until matching v4 artifacts are mirrored
-// upstream.
+// effective runtime/platform backend. Keep Diffusers and Apple Silicon pinned
+// to the legacy tag until matching v4 artifacts are validated.
 func getBackendVersion(backend, runtime string, platform specs.Platform) string {
 	if runtime == utils.RuntimeAppleSilicon {
 		return localAILegacyBackendVersion
 	}
 
-	if getEffectiveBackend(backend, runtime, platform) == defaultBackendName {
+	switch getEffectiveBackend(backend, runtime, platform) {
+	case utils.BackendDiffusers:
+		return localAILegacyBackendVersion
+	case utils.BackendVLLM:
+		return localAIBinaryVersion
+	default:
 		return localAILlamaCppBackendVersion
 	}
-
-	return localAILegacyBackendVersion
 }
 
 // getLocalAIArtifactVersion returns the LocalAI artifact version to install for
@@ -166,19 +168,14 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 	backendName := getBackendName(backend, c.Runtime, platform)
 	backendDir := fmt.Sprintf("/backends/%s", backendName)
 
-	// Download the backend from OCI registry and extract to specific backend directory
-	backendState := llb.Image(ociImage, llb.Platform(platform))
-
-	// Copy the backend files to the specific backend directory
-	s = s.File(
-		llb.Copy(backendState, "/", backendDir+"/", &llb.CopyInfo{
-			CreateDestPath: true,
-			AllowWildcard:  true,
-		}),
+	// Download the backend from OCI registry and extract to specific backend directory.
+	backendState := llb.Image(
+		ociImage,
+		llb.Platform(platform),
 		llb.WithCustomName(fmt.Sprintf("Installing backend %s from %s", backend, ociImage)),
 	)
 
-	// Ensure the directory exists and create metadata.json for the backend
+	// Copy the backend files and create metadata.json in one file operation.
 	backendAlias := getBackendAlias(backend)
 	metadataContent := fmt.Sprintf(`{
   "alias": "%s",
@@ -187,22 +184,11 @@ func installBackend(backend string, c *config.InferenceConfig, platform specs.Pl
 }`, backendAlias, backendName)
 
 	s = s.File(
-		llb.Mkfile(fmt.Sprintf("%s/metadata.json", backendDir), 0o644, []byte(metadataContent)),
+		llb.Copy(backendState, "/", backendDir+"/", &llb.CopyInfo{
+			CreateDestPath: true,
+		}).Mkfile(fmt.Sprintf("%s/metadata.json", backendDir), 0o644, []byte(metadataContent)),
 		llb.WithCustomName(fmt.Sprintf("Creating metadata.json for backend %s", backendName)),
 	)
-
-	// Apply workarounds for the pre-built vLLM backend image.
-	if backend == utils.BackendVLLM {
-		// Remove broken flash_attn package (PyTorch ABI incompatibility).
-		// Patch backend.py to use the current vLLM AsyncLLM API
-		// (get_model_config() was replaced by the model_config property).
-		s = s.Run(utils.Shf(
-			"rm -rf %[1]s/venv/lib/python*/site-packages/flash_attn* && "+
-				"sed -i 's/await self.llm.get_model_config()/self.llm.model_config/' %[1]s/backend.py",
-			backendDir),
-			llb.WithCustomNamef("Patching vLLM backend %s for compatibility", backendName),
-		).Root()
-	}
 
 	diff := llb.Diff(savedState, s)
 	return llb.Merge([]llb.State{merge, diff})
