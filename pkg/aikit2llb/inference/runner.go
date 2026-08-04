@@ -11,30 +11,46 @@ import (
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
+const (
+	runnerHuggingFaceHubVersion = "1.26.0"
+	runnerDependenciesCommand   = "apt-get update && " +
+		"apt-get install --no-install-recommends -y curl ca-certificates python3 python3-pip && " +
+		"(pip install --no-cache-dir --no-compile --break-system-packages huggingface-hub==" + runnerHuggingFaceHubVersion + " 2>/dev/null || " +
+		"pip install --no-cache-dir --no-compile huggingface-hub==" + runnerHuggingFaceHubVersion + ") && " +
+		"apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /root/.cache/pip"
+)
+
 // isRunnerMode returns true when the config defines backends but no models,
-// indicating a "runner" image that downloads models at container startup.
+// indicating a "runner" image that resolves models at runtime.
 func isRunnerMode(c *config.InferenceConfig) bool {
 	return len(c.Backends) > 0 && len(c.Models) == 0
 }
 
-// installRunnerDependencies installs packages needed for runtime model downloading
-// (curl for HTTP, huggingface-cli for HuggingFace Hub).
-func installRunnerDependencies(_ *config.InferenceConfig, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State) {
+// installRunnerDependencies installs packages needed for runtime model downloading.
+func installRunnerDependencies(c *config.InferenceConfig, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State) {
+	if runnerBackend(c) != utils.BackendLlamaCpp {
+		return s, merge
+	}
+
 	savedState := s
 
-	// Install curl for HTTP/HTTPS downloads, ca-certificates for TLS verification,
-	// and python3 + pip for huggingface-cli.
-	// Some backends (diffusers/vllm) already install python, but llama-cpp does not,
-	// so we always install the minimal set here.
+	// Install curl for HTTP/HTTPS downloads and the hf CLI for repository downloads.
 	// Note: Runner mode is not supported for Apple Silicon (validated in build).
 	s = s.Run(
-		utils.Sh("apt-get update && apt-get install --no-install-recommends -y curl ca-certificates python3 python3-pip && (pip install --break-system-packages huggingface-hub[cli] 2>/dev/null || pip install huggingface-hub[cli]) && apt-get clean"),
+		utils.Sh(runnerDependenciesCommand),
 		llb.WithCustomNamef("Installing runner dependencies for platform %s/%s", platform.OS, platform.Architecture),
 		llb.IgnoreCache,
 	).Root()
 
 	diff := llb.Diff(savedState, s)
 	return s, llb.Merge([]llb.State{merge, diff})
+}
+
+func runnerBackend(c *config.InferenceConfig) string {
+	if len(c.Backends) > 0 {
+		return c.Backends[0]
+	}
+	return utils.BackendLlamaCpp
 }
 
 // installRunnerEntrypoint writes the entrypoint script and creates the /models/
@@ -46,7 +62,7 @@ func installRunnerEntrypoint(c *config.InferenceConfig, s llb.State, merge llb.S
 
 	// Write the entrypoint script
 	s = s.File(
-		llb.Mkfile("/usr/local/bin/aikit-runner", 0o755, []byte(script)),
+		llb.Mkfile(runnerEntrypointPath, 0o755, []byte(script)),
 		llb.WithCustomName("Creating runner entrypoint script"),
 	)
 
@@ -63,10 +79,7 @@ func installRunnerEntrypoint(c *config.InferenceConfig, s llb.State, merge llb.S
 // generateRunnerScript produces the bash entrypoint script that downloads a model
 // at container startup and then exec's into local-ai.
 func generateRunnerScript(c *config.InferenceConfig) string {
-	backend := utils.BackendLlamaCpp
-	if len(c.Backends) > 0 {
-		backend = c.Backends[0]
-	}
+	backend := runnerBackend(c)
 
 	var sb strings.Builder
 	sb.WriteString(`#!/bin/bash
@@ -190,11 +203,11 @@ else
   else
     # HuggingFace repo - download GGUF files
     echo "Downloading GGUF files from HuggingFace: $MODEL"
-    HF_ARGS=("download" "$MODEL" "--local-dir" "/models" "--include" "*.gguf")
+    HF_ARGS=("$MODEL" "--local-dir" "/models" "--include" "*.gguf")
     if [[ -n "${HF_TOKEN:-}" ]]; then
       HF_ARGS+=("--token" "$HF_TOKEN")
     fi
-    huggingface-cli "${HF_ARGS[@]}"
+    hf download "${HF_ARGS[@]}"
   fi
   echo "$MODEL" > "$MODEL_MARKER"
   echo "Download complete"
@@ -219,36 +232,40 @@ fi
 `
 }
 
-// generateHFModelConfig generates the download and config logic for diffusers/vllm backends.
-// These backends pass the HuggingFace model ID through to LocalAI config at runtime.
+const runnerModelNameScript = `MODEL_NAME_SOURCE="${MODEL%%\#*}"
+MODEL_NAME_SOURCE="${MODEL_NAME_SOURCE%%\?*}"
+while [[ "$MODEL_NAME_SOURCE" == */ ]]; do
+  MODEL_NAME_SOURCE="${MODEL_NAME_SOURCE%/}"
+done
+MODEL_NAME="${MODEL_NAME_SOURCE##*/}"
+if [[ -z "$MODEL_NAME" ]]; then
+  echo "Error: cannot derive a model name from '$MODEL'" >&2
+  exit 1
+fi`
+
+// generateHFModelConfig generates the config logic for diffusers/vllm backends.
+// These backends pass the HuggingFace model ID through to LocalAI and manage downloads themselves.
 func generateHFModelConfig(backend string) string {
-	return fmt.Sprintf(`# Check if model config matches the requested model (volume mount caching)
-MODEL_NAME=$(echo "$MODEL" | tr '/' '-')
-if [[ -f "/models/aikit-model.yaml" ]] && grep -qF "model: ${MODEL}" /models/aikit-model.yaml 2>/dev/null; then
-  echo "Found existing model config matching $MODEL in /models, skipping setup"
+	return fmt.Sprintf(`# Check if model config matches the requested name, backend, and source (volume mount caching)
+%[1]s
+if [[ -f "/models/aikit-model.yaml" ]] &&
+  grep -qxF "name: ${MODEL_NAME}" /models/aikit-model.yaml 2>/dev/null &&
+  grep -qxF "backend: %[2]s" /models/aikit-model.yaml 2>/dev/null &&
+  grep -qxF "  model: ${MODEL}" /models/aikit-model.yaml 2>/dev/null; then
+  echo "Found existing %[2]s model config matching $MODEL in /models, skipping setup"
 else
   if [[ -f "/models/aikit-model.yaml" ]]; then
-    echo "Cached config does not match requested model ($MODEL), regenerating"
+    echo "Cached config does not match requested backend/model (%[2]s, $MODEL), regenerating"
   fi
-  # For %[1]s backend, generate a LocalAI model config pointing to the HF model
-  echo "Generating LocalAI config for %[1]s backend with model: $MODEL"
+  # For %[2]s backend, generate a LocalAI model config pointing to the HF model
+  echo "Generating LocalAI config for %[2]s backend with model: $MODEL"
   cat > /models/aikit-model.yaml <<MODELEOF
 name: ${MODEL_NAME}
-backend: %[1]s
+backend: %[2]s
 parameters:
   model: ${MODEL}
 MODELEOF
   echo "Config generated at /models/aikit-model.yaml"
-
-  # Pre-download if using HuggingFace reference (not a URL)
-  if [[ "$MODEL" != http://* ]] && [[ "$MODEL" != https://* ]]; then
-    echo "Pre-downloading model from HuggingFace: $MODEL"
-    HF_ARGS=("download" "$MODEL" "--local-dir" "/models/${MODEL_NAME}")
-    if [[ -n "${HF_TOKEN:-}" ]]; then
-      HF_ARGS+=("--token" "$HF_TOKEN")
-    fi
-    huggingface-cli "${HF_ARGS[@]}" || echo "Pre-download skipped (model will be downloaded by backend)"
-  fi
 fi
-`, backend)
+`, runnerModelNameScript, backend)
 }

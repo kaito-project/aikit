@@ -30,7 +30,7 @@ jobs:
         run: |
           rm -rf ./* || true
           rm -rf ./.??* || true
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
         # use default docker driver builder with containerd image store for local aikit image
         # these must be setup before running this test
@@ -51,13 +51,30 @@ jobs:
       - name: list images
         run: docker images
 
+      - name: verify minimal runtime contents
+        env:
+          BACKEND: ${{ matrix.backend }}
+        run: |
+          docker run --rm --entrypoint /bin/bash runner-test:test -c '
+            set -euo pipefail
+            if compgen -G "/var/lib/apt/lists/*" > /dev/null; then
+              echo "APT indexes must not be retained in the final image" >&2
+              exit 1
+            fi
+            test ! -d /root/.cache/pip
+            test ! -e /usr/local/cuda
+          '
+          if [[ "$BACKEND" == diffusers-cuda || "$BACKEND" == vllm-cuda ]]; then
+            docker run --rm --entrypoint /bin/bash runner-test:test -c 'test ! -x /usr/bin/python3'
+          fi
+
       - name: run runner (llama-cpp-cuda)
         if: matrix.backend == 'llama-cpp-cuda'
         run: docker run --name runner-test -d --rm -p 8080:8080 --gpus all runner-test:test https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q2_K.gguf
 
       - name: run runner (diffusers-cuda)
         if: matrix.backend == 'diffusers-cuda'
-        run: docker run --name runner-test -d --rm -p 8080:8080 --gpus all runner-test:test stabilityai/stable-diffusion-2-1
+        run: docker run --name runner-test -d --rm -p 8080:8080 --gpus all runner-test:test stable-diffusion-v1-5/stable-diffusion-v1-5
 
       - name: run runner (vllm-cuda)
         if: matrix.backend == 'vllm-cuda'
@@ -75,7 +92,7 @@ jobs:
           echo "$result" | jq -e '
             if (.error? != null) then
               error("error field present in response")
-            elif (.choices | type != "array" or (.choices | length) == 0) then
+            elif ((.choices | type) != "array" or (.choices | length) == 0) then
               error("choices must be a non-empty array")
             else
               .
@@ -86,7 +103,7 @@ jobs:
         if: matrix.backend == 'diffusers-cuda'
         run: |
           result=$(curl --fail --retry 10 --retry-all-errors --retry-max-time 600 http://127.0.0.1:8080/v1/images/generations -H "Content-Type: application/json" -d '{
-            "model": "stable-diffusion-2-1",
+            "model": "stable-diffusion-v1-5",
             "prompt": "A cute baby llama",
             "size": "256x256"
           }')
@@ -95,7 +112,7 @@ jobs:
           echo "$result" | jq -e '
             if (.error? != null) then
               error("error field present in response")
-            elif (.data | type != "array" or (.data | length) == 0) then
+            elif ((.data | type) != "array" or (.data | length) == 0) then
               error("data must be a non-empty array")
             elif (.data[0].url == null or .data[0].url == "") then
               error("data[0].url must be non-empty")
@@ -120,7 +137,7 @@ jobs:
           echo "$result" | jq -e '
             if (.error? != null) then
               error("error field present in response")
-            elif (.choices | type != "array" or (.choices | length) == 0) then
+            elif ((.choices | type) != "array" or (.choices | length) == 0) then
               error("choices must be a non-empty array")
             else
               .

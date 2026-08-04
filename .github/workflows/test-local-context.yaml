@@ -1,0 +1,179 @@
+name: local-model-context-test
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/test-local-context.yaml'
+      - 'Dockerfile'
+      - 'cmd/frontend/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'pkg/aikit/**'
+      - 'pkg/aikit2llb/inference/**'
+      - 'pkg/build/**'
+      - 'pkg/utils/**'
+      - 'test/ci/local-context/**'
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CONTEXT_NAME: aikit-local-context
+  DECOY_BYTES: '33554432'
+  FRONTEND_IMAGE: aikit-local-context:test
+  MAX_CONTEXT_TRANSFER_BYTES: '1048576'
+  TEST_IMAGE: aikit-local-context-model:test
+
+jobs:
+  local-model-context:
+    runs-on: ubuntu-latest-16-cores
+    timeout-minutes: 45
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+          allowed-endpoints: >
+            api.github.com:443
+            auth.docker.io:443
+            download.docker.com:443
+            github.com:443
+            *.githubusercontent.com:443
+            ghcr.io:443
+            production.cloudflare.docker.com:443
+            proxy.golang.org:443
+            quay.io:443
+            registry-1.docker.io:443
+            sum.golang.org:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Aikit emits DiffOps, which require Docker's containerd image store.
+      - name: Setup Docker with containerd image store
+        uses: crazy-max/ghaction-setup-docker@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0
+        with:
+          version: version=v27.5.1
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+
+      - uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
+
+      # Build this before creating the decoy so the frontend's own Dockerfile
+      # context can never account for the decoy transfer measurement.
+      - name: Build current Aikit frontend
+        run: |
+          set -euo pipefail
+          docker buildx inspect --bootstrap
+          docker buildx build . \
+            --platform linux/amd64 \
+            --tag "$FRONTEND_IMAGE" \
+            --load \
+            --provenance=false \
+            --progress=plain
+
+      - name: Prepare bounded local-model context
+        run: |
+          set -euo pipefail
+          context_dir="$RUNNER_TEMP/$CONTEXT_NAME"
+          mkdir -p "$context_dir"
+          cp -a test/ci/local-context/context/. "$context_dir/"
+          decoy_path="$context_dir/models/nested/unselected-model.gguf"
+          head -c "$DECOY_BYTES" /dev/urandom > "$decoy_path"
+
+          test "$(stat -c '%s' "$decoy_path")" -eq "$DECOY_BYTES"
+          test -s "$context_dir/models/nested/local-model.gguf"
+          find "$context_dir" -maxdepth 4 -type f -printf '%P %s bytes\n' | sort
+
+      - name: Build inference image and capture context transfer
+        run: |
+          set -euo pipefail
+          context_dir="$RUNNER_TEMP/$CONTEXT_NAME"
+          progress_file="$RUNNER_TEMP/aikit-local-context-progress.raw"
+          progress_json_file="$RUNNER_TEMP/aikit-local-context-progress.jsonl"
+          if docker buildx build "$context_dir" \
+            --file "$context_dir/aikitfile.yaml" \
+            --platform linux/amd64 \
+            --tag "$TEST_IMAGE" \
+            --load \
+            --provenance=false \
+            --progress=rawjson \
+            > "$progress_file" 2>&1; then
+            build_status=0
+          else
+            build_status=$?
+          fi
+
+          # Buildx can append plain-text diagnostics after its rawjson stream.
+          jq -Rrc 'fromjson?' "$progress_file" > "$progress_json_file"
+          if (( build_status != 0 )); then
+            echo 'BuildKit errors:' >&2
+            jq -r '.vertexes[]? | select(.error != null) | "\(.name): \(.error)"' "$progress_json_file" >&2 || true
+            echo 'Build logs:' >&2
+            jq -r '.logs[]?.data | @base64d' "$progress_json_file" >&2 || true
+            echo 'Buildx diagnostics:' >&2
+            tail -50 "$progress_file" >&2
+            exit "$build_status"
+          fi
+
+          local_context_bytes=$(jq -s -f test/ci/local-context/max-local-context-transfer.jq "$progress_json_file")
+          decoy_bytes=$(stat -c '%s' "$context_dir/models/nested/unselected-model.gguf")
+          printf 'local://context transferred %s bytes; decoy size is %s bytes\n' \
+            "$local_context_bytes" "$decoy_bytes" |
+            tee "$RUNNER_TEMP/aikit-local-context-transfer.txt"
+
+          if (( local_context_bytes <= 0 )); then
+            echo 'The local model context did not report a non-zero transfer.' >&2
+            exit 1
+          fi
+          if (( local_context_bytes >= MAX_CONTEXT_TRANSFER_BYTES )); then
+            echo "Local context transfer exceeded the ${MAX_CONTEXT_TRANSFER_BYTES}-byte ceiling." >&2
+            exit 1
+          fi
+          if (( local_context_bytes >= decoy_bytes )); then
+            echo 'The transfer was large enough to include the full decoy.' >&2
+            exit 1
+          fi
+
+      - name: Verify final image contents
+        run: |
+          set -euo pipefail
+          container_id=$(docker create "$TEST_IMAGE")
+          trap 'docker rm "$container_id" >/dev/null 2>&1 || true' EXIT
+
+          image_models_dir="$RUNNER_TEMP/aikit-local-context-image-models"
+          mkdir -p "$image_models_dir"
+          docker cp "$container_id:/models/." "$image_models_dir/"
+          find "$image_models_dir" -mindepth 1 -printf '%P\n' |
+            sort > "$RUNNER_TEMP/aikit-local-context-image-files.txt"
+
+          expected_path=local-model.gguf
+          grep -Fx "$expected_path" "$RUNNER_TEMP/aikit-local-context-image-files.txt"
+          cmp \
+            test/ci/local-context/context/models/nested/local-model.gguf \
+            "$image_models_dir/$expected_path"
+
+          if grep -Fx 'unselected-model.gguf' "$RUNNER_TEMP/aikit-local-context-image-files.txt"; then
+            echo 'The unselected sibling model unexpectedly appeared in the final image.' >&2
+            exit 1
+          fi
+
+      - name: Upload context diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: local-model-context-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/aikit-local-context-progress.raw
+            ${{ runner.temp }}/aikit-local-context-progress.jsonl
+            ${{ runner.temp }}/aikit-local-context-transfer.txt
+            ${{ runner.temp }}/aikit-local-context-image-files.txt
+          if-no-files-found: ignore
+          retention-days: 7

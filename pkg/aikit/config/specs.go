@@ -6,18 +6,24 @@ import (
 )
 
 func NewFromBytes(b []byte) (*InferenceConfig, *FineTuneConfig, error) {
-	inferenceConfig := &InferenceConfig{}
-	fineTuneConfig := &FineTuneConfig{}
-	var err error
-	err = yaml.Unmarshal(b, inferenceConfig)
-	if err == nil {
-		return inferenceConfig, nil, nil
+	var fields map[string]interface{}
+	if err := yaml.Unmarshal(b, &fields); err != nil {
+		return nil, nil, errors.Wrap(err, "unmarshal config")
 	}
 
-	err = yaml.Unmarshal(b, fineTuneConfig)
-	if err == nil {
+	_, hasBaseModel := fields["baseModel"]
+	_, hasDatasets := fields["datasets"]
+	if hasBaseModel || hasDatasets {
+		fineTuneConfig := &FineTuneConfig{}
+		if err := yaml.Unmarshal(b, fineTuneConfig); err != nil {
+			return nil, nil, errors.Wrap(err, "unmarshal config")
+		}
 		return nil, fineTuneConfig, nil
 	}
 
-	return nil, nil, errors.Wrap(err, "unmarshal config")
+	inferenceConfig := &InferenceConfig{}
+	if err := yaml.Unmarshal(b, inferenceConfig); err != nil {
+		return nil, nil, errors.Wrap(err, "unmarshal config")
+	}
+	return inferenceConfig, nil, nil
 }
