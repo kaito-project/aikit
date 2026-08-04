@@ -1,11 +1,10 @@
 package inference
 
-import (
-	"github.com/moby/buildkit/client/llb"
-)
+import "github.com/moby/buildkit/client/llb"
 
-// installDiffusersDependencies installs minimal Python dependencies required for diffusers backend.
-// Diffusers only needs basic Python tools, no build dependencies.
-func installDiffusersDependencies(s llb.State, merge llb.State) llb.State {
-	return installPythonBaseDependencies(s, merge)
+// installDiffusersDependencies returns the existing runtime unchanged. LocalAI
+// Diffusers backend artifacts contain portable Python, a complete virtual
+// environment, generated gRPC bindings, and their CUDA runtime libraries.
+func installDiffusersDependencies(_ llb.State, merge llb.State) llb.State {
+	return merge
 }

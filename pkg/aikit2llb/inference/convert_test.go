@@ -45,7 +45,7 @@ func TestInstallRocmInstallsPciutilsForLlamaCpp(t *testing.T) {
 			}
 
 			combined := marshalDefinitionToString(def)
-			wantInstall := "apt-get install -y pciutils rocm && apt-get clean"
+			wantInstall := "apt-get install -y --no-install-recommends pciutils rocm && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*"
 			if !strings.Contains(combined, wantInstall) {
 				t.Fatalf("expected ROCm install to contain %q, got: %s", wantInstall, combined)
 			}
@@ -119,8 +119,11 @@ func TestAikit2LLBWithPlatformsSeparatesHelperAndTargetPlatforms(t *testing.T) {
 		t.Fatalf("LocalAI artifact command = %q, want amd64 artifact", command)
 	}
 
-	baseSource := findInferenceSourceOp(t, definition, "ubuntu:22.04")
-	assertInferenceOpPlatform(t, baseSource, *targetPlatform)
+	buildBaseSource := findInferenceSourceOp(t, definition, "ubuntu:22.04")
+	assertInferenceOpPlatform(t, buildBaseSource, *targetPlatform)
+
+	runtimeBaseSource := findInferenceSourceOp(t, definition, distrolessBase)
+	assertInferenceOpPlatform(t, runtimeBaseSource, *targetPlatform)
 
 	backendSources := findInferenceSourceOps(t, definition, utils.BackendOCIRegistry)
 	if len(backendSources) == 0 {
@@ -130,8 +133,86 @@ func TestAikit2LLBWithPlatformsSeparatesHelperAndTargetPlatforms(t *testing.T) {
 		assertInferenceOpPlatform(t, backendSource, *targetPlatform)
 	}
 
-	packageInstall := findInferenceExecOp(t, definition, "dpkg -i cuda-keyring_1.1-1_all.deb")
-	assertInferenceOpPlatform(t, packageInstall, *targetPlatform)
+	for _, graphOp := range decodeInferenceDefinition(t, definition) {
+		exec := graphOp.op.GetExec()
+		if exec == nil {
+			continue
+		}
+		command := strings.Join(exec.Meta.Args, "\x00")
+		for _, duplicateRuntime := range []string{"cuda-keyring", "libcublas", "cuda-cudart", "pciutils"} {
+			if strings.Contains(command, duplicateRuntime) {
+				t.Fatalf("llama-cpp CUDA graph unexpectedly installs %q in command %q", duplicateRuntime, command)
+			}
+		}
+	}
+}
+
+func TestGetBaseImageUsesMinimalCompatibleRuntime(t *testing.T) {
+	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	tests := []struct {
+		name   string
+		config *config.InferenceConfig
+		want   string
+	}{
+		{
+			name: "default standard llama-cpp",
+			config: &config.InferenceConfig{Models: []config.Model{{
+				Name: testInferenceModelName, Source: "model.gguf",
+			}}},
+			want: distrolessBase,
+		},
+		{
+			name: "explicit standard llama-cpp",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendLlamaCpp},
+				Models:   []config.Model{{Name: testInferenceModelName, Source: "model.gguf"}},
+			},
+			want: distrolessBase,
+		},
+		{
+			name:   "llama-cpp runner",
+			config: &config.InferenceConfig{Backends: []string{utils.BackendLlamaCpp}},
+			want:   utils.UbuntuBase,
+		},
+		{
+			name: "standard Diffusers",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendDiffusers},
+				Models:   []config.Model{{Name: testInferenceModelName, Source: "model.safetensors"}},
+			},
+			want: utils.UbuntuBase,
+		},
+		{
+			name: "standard vLLM",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendVLLM},
+				Models:   []config.Model{{Name: testInferenceModelName, Source: "model.safetensors"}},
+			},
+			want: utils.UbuntuBase,
+		},
+		{
+			name:   "Apple Silicon",
+			config: &config.InferenceConfig{Runtime: utils.RuntimeAppleSilicon},
+			want:   utils.AppleSiliconBase,
+		},
+		{
+			name:   "ROCm",
+			config: &config.InferenceConfig{Runtime: utils.RuntimeROCm},
+			want:   utils.Ubuntu24Base,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := getBaseImage(tt.config, platform)
+			definition, err := state.Marshal(context.Background())
+			if err != nil {
+				t.Fatalf("marshal base image: %v", err)
+			}
+			source := findInferenceSourceOp(t, definition, tt.want)
+			assertInferenceOpPlatform(t, source, *platform)
+		})
+	}
 }
 
 func TestAikit2LLBPreservesSinglePlatformBehavior(t *testing.T) {

@@ -1,12 +1,27 @@
 package inference
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	"github.com/kaito-project/aikit/pkg/utils"
+	"github.com/moby/buildkit/client/llb"
+	"github.com/moby/buildkit/solver/pb"
+	specs "github.com/opencontainers/image-spec/specs-go/v1"
+)
+
+const (
+	runnerHFArgsAssignment    = "HF_ARGS="
+	runnerHFCLIInvocation     = "hf download"
+	runnerLegacyHFCLICommand  = "huggingface-cli"
+	runnerLocalAIExec         = "exec /usr/bin/local-ai"
+	runnerLocalDirFlag        = "--local-dir"
+	runnerPredownloadMessage  = "Pre-downloading model"
+	runnerTestInferenceModel  = "test"
+	runnerTestInferenceSource = "http://example.com/model.gguf"
 )
 
 func TestIsRunnerMode(t *testing.T) {
@@ -27,7 +42,7 @@ func TestIsRunnerMode(t *testing.T) {
 			config: &config.InferenceConfig{
 				Backends: []string{utils.BackendLlamaCpp},
 				Models: []config.Model{
-					{Name: "test", Source: "http://example.com/model.gguf"},
+					{Name: runnerTestInferenceModel, Source: runnerTestInferenceSource},
 				},
 			},
 			expected: false,
@@ -41,7 +56,7 @@ func TestIsRunnerMode(t *testing.T) {
 			name: "not runner mode - no backends with models",
 			config: &config.InferenceConfig{
 				Models: []config.Model{
-					{Name: "test", Source: "http://example.com/model.gguf"},
+					{Name: runnerTestInferenceModel, Source: runnerTestInferenceSource},
 				},
 			},
 			expected: false,
@@ -72,6 +87,73 @@ func TestIsRunnerMode(t *testing.T) {
 	}
 }
 
+func TestInstallRunnerDependencies(t *testing.T) {
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	tests := []struct {
+		name             string
+		backend          string
+		wantDependencies bool
+	}{
+		{
+			name:             "llama-cpp installs downloader dependencies",
+			backend:          utils.BackendLlamaCpp,
+			wantDependencies: true,
+		},
+		{
+			name:    "diffusers uses bundled downloader",
+			backend: utils.BackendDiffusers,
+		},
+		{
+			name:    "vllm uses bundled downloader",
+			backend: utils.BackendVLLM,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state, _ := installRunnerDependencies(
+				&config.InferenceConfig{Backends: []string{tt.backend}},
+				llb.Scratch(),
+				llb.Scratch(),
+				platform,
+			)
+			commands := runnerExecCommands(t, state)
+
+			if !tt.wantDependencies {
+				if len(commands) != 0 {
+					t.Fatalf("runner dependency commands = %q, want none", commands)
+				}
+				return
+			}
+
+			if len(commands) != 1 {
+				t.Fatalf("runner dependency commands = %q, want exactly one", commands)
+			}
+			command := commands[0]
+			for _, expected := range []string{
+				"apt-get update",
+				"apt-get install --no-install-recommends -y curl ca-certificates python3 python3-pip",
+				"huggingface-hub==" + runnerHuggingFaceHubVersion,
+				"apt-get clean",
+				"rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /root/.cache/pip",
+			} {
+				if !strings.Contains(command, expected) {
+					t.Errorf("runner dependency command does not contain %q: %s", expected, command)
+				}
+			}
+			if count := strings.Count(command, "--no-cache-dir"); count != 2 {
+				t.Errorf("--no-cache-dir count = %d, want 2 in both pip install paths: %s", count, command)
+			}
+			if count := strings.Count(command, "--no-compile"); count != 2 {
+				t.Errorf("--no-compile count = %d, want 2 in both pip install paths: %s", count, command)
+			}
+			if strings.Contains(command, "huggingface-hub[cli]") {
+				t.Errorf("runner dependency command should install the pinned core package without the legacy CLI extra: %s", command)
+			}
+		})
+	}
+}
+
 func TestGenerateRunnerScript(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -87,13 +169,14 @@ func TestGenerateRunnerScript(t *testing.T) {
 			expectContains: []string{
 				`BACKEND="llama-cpp"`,
 				".aikit-model-ref",
-				"huggingface-cli",
+				runnerHFCLIInvocation,
 				"curl -fL",
-				"exec /usr/bin/local-ai",
+				runnerLocalAIExec,
 			},
 			expectMissing: []string{
 				"--config-file",
 				"--debug",
+				runnerLegacyHFCLICommand,
 			},
 		},
 		{
@@ -105,7 +188,14 @@ func TestGenerateRunnerScript(t *testing.T) {
 				`BACKEND="diffusers"`,
 				"aikit-model.yaml",
 				"backend: diffusers",
-				"exec /usr/bin/local-ai",
+				runnerLocalAIExec,
+			},
+			expectMissing: []string{
+				runnerHFCLIInvocation,
+				runnerLegacyHFCLICommand,
+				runnerPredownloadMessage,
+				runnerHFArgsAssignment,
+				runnerLocalDirFlag,
 			},
 		},
 		{
@@ -117,7 +207,14 @@ func TestGenerateRunnerScript(t *testing.T) {
 				`BACKEND="vllm"`,
 				"aikit-model.yaml",
 				"backend: vllm",
-				"exec /usr/bin/local-ai",
+				runnerLocalAIExec,
+			},
+			expectMissing: []string{
+				runnerHFCLIInvocation,
+				runnerLegacyHFCLICommand,
+				runnerPredownloadMessage,
+				runnerHFArgsAssignment,
+				runnerLocalDirFlag,
 			},
 		},
 		{
@@ -242,8 +339,11 @@ func TestGenerateLlamaCppDownload(t *testing.T) {
 	}
 
 	// Should handle HuggingFace repos
-	if !strings.Contains(script, "huggingface-cli") {
-		t.Error("should use huggingface-cli for HF repos")
+	if !strings.Contains(script, runnerHFCLIInvocation) {
+		t.Error("should use hf download for HF repos")
+	}
+	if strings.Contains(script, runnerLegacyHFCLICommand) {
+		t.Error("should not use the legacy huggingface-cli command")
 	}
 
 	// Should respect HF_TOKEN
@@ -286,20 +386,28 @@ func TestGenerateHFModelConfig(t *testing.T) {
 				t.Error("should validate the cached model name, backend, and source")
 			}
 
-			// Should contain correct backend reference
 			if !strings.Contains(script, "backend: "+tt.backend) {
 				t.Errorf("should contain backend: %s", tt.backend)
-			}
-
-			// Should handle HF_TOKEN
-			if !strings.Contains(script, "HF_TOKEN") {
-				t.Error("should respect HF_TOKEN")
 			}
 
 			// Cache logs should identify the backend that matched or changed.
 			if !strings.Contains(script, "Found existing "+tt.backend+" model config") ||
 				!strings.Contains(script, "does not match requested backend/model ("+tt.backend) {
 				t.Error("should identify the backend in cache hit and mismatch logs")
+			}
+
+			// Bundled Python backends should download through their own Hugging Face cache.
+			for _, unexpected := range []string{
+				runnerHFCLIInvocation,
+				runnerLegacyHFCLICommand,
+				runnerPredownloadMessage,
+				runnerHFArgsAssignment,
+				runnerLocalDirFlag,
+				"HF_TOKEN",
+			} {
+				if strings.Contains(script, unexpected) {
+					t.Errorf("should not contain external downloader fragment %q", unexpected)
+				}
 			}
 		})
 	}
@@ -340,4 +448,25 @@ func TestRunnerModelNameScript(t *testing.T) {
 			}
 		})
 	}
+}
+
+func runnerExecCommands(t *testing.T, state llb.State) []string {
+	t.Helper()
+
+	definition, err := state.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal runner state: %v", err)
+	}
+
+	commands := make([]string, 0)
+	for _, data := range definition.Def {
+		op := new(pb.Op)
+		if err := op.Unmarshal(data); err != nil {
+			t.Fatalf("unmarshal runner LLB op: %v", err)
+		}
+		if exec := op.GetExec(); exec != nil {
+			commands = append(commands, strings.Join(exec.Meta.Args, " "))
+		}
+	}
+	return commands
 }

@@ -64,6 +64,9 @@ jobs:
       - name: Python unit tests
         run: make test-python
 
+      - name: Test image size checker
+        run: scripts/ci/check-image-size_test.sh
+
   llb-benchmark:
     name: llb-benchmark
     runs-on: ubuntu-latest

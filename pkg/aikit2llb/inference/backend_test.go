@@ -1,11 +1,16 @@
 package inference
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	"github.com/kaito-project/aikit/pkg/utils"
+	"github.com/moby/buildkit/client/llb"
+	"github.com/moby/buildkit/solver/pb"
+	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -69,7 +74,7 @@ func TestGetBackendTag(t *testing.T) {
 			platform: specs.Platform{
 				Architecture: utils.PlatformAMD64,
 			},
-			want: fmt.Sprintf("%s-gpu-nvidia-cuda-12-vllm", localAILegacyBackendVersion),
+			want: fmt.Sprintf("%s-gpu-nvidia-cuda-12-vllm", localAIBinaryVersion),
 		},
 		{
 			name:    "Apple Silicon llama-cpp",
@@ -182,13 +187,13 @@ func TestGetBackendVersion(t *testing.T) {
 			want: localAILegacyBackendVersion,
 		},
 		{
-			name:    "vllm stays on legacy backend tags",
+			name:    "vllm uses current backend tags",
 			backend: utils.BackendVLLM,
 			runtime: utils.RuntimeNVIDIA,
 			platform: specs.Platform{
 				Architecture: utils.PlatformAMD64,
 			},
-			want: localAILegacyBackendVersion,
+			want: localAIBinaryVersion,
 		},
 		{
 			name:    "apple silicon stays on legacy backend tags",
@@ -229,7 +234,7 @@ func TestGetLocalAIArtifactVersion(t *testing.T) {
 			want: localAIBinaryVersion,
 		},
 		{
-			name: "vllm uses legacy LocalAI binary",
+			name: "vllm uses current LocalAI binary",
 			config: &config.InferenceConfig{
 				Runtime:  utils.RuntimeNVIDIA,
 				Backends: []string{utils.BackendVLLM},
@@ -237,7 +242,7 @@ func TestGetLocalAIArtifactVersion(t *testing.T) {
 			platform: specs.Platform{
 				Architecture: utils.PlatformAMD64,
 			},
-			want: localAILegacyBackendVersion,
+			want: localAIBinaryVersion,
 		},
 		{
 			name: "diffusers uses legacy LocalAI binary",
@@ -283,10 +288,21 @@ func TestGetLocalAIArtifactVersion(t *testing.T) {
 			want: localAILegacyBackendVersion,
 		},
 		{
-			name: "mixed backends choose legacy LocalAI binary when needed",
+			name: "llama-cpp and vllm use current LocalAI binary",
 			config: &config.InferenceConfig{
 				Runtime:  utils.RuntimeNVIDIA,
 				Backends: []string{utils.BackendLlamaCpp, utils.BackendVLLM},
+			},
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: localAIBinaryVersion,
+		},
+		{
+			name: "mixed current and legacy backends choose legacy LocalAI binary",
+			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
+				Backends: []string{utils.BackendVLLM, utils.BackendDiffusers},
 			},
 			platform: specs.Platform{
 				Architecture: utils.PlatformAMD64,
@@ -302,6 +318,72 @@ func TestGetLocalAIArtifactVersion(t *testing.T) {
 				t.Errorf("getLocalAIArtifactVersion() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestInstallBackendVLLMHasOptimizedCopyWithoutCompatibilityPatch(t *testing.T) {
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	cfg := &config.InferenceConfig{
+		Runtime:  utils.RuntimeNVIDIA,
+		Backends: []string{utils.BackendVLLM},
+	}
+	base := llb.Image(utils.UbuntuBase, llb.Platform(platform))
+	state := installBackend(utils.BackendVLLM, cfg, platform, base, base)
+	definition, err := state.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal vLLM backend definition: %v", err)
+	}
+
+	backendDir := "/backends/cuda12-vllm"
+	var backendFileOpCount int
+	for _, data := range definition.Def {
+		op := new(pb.Op)
+		if err := op.Unmarshal(data); err != nil {
+			t.Fatalf("unmarshal LLB op: %v", err)
+		}
+
+		if metadata, ok := definition.Metadata[digest.FromBytes(data)]; ok {
+			customName := metadata.Description["llb.customname"]
+			if strings.Contains(customName, "Patching vLLM backend") {
+				t.Fatalf("vLLM definition contains compatibility patch op %q", customName)
+			}
+		}
+
+		if exec := op.GetExec(); exec != nil {
+			command := strings.Join(exec.Meta.Args, "\x00")
+			if strings.Contains(command, "flash_attn") || strings.Contains(command, "get_model_config()") {
+				t.Fatalf("vLLM definition contains obsolete compatibility patch command %q", command)
+			}
+		}
+
+		fileOp := op.GetFile()
+		if fileOp == nil {
+			continue
+		}
+
+		var backendCopy, backendMetadata bool
+		for _, action := range fileOp.Actions {
+			if copyAction := action.GetCopy(); copyAction != nil && copyAction.Src == "/" && strings.HasPrefix(copyAction.Dest, backendDir) {
+				backendCopy = true
+				if copyAction.AllowWildcard {
+					t.Fatal("backend root copy unexpectedly enables wildcard handling")
+				}
+			}
+			if mkfile := action.GetMkfile(); mkfile != nil && mkfile.Path == backendDir+"/metadata.json" {
+				backendMetadata = true
+			}
+		}
+
+		if backendCopy || backendMetadata {
+			backendFileOpCount++
+			if !backendCopy || !backendMetadata {
+				t.Fatal("backend root copy and metadata creation are not chained in the same file op")
+			}
+		}
+	}
+
+	if backendFileOpCount != 1 {
+		t.Fatalf("vLLM backend file op count = %d, want 1", backendFileOpCount)
 	}
 }
 
