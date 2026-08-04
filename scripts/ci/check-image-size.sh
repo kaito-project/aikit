@@ -56,7 +56,18 @@ if jq -e '.manifests != null' >/dev/null <<<"$manifest"; then
   manifest=$(inspect_manifest "${repository}@${digest}")
 fi
 
-compressed_bytes=$(jq -r '[.layers[]?.size] | add // 0' <<<"$manifest")
+if ! compressed_bytes=$(jq -er '
+  if (.layers | type) != "array" or (.layers | length) == 0 then
+    error("manifest must contain a non-empty layers array")
+  elif any(.layers[]; (.size | type) != "number" or .size < 0 or (.size | floor) != .size) then
+    error("every manifest layer must contain a non-negative integer size")
+  else
+    [.layers[].size] | add
+  end
+' <<<"$manifest"); then
+  echo "Could not determine compressed layer size for $image" >&2
+  exit 1
+fi
 if ! [[ $compressed_bytes =~ ^[0-9]+$ ]]; then
   echo "Could not determine compressed layer size for $image" >&2
   exit 1

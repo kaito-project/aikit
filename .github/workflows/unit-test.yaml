@@ -47,6 +47,9 @@ jobs:
       - name: test
         run: make test
 
+      - name: Test image size checker
+        run: scripts/ci/check-image-size_test.sh
+
   llb-benchmark:
     name: llb-benchmark
     runs-on: ubuntu-latest
