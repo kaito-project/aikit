@@ -10,6 +10,7 @@ on:
         default: smoke
         options:
           - smoke
+          - prompt-completion-smoke
           - full
 
 permissions: read-all
@@ -33,8 +34,15 @@ jobs:
           set -euo pipefail
 
           run_mode="${{ inputs.mode }}"
+          smoke_dataset_file=""
           case "$run_mode" in
-            smoke|full) ;;
+            smoke)
+              smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/alpaca-smoke.jsonl"
+              ;;
+            prompt-completion-smoke)
+              smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/prompt-completion-smoke.jsonl"
+              ;;
+            full) ;;
             *)
               echo "unsupported fine-tune mode: $run_mode" >&2
               exit 1
@@ -56,7 +64,7 @@ jobs:
             echo "DATASET_LOG_FILE=${RUNNER_TEMP}/aikit-finetune-$run_key-dataset.log"
             echo "DATASET_CONTAINER_NAME=aikit-finetune-$run_key-dataset"
             echo "DATASET_SERVER_IMAGE=busybox:1.37.0@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0"
-            echo "SMOKE_DATASET_FILE=${GITHUB_WORKSPACE}/test/fixtures/alpaca-smoke.jsonl"
+            echo "SMOKE_DATASET_FILE=$smoke_dataset_file"
           } >> "$GITHUB_ENV"
 
       - name: Verify GPU and CDI builder
@@ -144,7 +152,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Start local smoke dataset server
-        if: inputs.mode == 'smoke'
+        if: inputs.mode != 'full'
         shell: bash
         run: |
           set -euo pipefail
@@ -189,6 +197,10 @@ jobs:
             smoke)
               source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-smoke.yaml"
               dataset_url="${SMOKE_DATASET_URL:?smoke dataset URL is required}"
+              ;;
+            prompt-completion-smoke)
+              source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-prompt-completion-smoke.yaml"
+              dataset_url="${SMOKE_DATASET_URL:?prompt-completion smoke dataset URL is required}"
               ;;
             full)
               source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth.yaml"

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/utils"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -297,7 +298,13 @@ func Test_validateFineTuneConfig(t *testing.T) {
 		nilConfig bool
 		wantErr   string
 	}{
-		{name: "valid"},
+		{name: "valid alpaca dataset type"},
+		{
+			name: "valid prompt-completion dataset type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetPromptCompletion
+			},
+		},
 		{name: "nil config", nilConfig: true, wantErr: "fine-tune config is not defined"},
 		{
 			name: "missing api version",

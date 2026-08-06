@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("target_unsloth.py")
@@ -16,7 +17,7 @@ MODULE_SPEC.loader.exec_module(target_unsloth)
 def example_train_config():
     return {
         "baseModel": "example/model",
-        "datasets": [{"source": "organization/dataset"}],
+        "datasets": [{"source": "organization/dataset", "type": "alpaca"}],
         "config": {
             "unsloth": {
                 "packing": False,
@@ -35,6 +36,88 @@ def example_train_config():
             }
         },
     }
+
+
+def in_memory_dataset(rows):
+    dataset = mock.MagicMock()
+    rows = tuple(dict(row) for row in rows)
+    dataset.column_names = list(
+        dict.fromkeys(key for row in rows for key in row)
+    )
+    dataset.__len__.return_value = len(rows)
+    dataset.__iter__.side_effect = lambda: iter(rows)
+    dataset.__getitem__.side_effect = rows.__getitem__
+
+    projected_dataset = mock.MagicMock()
+
+    def select_columns(column_names):
+        projected_rows = tuple(
+            {
+                column_name: row[column_name]
+                for column_name in column_names
+                if column_name in row
+            }
+            for row in rows
+        )
+        projected_dataset.column_names = list(column_names)
+        projected_dataset.__len__.return_value = len(projected_rows)
+        projected_dataset.__iter__.side_effect = lambda: iter(projected_rows)
+        projected_dataset.__getitem__.side_effect = projected_rows.__getitem__
+        return projected_dataset
+
+    dataset.select_columns.side_effect = select_columns
+    dataset.projected_dataset = projected_dataset
+    return dataset
+
+
+def preprocessing_tokenizer():
+    tokenizer = mock.Mock(
+        eos_token="<eos>",
+        eos_token_id=2,
+        bos_token="<bos>",
+        chat_template="",
+    )
+
+    def tokenize(text, *, add_special_tokens):
+        if text == target_unsloth.PREPROCESSING_VERIFICATION_PROMPT:
+            return {"input_ids": [11, 12]}
+        if text == (
+            target_unsloth.PREPROCESSING_VERIFICATION_PROMPT
+            + target_unsloth.PREPROCESSING_VERIFICATION_COMPLETION
+            + tokenizer.eos_token
+        ):
+            return {"input_ids": [11, 12, 13, tokenizer.eos_token_id]}
+        raise AssertionError(f"unexpected verification text {text!r}")
+
+    tokenizer.side_effect = tokenize
+    return tokenizer
+
+
+def example_train_dependencies(dataset):
+    base_model = mock.Mock()
+    adapter_model = mock.Mock()
+    adapter_model.peft_config = {"default": mock.Mock()}
+    tokenizer = preprocessing_tokenizer()
+    fast_language_model = mock.Mock()
+    fast_language_model.from_pretrained.return_value = (base_model, tokenizer)
+    fast_language_model.get_peft_model.return_value = adapter_model
+    trainer = mock.Mock()
+    trainer.args = SimpleNamespace(
+        packing=False,
+        max_length=512,
+        dataset_num_proc=2,
+    )
+    dependencies = target_unsloth.TrainDependencies(
+        fast_language_model=fast_language_model,
+        is_bfloat16_supported=mock.Mock(return_value=True),
+        dataset_from_dict=mock.Mock(),
+        load_dataset=mock.Mock(return_value=dataset),
+        model_info=mock.Mock(return_value=mock.Mock(sha="a" * 40)),
+        resolve_model_name=mock.Mock(return_value="example/resolved-model"),
+        sft_config=mock.Mock(return_value="sft-config"),
+        sft_trainer=mock.Mock(return_value=trainer),
+    )
+    return dependencies
 
 
 def example_export_config():
@@ -220,49 +303,207 @@ class AlpacaFormattingTest(unittest.TestCase):
             formatted,
             {
                 "text": [
-                    target_unsloth.ALPACA_PROMPT.format(
-                        "Summarize", "A long passage", "A summary"
-                    )
-                    + "<eos>",
-                    target_unsloth.ALPACA_PROMPT.format(
-                        "Translate", "Hello", "Bonjour"
-                    )
-                    + "<eos>",
+                    """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+
+### Instruction:
+Summarize
+
+### Input:
+A long passage
+
+### Response:
+A summary<eos>""",
+                    """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+
+### Instruction:
+Translate
+
+### Input:
+Hello
+
+### Response:
+Bonjour<eos>""",
                 ]
             },
         )
         self.assertEqual(examples["instruction"], ["Summarize", "Translate"])
 
 
+class PromptCompletionPreprocessingContractTest(unittest.TestCase):
+    def test_verifies_prompt_mask_completion_labels_and_eos(self):
+        prepared_record = {
+            "input_ids": [11, 12, 13, 2],
+            "completion_mask": [0, 0, 1, 1],
+        }
+        trainer = mock.Mock()
+        trainer._prepare_dataset.return_value = [prepared_record]
+        trainer.data_collator.return_value = {
+            "input_ids": [[11, 12, 13, 2]],
+            "labels": [[-100, -100, 13, 2]],
+            "position_ids": [[0, 1, 2, 3]],
+        }
+        trainer.args = SimpleNamespace(
+            packing=True,
+            max_length=1,
+            dataset_num_proc=2,
+        )
+        dataset_from_dict = mock.Mock(return_value="verification-dataset")
+        processing_class = preprocessing_tokenizer()
+
+        target_unsloth.verify_prompt_completion_preprocessing(
+            trainer,
+            dataset_from_dict=dataset_from_dict,
+            processing_class=processing_class,
+        )
+
+        dataset_from_dict.assert_called_once_with(
+            {
+                "prompt": [target_unsloth.PREPROCESSING_VERIFICATION_PROMPT],
+                "completion": [
+                    target_unsloth.PREPROCESSING_VERIFICATION_COMPLETION
+                ],
+            }
+        )
+        trainer._prepare_dataset.assert_called_once_with(
+            "verification-dataset",
+            processing_class,
+            mock.ANY,
+            True,
+            None,
+            "prompt-completion verification",
+        )
+        verification_args = trainer._prepare_dataset.call_args.args[2]
+        self.assertIsNot(verification_args, trainer.args)
+        self.assertEqual(verification_args.max_length, 4)
+        self.assertEqual(verification_args.dataset_num_proc, 1)
+        self.assertEqual(trainer.args.max_length, 1)
+        self.assertEqual(trainer.args.dataset_num_proc, 2)
+        trainer.data_collator.assert_called_once_with([prepared_record])
+
+    def test_rejects_incorrect_prompt_completion_labels_or_eos(self):
+        cases = (
+            (
+                "prompt token is supervised",
+                [11, 12, 13, 2],
+                [0, 0, 1, 1],
+                [11, -100, 13, 2],
+                "prompt tokens must be masked",
+            ),
+            (
+                "completion token is masked",
+                [11, 12, 13, 2],
+                [0, 0, 1, 1],
+                [-100, -100, -100, 2],
+                "completion tokens must be supervised",
+            ),
+            (
+                "completion mask boundary is too early",
+                [11, 12, 13, 2],
+                [0, 1, 1, 1],
+                [-100, 12, 13, 2],
+                "boundary does not match",
+            ),
+            (
+                "completion mask has no completion",
+                [11, 12, 2],
+                [0, 0, 0],
+                [-100, -100, -100],
+                "must identify prompt and completion tokens",
+            ),
+            (
+                "terminal token is not eos",
+                [11, 12, 13, 14],
+                [0, 0, 1, 1],
+                [-100, -100, 13, 14],
+                "must end with the tokenizer EOS token",
+            ),
+        )
+
+        for name, input_ids, completion_mask, labels, error_pattern in cases:
+            with self.subTest(name=name):
+                trainer = mock.Mock()
+                trainer.args = SimpleNamespace(
+                    packing=False,
+                    max_length=512,
+                    dataset_num_proc=2,
+                )
+                trainer._prepare_dataset.return_value = [
+                    {
+                        "input_ids": input_ids,
+                        "completion_mask": completion_mask,
+                    }
+                ]
+                trainer.data_collator.return_value = {
+                    "input_ids": [input_ids],
+                    "labels": [labels],
+                }
+
+                with self.assertRaisesRegex(RuntimeError, error_pattern):
+                    target_unsloth.verify_prompt_completion_preprocessing(
+                        trainer,
+                        dataset_from_dict=mock.Mock(
+                            return_value="verification-dataset"
+                        ),
+                        processing_class=preprocessing_tokenizer(),
+                    )
+
+
 class TrainingPhaseTest(unittest.TestCase):
+    def assert_dataset_rejected_before_model(
+        self,
+        *,
+        dataset_type,
+        rows,
+        error_pattern,
+    ):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = dataset_type
+        dataset = in_memory_dataset(rows)
+        dependencies = example_train_dependencies(dataset)
+
+        try:
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.train_model(
+                        train_config,
+                        trained_model_directory=Path(temporary_directory)
+                        / "trained-model",
+                        dependencies=dependencies,
+                    )
+        finally:
+            dependencies.fast_language_model.from_pretrained.assert_not_called()
+            dependencies.fast_language_model.get_peft_model.assert_not_called()
+            dependencies.resolve_model_name.assert_not_called()
+            dependencies.model_info.assert_not_called()
+            dependencies.sft_trainer.assert_not_called()
+
+        dependencies.load_dataset.assert_called_once_with(
+            "organization/dataset",
+            split="train",
+        )
+
     def test_trains_and_saves_adapter_and_tokenizer(self):
         train_config = example_train_config()
-        base_model = mock.Mock()
-        adapter_model = mock.Mock()
-        adapter_config = mock.Mock()
-        adapter_model.peft_config = {"default": adapter_config}
-        tokenizer = mock.Mock(eos_token="<eos>")
-        fast_language_model = mock.Mock()
-        fast_language_model.from_pretrained.return_value = (base_model, tokenizer)
-        fast_language_model.get_peft_model.return_value = adapter_model
-        dataset = mock.Mock()
-        mapped_dataset = mock.Mock()
-        dataset.map.return_value = mapped_dataset
-        load_dataset = mock.Mock(return_value=dataset)
-        model_info = mock.Mock(return_value=mock.Mock(sha="a" * 40))
-        resolve_model_name = mock.Mock(return_value="example/resolved-model")
-        trainer = mock.Mock()
-        sft_trainer = mock.Mock(return_value=trainer)
-        sft_config = mock.Mock(return_value="sft-config")
-        dependencies = target_unsloth.TrainDependencies(
-            fast_language_model=fast_language_model,
-            is_bfloat16_supported=mock.Mock(return_value=True),
-            load_dataset=load_dataset,
-            model_info=model_info,
-            resolve_model_name=resolve_model_name,
-            sft_config=sft_config,
-            sft_trainer=sft_trainer,
+        dataset = in_memory_dataset(
+            [
+                {
+                    "instruction": "Summarize",
+                    "input": "A long passage",
+                    "output": "A summary",
+                    "prompt": "must not change dataset dispatch",
+                    "completion": "must not change dataset dispatch",
+                }
+            ]
         )
+        mapped_dataset = mock.Mock()
+        dataset.projected_dataset.map.return_value = mapped_dataset
+        dependencies = example_train_dependencies(dataset)
+        fast_language_model = dependencies.fast_language_model
+        base_model = fast_language_model.from_pretrained.return_value[0]
+        tokenizer = fast_language_model.from_pretrained.return_value[1]
+        adapter_model = fast_language_model.get_peft_model.return_value
+        adapter_config = adapter_model.peft_config["default"]
+        trainer = dependencies.sft_trainer.return_value
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             trained_model_directory = Path(temporary_directory) / "trained-model"
@@ -301,22 +542,30 @@ class TrainingPhaseTest(unittest.TestCase):
             base_model_name_or_path="example/resolved-model",
             revision="a" * 40,
         )
-        resolve_model_name.assert_called_once_with(
+        dependencies.resolve_model_name.assert_called_once_with(
             "example/model",
             load_in_4bit=False,
         )
-        model_info.assert_called_once_with(repo_id="example/resolved-model")
+        dependencies.model_info.assert_called_once_with(
+            repo_id="example/resolved-model"
+        )
         self.assertEqual(
             adapter_config.base_model_name_or_path,
             "example/resolved-model",
         )
         self.assertEqual(adapter_config.revision, "a" * 40)
-        load_dataset.assert_called_once_with(
+        dependencies.load_dataset.assert_called_once_with(
             "organization/dataset",
             split="train",
         )
-        self.assertTrue(dataset.map.call_args.kwargs["batched"])
-        sft_trainer.assert_called_once_with(
+        dataset.select_columns.assert_called_once_with(
+            ["instruction", "input", "output"]
+        )
+        dataset.map.assert_not_called()
+        self.assertTrue(
+            dataset.projected_dataset.map.call_args.kwargs["batched"]
+        )
+        dependencies.sft_trainer.assert_called_once_with(
             model=adapter_model,
             train_dataset=mapped_dataset,
             processing_class=tokenizer,
@@ -329,8 +578,180 @@ class TrainingPhaseTest(unittest.TestCase):
         tokenizer.save_pretrained.assert_called_once_with(
             trained_model_directory
         )
-        self.assertFalse(sft_config.call_args.kwargs["fp16"])
-        self.assertTrue(sft_config.call_args.kwargs["bf16"])
+        self.assertFalse(dependencies.sft_config.call_args.kwargs["fp16"])
+        self.assertTrue(dependencies.sft_config.call_args.kwargs["bf16"])
+        self.assertIs(
+            dependencies.sft_config.call_args.kwargs.get("completion_only_loss"),
+            False,
+        )
+
+    def test_prompt_completion_dataset_is_passed_through_with_completion_loss(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "prompt-completion"
+        rows = [
+            {
+                "prompt": "Question: What is a container image?\nAnswer:",
+                "completion": " An immutable application package.",
+                "input_ids": [1, 2, 3],
+            },
+            {
+                "prompt": "",
+                "completion": " A prompt may be empty.",
+                "labels": [4, 5, 6],
+            },
+        ]
+        dataset = in_memory_dataset(rows)
+        dependencies = example_train_dependencies(dataset)
+        verification_record = {
+            "input_ids": [11, 12, 13, 2],
+            "completion_mask": [0, 0, 1, 1],
+        }
+        trainer = dependencies.sft_trainer.return_value
+        trainer._prepare_dataset.return_value = [verification_record]
+        trainer.data_collator.return_value = {
+            "input_ids": [verification_record["input_ids"]],
+            "labels": [[-100, -100, 13, 2]],
+        }
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            target_unsloth.train_model(
+                train_config,
+                trained_model_directory=Path(temporary_directory)
+                / "trained-model",
+                dependencies=dependencies,
+            )
+
+        dataset.select_columns.assert_called_once_with(["prompt", "completion"])
+        dataset.map.assert_not_called()
+        dataset.projected_dataset.map.assert_not_called()
+        self.assertIs(
+            dependencies.sft_trainer.call_args.kwargs["train_dataset"],
+            dataset.projected_dataset,
+        )
+        self.assertEqual(
+            list(dataset.projected_dataset),
+            [
+                {
+                    "prompt": row["prompt"],
+                    "completion": row["completion"],
+                }
+                for row in rows
+            ],
+        )
+        self.assertIs(
+            dependencies.sft_config.call_args.kwargs.get("completion_only_loss"),
+            True,
+        )
+        dependencies.dataset_from_dict.assert_called_once_with(
+            {
+                "prompt": [target_unsloth.PREPROCESSING_VERIFICATION_PROMPT],
+                "completion": [
+                    target_unsloth.PREPROCESSING_VERIFICATION_COMPLETION
+                ],
+            }
+        )
+        trainer.data_collator.assert_called_once_with([verification_record])
+
+    def test_rejects_unknown_dataset_type_before_loading_or_model_allocation(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "other"
+        dataset = in_memory_dataset(
+            [{"instruction": "Do something", "input": "", "output": "Done"}]
+        )
+        dependencies = example_train_dependencies(dataset)
+
+        try:
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                with self.assertRaisesRegex(ValueError, "unsupported dataset type"):
+                    target_unsloth.train_model(
+                        train_config,
+                        trained_model_directory=Path(temporary_directory)
+                        / "trained-model",
+                        dependencies=dependencies,
+                    )
+        finally:
+            dependencies.load_dataset.assert_not_called()
+            dependencies.fast_language_model.from_pretrained.assert_not_called()
+            dependencies.fast_language_model.get_peft_model.assert_not_called()
+            dependencies.resolve_model_name.assert_not_called()
+            dependencies.model_info.assert_not_called()
+            dependencies.sft_trainer.assert_not_called()
+
+    def test_rejects_empty_or_invalid_datasets_before_model_allocation(self):
+        valid_prompt_completion = {
+            "prompt": "Question?",
+            "completion": " Answer.",
+        }
+        cases = (
+            (
+                "empty prompt-completion dataset",
+                "prompt-completion",
+                [],
+                "empty|at least one",
+            ),
+            (
+                "missing prompt-completion column",
+                "prompt-completion",
+                [{"prompt": "Question?"}],
+                "completion",
+            ),
+            (
+                "null prompt",
+                "prompt-completion",
+                [valid_prompt_completion, {"prompt": None, "completion": " Answer."}],
+                "prompt.*string",
+            ),
+            (
+                "non-string prompt",
+                "prompt-completion",
+                [valid_prompt_completion, {"prompt": 42, "completion": " Answer."}],
+                "prompt.*string",
+            ),
+            (
+                "null completion",
+                "prompt-completion",
+                [valid_prompt_completion, {"prompt": "Question?", "completion": None}],
+                "completion.*string",
+            ),
+            (
+                "non-string completion",
+                "prompt-completion",
+                [valid_prompt_completion, {"prompt": "Question?", "completion": []}],
+                "completion.*string",
+            ),
+            (
+                "empty completion",
+                "prompt-completion",
+                [valid_prompt_completion, {"prompt": "Question?", "completion": ""}],
+                "completion.*non-empty string",
+            ),
+            (
+                "missing Alpaca column",
+                "alpaca",
+                [{"instruction": "Summarize", "input": "Passage"}],
+                "output",
+            ),
+            (
+                "null Alpaca field",
+                "alpaca",
+                [{"instruction": None, "input": "", "output": "Summary"}],
+                "instruction.*string",
+            ),
+            (
+                "non-string Alpaca field",
+                "alpaca",
+                [{"instruction": "Summarize", "input": 42, "output": "Summary"}],
+                "input.*string",
+            ),
+        )
+
+        for name, dataset_type, rows, error_pattern in cases:
+            with self.subTest(name=name):
+                self.assert_dataset_rejected_before_model(
+                    dataset_type=dataset_type,
+                    rows=rows,
+                    error_pattern=error_pattern,
+                )
 
     def test_rejects_training_when_export_base_revision_is_not_immutable(self):
         train_config = example_train_config()
@@ -340,10 +761,20 @@ class TrainingPhaseTest(unittest.TestCase):
             base_model,
             mock.Mock(),
         )
+        dataset = in_memory_dataset(
+            [
+                {
+                    "instruction": "Summarize",
+                    "input": "A long passage",
+                    "output": "A summary",
+                }
+            ]
+        )
         dependencies = target_unsloth.TrainDependencies(
             fast_language_model=fast_language_model,
             is_bfloat16_supported=mock.Mock(),
-            load_dataset=mock.Mock(),
+            dataset_from_dict=mock.Mock(),
+            load_dataset=mock.Mock(return_value=dataset),
             model_info=mock.Mock(return_value=mock.Mock(sha=None)),
             resolve_model_name=mock.Mock(return_value="example/resolved-model"),
             sft_config=mock.Mock(),
@@ -360,7 +791,12 @@ class TrainingPhaseTest(unittest.TestCase):
             )
 
         fast_language_model.get_peft_model.assert_not_called()
-        dependencies.load_dataset.assert_not_called()
+        dependencies.load_dataset.assert_called_once_with(
+            "organization/dataset",
+            split="train",
+        )
+        dataset.map.assert_not_called()
+        dataset.projected_dataset.map.assert_not_called()
 
 
 class ExportPhaseTest(unittest.TestCase):

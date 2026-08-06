@@ -52,25 +52,50 @@ Create a YAML file with your configuration. For example, minimum config looks li
 apiVersion: v1alpha1
 baseModel: "unsloth/llama-2-7b-bnb-4bit" # base model to be fine tuned. this can be any model from Huggingface. For unsloth optimized base models, see https://huggingface.co/unsloth
 datasets:
-  - source: "yahma/alpaca-cleaned" # data set to be used for fine tuning. This can be a Huggingface dataset or a URL pointing to a JSON file
-    type: "alpaca" # type of dataset. only alpaca is supported at this time.
+  - source: "yahma/alpaca-cleaned" # data set to be used for fine tuning. This can be a Huggingface dataset or a URL pointing to a JSON or JSON Lines file
+    type: "alpaca" # supported types are alpaca and prompt-completion
 config:
   unsloth:
 ```
 
 For full configuration, please refer to [Fine Tune API Specifications](./specs-finetune.md).
 
+#### Dataset Types
+
+AIKit supports one dataset per fine-tuning configuration. The configured `type` selects the record schema and training loss behavior; unknown types fail instead of falling back to another formatter.
+
+##### Alpaca
+
+The `alpaca` type uses the existing `instruction`, `input`, and `output` string columns. AIKit renders the existing Alpaca prompt, appends EOS explicitly, and trains with full-sequence loss. Existing Alpaca configurations require no changes.
+
+##### Prompt-Completion
+
+The `prompt-completion` type keeps the `prompt` and `completion` columns separate. Every record must contain a string `prompt` and a non-empty string `completion`. Prompt tokens are masked from the loss, while completion and EOS tokens are supervised. Empty datasets and missing, null, or invalid fields are rejected before model allocation.
+
+```yaml
+datasets:
+  - source: organization/question-answer-data
+    type: prompt-completion
+```
+
+An expected JSON Lines record is:
+
+```json
+{"prompt":"Question: What is a container image?\nAnswer:","completion":" An immutable package containing an application and its dependencies."}
+```
+
 :::note
 Please refer to [Unsloth documentation](https://github.com/unslothai/unsloth) for more information about Unsloth configuration.
 :::
 
-#### Example Configuration
+#### Example Configurations
 
 :::warning
 Please make sure to change syntax to `#syntax=ghcr.io/kaito-project/aikit/aikit:latest` in the example below.
 :::
 
-https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth.yaml
+- [Alpaca](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth.yaml)
+- [Prompt-completion smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-prompt-completion-smoke.yaml)
 
 
 ## Build

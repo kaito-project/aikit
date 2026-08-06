@@ -13,7 +13,8 @@ const (
 
 	TargetUnsloth = "unsloth"
 
-	DatasetAlpaca = "alpaca"
+	DatasetAlpaca           = "alpaca"
+	DatasetPromptCompletion = "prompt-completion"
 
 	APIv1alpha1 = "v1alpha1"
 

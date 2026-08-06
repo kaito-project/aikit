@@ -9,8 +9,8 @@ title: Fine Tuning API Specifications
 apiVersion: # required. only v1alpha1 is supported at the moment
 baseModel: # required. any base model from Huggingface. for unsloth, see for 4bit pre-quantized models: https://huggingface.co/unsloth
 datasets:
-  - source: # required. this can be a Huggingface dataset repo or a URL pointing to a JSON file
-    type: # required. can be "alpaca". only alpaca is supported at the moment
+  - source: # required. this can be a Huggingface dataset repo or a URL pointing to a JSON or JSON Lines file
+    type: # required. can be "alpaca" or "prompt-completion"
 config:
   unsloth:
     packing: # optional. defaults to false. can make training 5x faster for short sequences.
@@ -29,6 +29,29 @@ config:
 output:
   quantize: # optional. defaults to q4_k_m. for unsloth, see for allowed quantization methods: https://github.com/unslothai/unsloth/wiki#saving-to-gguf.
   name: # optional. defaults to "aikit-model"
+```
+
+### Dataset Types
+
+Only one dataset is currently supported. Its `type` determines the required columns and loss behavior.
+
+| Type | Required string columns | Loss behavior |
+| --- | --- | --- |
+| `alpaca` | `instruction`, `input`, `output` | Renders the existing Alpaca prompt, appends EOS, and supervises the full sequence. |
+| `prompt-completion` | `prompt`, non-empty `completion` | Keeps both columns separate, masks prompt tokens, and supervises completion and EOS tokens. |
+
+Empty datasets, missing or null fields, values of the wrong type, and unknown dataset types are rejected. Existing `alpaca` configurations retain their current rendering and full-sequence loss behavior.
+
+For example, a prompt-completion dataset entry and record are:
+
+```yaml
+datasets:
+  - source: organization/question-answer-data
+    type: prompt-completion
+```
+
+```json
+{"prompt":"Question: What is a container image?\nAnswer:","completion":" An immutable package containing an application and its dependencies."}
 ```
 
 Example:

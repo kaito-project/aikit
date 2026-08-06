@@ -156,6 +156,32 @@ func TestAikit2LLBSeparatesTrainingAndExportPhases(t *testing.T) {
 	}
 }
 
+func TestAikit2LLBPropagatesPromptCompletionDatasetType(t *testing.T) {
+	cfg := fineTuneTestConfig()
+	cfg.Datasets = []config.Dataset{{Source: "test-dataset", Type: utils.DatasetPromptCompletion}}
+
+	ops := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, cfg))
+	_, trainingConfigFile := findFineTuneFile(t, ops, "/train-config.yaml")
+	wantTrainingConfig := mustMarshalYAML(unslothTrainingConfig{
+		BaseModel: cfg.BaseModel,
+		Datasets:  cfg.Datasets,
+		Config:    cfg.Config,
+	})
+	if !slices.Equal(trainingConfigFile.Data, wantTrainingConfig) {
+		t.Fatalf("training config = %q, want %q", string(trainingConfigFile.Data), string(wantTrainingConfig))
+	}
+
+	alpacaCfg := *cfg
+	alpacaCfg.Datasets = []config.Dataset{{Source: "test-dataset", Type: utils.DatasetAlpaca}}
+	alpacaOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, &alpacaCfg))
+	if got, want := findFineTuneExec(t, ops, "target_unsloth.py train").digest, findFineTuneExec(t, alpacaOps, "target_unsloth.py train").digest; got == want {
+		t.Fatalf("dataset type change did not invalidate training: %s", got)
+	}
+	if got, want := findFineTuneExec(t, ops, "target_unsloth.py export").digest, findFineTuneExec(t, alpacaOps, "target_unsloth.py export").digest; got == want {
+		t.Fatalf("dataset type change did not invalidate export: %s", got)
+	}
+}
+
 func TestAikit2LLBUsesFrozenIsolatedEnvironmentAndCaches(t *testing.T) {
 	ops := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, fineTuneTestConfig()))
 	dependencyOp := findFineTuneExec(t, ops, "uv pip sync")

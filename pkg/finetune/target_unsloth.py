@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import copy
 import json
 import re
 import shutil
@@ -18,8 +19,19 @@ EXPORT_DIRECTORY = Path("/aikit-unsloth-export")
 ARTIFACT_DIRECTORY = Path("/model")
 ADAPTER_CONFIG_FILENAME = "adapter_config.json"
 HF_COMMIT_HASH_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+DATASET_TYPE_ALPACA = "alpaca"
+DATASET_TYPE_PROMPT_COMPLETION = "prompt-completion"
+SUPPORTED_DATASET_TYPES = frozenset(
+    (DATASET_TYPE_ALPACA, DATASET_TYPE_PROMPT_COMPLETION)
+)
+DATASET_REQUIRED_FIELDS = {
+    DATASET_TYPE_ALPACA: ("instruction", "input", "output"),
+    DATASET_TYPE_PROMPT_COMPLETION: ("prompt", "completion"),
+}
+PREPROCESSING_VERIFICATION_PROMPT = "Question: What is 2 + 2?\nAnswer:"
+PREPROCESSING_VERIFICATION_COMPLETION = " 4."
 
-# Alpaca is the only dataset type currently supported by the AIKit fine-tuning API.
+# Keep the Alpaca prompt byte-for-byte compatible with existing fine-tuning builds.
 ALPACA_PROMPT = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
 
 ### Instruction:
@@ -42,9 +54,15 @@ class DatasetLoadSpec(NamedTuple):
     kwargs: dict[str, Any]
 
 
+class TrainingDatasetSpec(NamedTuple):
+    source: str
+    dataset_type: str
+
+
 class TrainDependencies(NamedTuple):
     fast_language_model: Any
     is_bfloat16_supported: Callable[[], bool]
+    dataset_from_dict: Callable[..., Any]
     load_dataset: Callable[..., Any]
     model_info: Callable[..., Any]
     resolve_model_name: Callable[..., str]
@@ -186,6 +204,312 @@ def dataset_load_spec(source: str) -> DatasetLoadSpec:
     return DatasetLoadSpec(path=source, kwargs={"split": "train"})
 
 
+def training_dataset_spec(
+    train_config: Mapping[str, Any],
+) -> TrainingDatasetSpec:
+    datasets = train_config.get("datasets")
+    if (
+        not isinstance(datasets, Sequence)
+        or isinstance(datasets, (str, bytes))
+        or len(datasets) != 1
+    ):
+        raise ValueError("training configuration must define exactly one dataset")
+
+    dataset = datasets[0]
+    if not isinstance(dataset, Mapping):
+        raise ValueError("training dataset configuration must be a mapping")
+
+    dataset_type = dataset.get("type")
+    if (
+        not isinstance(dataset_type, str)
+        or dataset_type not in SUPPORTED_DATASET_TYPES
+    ):
+        raise ValueError(f"unsupported dataset type {dataset_type!r}")
+
+    source = dataset.get("source")
+    if not isinstance(source, str) or not source.strip():
+        raise ValueError("training dataset source must be a non-empty string")
+
+    return TrainingDatasetSpec(source=source, dataset_type=dataset_type)
+
+
+def validate_training_dataset(dataset: Any, *, dataset_type: str) -> None:
+    required_fields = DATASET_REQUIRED_FIELDS[dataset_type]
+    record_count = 0
+
+    for record_index, record in enumerate(dataset):
+        record_count += 1
+        if not isinstance(record, Mapping):
+            raise ValueError(
+                f"{dataset_type} dataset record {record_index} must be a mapping"
+            )
+
+        for field in required_fields:
+            if field not in record:
+                raise ValueError(
+                    f'{dataset_type} dataset record {record_index} is missing required field "{field}"'
+                )
+
+            value = record[field]
+            if not isinstance(value, str):
+                raise ValueError(
+                    f'{dataset_type} dataset record {record_index} field "{field}" must be a string'
+                )
+
+        if (
+            dataset_type == DATASET_TYPE_PROMPT_COMPLETION
+            and record["completion"] == ""
+        ):
+            raise ValueError(
+                f'{dataset_type} dataset record {record_index} field "completion" must be a non-empty string'
+            )
+
+    if record_count == 0:
+        raise ValueError(f"{dataset_type} dataset must contain at least one record")
+
+
+def project_training_dataset(dataset: Any, *, dataset_type: str) -> Any:
+    if len(dataset) == 0:
+        raise ValueError(f"{dataset_type} dataset must contain at least one record")
+
+    column_names = getattr(dataset, "column_names", None)
+    if not isinstance(column_names, Sequence) or isinstance(
+        column_names, (str, bytes)
+    ):
+        raise ValueError(f"{dataset_type} dataset does not expose its columns")
+
+    required_fields = DATASET_REQUIRED_FIELDS[dataset_type]
+    missing_fields = [
+        field for field in required_fields if field not in column_names
+    ]
+    if missing_fields:
+        quoted_fields = ", ".join(f'"{field}"' for field in missing_fields)
+        raise ValueError(
+            f"{dataset_type} dataset is missing required columns: {quoted_fields}"
+        )
+
+    return dataset.select_columns(list(required_fields))
+
+
+def prepare_training_dataset(
+    dataset: Any,
+    *,
+    dataset_type: str,
+    end_of_sequence: str,
+) -> Any:
+    if dataset_type == DATASET_TYPE_ALPACA:
+        return dataset.map(
+            partial(format_alpaca_examples, end_of_sequence=end_of_sequence),
+            batched=True,
+        )
+    if dataset_type == DATASET_TYPE_PROMPT_COMPLETION:
+        return dataset
+
+    raise ValueError(f"unsupported dataset type {dataset_type!r}")
+
+
+def sequence_values(value: Any, *, description: str) -> list[Any]:
+    to_list = getattr(value, "tolist", None)
+    if callable(to_list):
+        value = to_list()
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise RuntimeError(
+            f"prompt-completion preprocessing {description} must be a sequence"
+        )
+
+    return list(value)
+
+
+def single_batch_row(value: Any, *, description: str) -> list[Any]:
+    rows = sequence_values(value, description=description)
+    if len(rows) != 1:
+        raise RuntimeError(
+            f"prompt-completion preprocessing {description} must contain one row"
+        )
+
+    return sequence_values(rows[0], description=f"{description} row")
+
+
+def tokenize_verification_text(
+    processing_class: Any,
+    text: str,
+    *,
+    add_special_tokens: bool,
+    description: str,
+) -> list[Any]:
+    tokenized = processing_class(
+        text,
+        add_special_tokens=add_special_tokens,
+    )
+    if not isinstance(tokenized, Mapping):
+        raise RuntimeError(
+            f"prompt-completion preprocessing {description} tokenization must return a mapping"
+        )
+
+    try:
+        return sequence_values(
+            tokenized["input_ids"],
+            description=f"{description} token IDs",
+        )
+    except KeyError as error:
+        raise RuntimeError(
+            f"prompt-completion preprocessing {description} tokenization did not produce input_ids"
+        ) from error
+
+
+def verify_prompt_completion_preprocessing(
+    trainer: Any,
+    *,
+    dataset_from_dict: Callable[..., Any],
+    processing_class: Any,
+) -> None:
+    """Verify the active Unsloth/TRL preprocessing and label-masking contract."""
+    eos_token = getattr(processing_class, "eos_token", None)
+    eos_token_id = getattr(processing_class, "eos_token_id", None)
+    if not isinstance(eos_token, str) or not eos_token:
+        raise RuntimeError(
+            "prompt-completion preprocessing requires a non-empty tokenizer EOS token"
+        )
+    if not isinstance(eos_token_id, int):
+        raise RuntimeError(
+            "prompt-completion preprocessing requires an integer tokenizer EOS token ID"
+        )
+
+    bos_token = getattr(processing_class, "bos_token", None)
+    chat_template = getattr(processing_class, "chat_template", "") or ""
+    add_special_tokens = not (
+        bos_token is not None
+        and (
+            PREPROCESSING_VERIFICATION_PROMPT.startswith(bos_token)
+            or bos_token in chat_template
+        )
+    )
+    expected_prompt_ids = tokenize_verification_text(
+        processing_class,
+        PREPROCESSING_VERIFICATION_PROMPT,
+        add_special_tokens=add_special_tokens,
+        description="prompt",
+    )
+    verification_completion = PREPROCESSING_VERIFICATION_COMPLETION
+    if not verification_completion.endswith(eos_token):
+        verification_completion += eos_token
+    expected_input_ids = tokenize_verification_text(
+        processing_class,
+        PREPROCESSING_VERIFICATION_PROMPT + verification_completion,
+        add_special_tokens=add_special_tokens,
+        description="prompt-completion",
+    )
+    if not expected_prompt_ids or not expected_input_ids:
+        raise RuntimeError(
+            "prompt-completion preprocessing verification text must produce tokens"
+        )
+
+    verification_args = copy.copy(trainer.args)
+    verification_args.max_length = len(expected_input_ids)
+    verification_args.dataset_num_proc = 1
+    verification_dataset = dataset_from_dict(
+        {
+            "prompt": [PREPROCESSING_VERIFICATION_PROMPT],
+            "completion": [PREPROCESSING_VERIFICATION_COMPLETION],
+        }
+    )
+    prepared_dataset = trainer._prepare_dataset(
+        verification_dataset,
+        processing_class,
+        verification_args,
+        bool(getattr(trainer.args, "packing", False)),
+        None,
+        "prompt-completion verification",
+    )
+    prepared_record = prepared_dataset[0]
+    if not isinstance(prepared_record, Mapping):
+        raise RuntimeError(
+            "prompt-completion preprocessing must produce mapping records"
+        )
+
+    try:
+        input_ids = sequence_values(
+            prepared_record["input_ids"],
+            description="input_ids",
+        )
+        completion_mask = sequence_values(
+            prepared_record["completion_mask"],
+            description="completion_mask",
+        )
+    except KeyError as error:
+        raise RuntimeError(
+            f"prompt-completion preprocessing did not produce {error.args[0]}"
+        ) from error
+
+    if len(input_ids) != len(completion_mask):
+        raise RuntimeError(
+            "prompt-completion preprocessing input_ids and completion_mask lengths differ"
+        )
+    if 0 not in completion_mask or 1 not in completion_mask:
+        raise RuntimeError(
+            "prompt-completion preprocessing must identify prompt and completion tokens"
+        )
+
+    first_completion = completion_mask.index(1)
+    if first_completion != len(expected_prompt_ids):
+        raise RuntimeError(
+            "prompt-completion preprocessing completion mask boundary does not match the tokenized prompt"
+        )
+    if completion_mask[:first_completion] != [0] * first_completion or completion_mask[
+        first_completion:
+    ] != [1] * (len(completion_mask) - first_completion):
+        raise RuntimeError(
+            "prompt-completion preprocessing must mask a prompt prefix and completion suffix"
+        )
+
+    collated = trainer.data_collator([prepared_record])
+    if not isinstance(collated, Mapping):
+        raise RuntimeError(
+            "prompt-completion preprocessing data collator must return a mapping"
+        )
+    try:
+        collated_input_ids = single_batch_row(
+            collated["input_ids"],
+            description="collated input_ids",
+        )
+        labels = single_batch_row(
+            collated["labels"],
+            description="collated labels",
+        )
+    except KeyError as error:
+        raise RuntimeError(
+            f"prompt-completion preprocessing data collator did not produce {error.args[0]}"
+        ) from error
+
+    if collated_input_ids[: len(input_ids)] != input_ids:
+        raise RuntimeError(
+            "prompt-completion preprocessing data collator changed the token sequence"
+        )
+    if len(labels) < len(input_ids):
+        raise RuntimeError(
+            "prompt-completion preprocessing labels are shorter than input_ids"
+        )
+
+    for index, mask_value in enumerate(completion_mask):
+        if mask_value == 0 and labels[index] != -100:
+            raise RuntimeError(
+                "prompt-completion preprocessing prompt tokens must be masked"
+            )
+        if mask_value == 1 and labels[index] != input_ids[index]:
+            raise RuntimeError(
+                "prompt-completion preprocessing completion tokens must be supervised"
+            )
+
+    if input_ids[-1] != eos_token_id:
+        raise RuntimeError(
+            "prompt-completion preprocessing must end with the tokenizer EOS token"
+        )
+    if completion_mask[-1] != 1 or labels[len(input_ids) - 1] != eos_token_id:
+        raise RuntimeError(
+            "prompt-completion preprocessing EOS token must be supervised"
+        )
+
+
 def format_alpaca_examples(
     examples: Mapping[str, Sequence[str]],
     *,
@@ -235,13 +559,14 @@ def load_train_dependencies() -> TrainDependencies:
     # Unsloth must be imported before Transformers-based training dependencies.
     from unsloth import FastLanguageModel, is_bfloat16_supported
     from unsloth.models.loader_utils import get_model_name
-    from datasets import load_dataset
+    from datasets import Dataset, load_dataset
     from huggingface_hub import model_info
     from trl import SFTConfig, SFTTrainer
 
     return TrainDependencies(
         fast_language_model=FastLanguageModel,
         is_bfloat16_supported=is_bfloat16_supported,
+        dataset_from_dict=Dataset.from_dict,
         load_dataset=load_dataset,
         model_info=model_info,
         resolve_model_name=get_model_name,
@@ -266,11 +591,21 @@ def train_model(
     trained_model_directory: Path | str = TRAINED_MODEL_DIRECTORY,
     dependencies: TrainDependencies | None = None,
 ) -> Path:
+    dataset_spec = training_dataset_spec(train_config)
+
     if dependencies is None:
         dependencies = load_train_dependencies()
 
     cfg = unsloth_config(train_config)
     max_seq_length = cfg["maxSeqLength"]
+
+    load_spec = dataset_load_spec(dataset_spec.source)
+    dataset = dependencies.load_dataset(load_spec.path, **load_spec.kwargs)
+    dataset = project_training_dataset(
+        dataset,
+        dataset_type=dataset_spec.dataset_type,
+    )
+    validate_training_dataset(dataset, dataset_type=dataset_spec.dataset_type)
 
     model, tokenizer = dependencies.fast_language_model.from_pretrained(
         model_name=train_config["baseModel"],
@@ -312,12 +647,10 @@ def train_model(
         revision=base_model_revision,
     )
 
-    source = train_config["datasets"][0]["source"]
-    load_spec = dataset_load_spec(source)
-    dataset = dependencies.load_dataset(load_spec.path, **load_spec.kwargs)
-    dataset = dataset.map(
-        partial(format_alpaca_examples, end_of_sequence=tokenizer.eos_token),
-        batched=True,
+    dataset = prepare_training_dataset(
+        dataset,
+        dataset_type=dataset_spec.dataset_type,
+        end_of_sequence=tokenizer.eos_token,
     )
     bfloat16_supported = dependencies.is_bfloat16_supported()
 
@@ -329,6 +662,9 @@ def train_model(
             output_dir="outputs",
             dataset_text_field="text",
             dataset_num_proc=2,
+            completion_only_loss=(
+                dataset_spec.dataset_type == DATASET_TYPE_PROMPT_COMPLETION
+            ),
             max_length=max_seq_length,
             packing=cfg["packing"],
             per_device_train_batch_size=cfg["batchSize"],
@@ -347,6 +683,15 @@ def train_model(
             report_to="none",
         ),
     )
+    if dataset_spec.dataset_type == DATASET_TYPE_PROMPT_COMPLETION:
+        # This is exercised by the GPU smoke path against the exact locked,
+        # Unsloth-patched TRL trainer before any training step can silently use
+        # full-sequence loss or omit EOS supervision.
+        verify_prompt_completion_preprocessing(
+            trainer,
+            dataset_from_dict=dependencies.dataset_from_dict,
+            processing_class=tokenizer,
+        )
     trainer.train()
 
     trained_model_path = Path(trained_model_directory)
