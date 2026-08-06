@@ -202,9 +202,10 @@ func TestAikit2LLBUsesFrozenIsolatedEnvironmentAndCaches(t *testing.T) {
 		}
 	}
 	for _, fragment := range []string{
-		`name = "torch"`, `version = "2.10.0+cu126"`,
-		`name = "unsloth"`, `version = "2026.8.1"`,
-		`name = "unsloth-zoo"`, `name = "xformers"`,
+		"name = \"torch\"\nversion = \"2.10.0+cu126\"",
+		"name = \"unsloth\"\nversion = \"2026.8.3\"",
+		"name = \"unsloth-zoo\"\nversion = \"2026.8.3\"",
+		`name = "xformers"`,
 	} {
 		if !strings.Contains(string(finetunescript.UnslothPylock), fragment) {
 			t.Errorf("embedded pylock does not contain %q", fragment)
@@ -214,7 +215,11 @@ func TestAikit2LLBUsesFrozenIsolatedEnvironmentAndCaches(t *testing.T) {
 		t.Fatalf("uv bootstrap is not versioned and hashed: %q", finetunescript.UVBootstrap)
 	}
 
-	assertCacheMount(t, dependencyOp, "/root/.cache/uv", uvCacheID, pb.CacheSharingOpt_SHARED)
+	const expectedUVCacheID = "aikit-unsloth-uv-0.12.1-py310-cu126-torch-2.10.0-unsloth-2026.8.3"
+	if uvCacheID != expectedUVCacheID {
+		t.Fatalf("uv cache ID = %q, want %q", uvCacheID, expectedUVCacheID)
+	}
+	assertCacheMount(t, dependencyOp, "/root/.cache/uv", expectedUVCacheID, pb.CacheSharingOpt_SHARED)
 	trainingOp := findFineTuneExec(t, ops, "target_unsloth.py train")
 	assertCacheMount(t, trainingOp, "/root/.cache/huggingface", huggingFaceCacheID, pb.CacheSharingOpt_SHARED)
 	assertCacheMount(t, trainingOp, datasetsCachePath, datasetsCacheID, pb.CacheSharingOpt_SHARED)

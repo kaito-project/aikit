@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	unslothVersion  = "2026.8.1"
+	unslothVersion  = "2026.8.3"
 	torchVersion    = "2.10.0"
 	uvVersion       = "0.12.1"
 	pythonVenv      = "/opt/aikit-venv"
