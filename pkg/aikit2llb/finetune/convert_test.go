@@ -18,13 +18,14 @@ import (
 )
 
 const (
-	testImmutableCDIDevice  = "nvidia.com/gpu=GPU-4f684ff2-f5d1-8b33-decf-42fac828778c"
-	testNVIDIADriverVersion = "590.48.01"
-	testSessionA            = "session-a"
-	testSessionB            = "session-b"
-	testDatasetSource       = "test-dataset"
-	testHubDatasetSource    = "organization/dataset"
-	testDatasetLoaderSplit  = "train"
+	testImmutableCDIDevice    = "nvidia.com/gpu=GPU-4f684ff2-f5d1-8b33-decf-42fac828778c"
+	testNVIDIADriverVersion   = "590.48.01"
+	testSessionA              = "session-a"
+	testSessionB              = "session-b"
+	testDatasetSource         = "test-dataset"
+	testHubDatasetSource      = "organization/dataset"
+	testDatasetLoaderSplit    = "train"
+	testDatasetLoaderSFTSplit = "train_sft"
 )
 
 type fineTuneDefinitionOp struct {
@@ -842,7 +843,7 @@ func TestAikit2LLBPropagatesDatasetLoader(t *testing.T) {
 		Loader: &config.DatasetLoaderSpec{
 			Type:     utils.DatasetLoaderHuggingFace,
 			Subset:   "default",
-			Split:    "train_sft",
+			Split:    testDatasetLoaderSFTSplit,
 			Revision: revision,
 		},
 	}}
@@ -967,6 +968,147 @@ func TestAikit2LLBDatasetLoaderChangesInvalidateTrainingOnlyAfterDependencies(t 
 				t.Fatalf("loader %s change did not invalidate export: %s", tt.name, got)
 			}
 		})
+	}
+}
+
+func TestAikit2LLBMultipleDatasetsPreserveOrderAndCacheIdentity(t *testing.T) {
+	const (
+		revisionA = "0123456789abcdef0123456789abcdef01234567"
+		revisionB = "89abcdef0123456789abcdef0123456789abcdef"
+	)
+
+	firstDataset := config.Dataset{
+		Source: "organization/first",
+		Type:   utils.DatasetText,
+		Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: "train", Revision: revisionA},
+	}
+	secondDataset := config.Dataset{
+		Source: "organization/second",
+		Type:   utils.DatasetMessages,
+		Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Subset: "default", Split: testDatasetLoaderSFTSplit, Revision: revisionA},
+	}
+
+	baseCfg := fineTuneTestConfig()
+	baseCfg.Datasets = []config.Dataset{firstDataset, secondDataset}
+	baseOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, baseCfg))
+	_, trainingConfigFile := findFineTuneFile(t, baseOps, "/train-config.yaml")
+	wantTrainingConfig := mustMarshalYAML(unslothTrainingConfig{
+		BaseModel: baseCfg.BaseModel,
+		Datasets:  baseCfg.Datasets,
+		Config:    baseCfg.Config,
+	})
+	if !slices.Equal(trainingConfigFile.Data, wantTrainingConfig) {
+		t.Fatalf("training config = %q, want %q", string(trainingConfigFile.Data), string(wantTrainingConfig))
+	}
+	trainingConfigText := string(trainingConfigFile.Data)
+	firstIndex := strings.Index(trainingConfigText, "source: organization/first")
+	secondIndex := strings.Index(trainingConfigText, "source: organization/second")
+	if firstIndex < 0 || secondIndex < 0 || firstIndex >= secondIndex {
+		t.Fatalf("training config did not preserve dataset order: %q", trainingConfigText)
+	}
+	for _, fragment := range []string{"subset: default", "split: train_sft", "revision: " + revisionA} {
+		if !strings.Contains(trainingConfigText, fragment) {
+			t.Fatalf("training config does not contain second dataset loader fragment %q: %q", fragment, trainingConfigText)
+		}
+	}
+
+	tests := []struct {
+		name     string
+		datasets []config.Dataset
+	}{
+		{
+			name: "second source",
+			datasets: []config.Dataset{firstDataset, {
+				Source: "organization/changed",
+				Type:   secondDataset.Type,
+				Loader: secondDataset.Loader,
+			}},
+		},
+		{
+			name: "second type",
+			datasets: []config.Dataset{firstDataset, {
+				Source: secondDataset.Source,
+				Type:   utils.DatasetShareGPT,
+				Loader: secondDataset.Loader,
+			}},
+		},
+		{
+			name: "second split",
+			datasets: []config.Dataset{firstDataset, {
+				Source: secondDataset.Source,
+				Type:   secondDataset.Type,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Subset: "default", Split: "validation", Revision: revisionA},
+			}},
+		},
+		{
+			name: "second subset",
+			datasets: []config.Dataset{firstDataset, {
+				Source: secondDataset.Source,
+				Type:   secondDataset.Type,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Subset: "alternate", Split: testDatasetLoaderSFTSplit, Revision: revisionA},
+			}},
+		},
+		{
+			name: "second revision",
+			datasets: []config.Dataset{firstDataset, {
+				Source: secondDataset.Source,
+				Type:   secondDataset.Type,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Subset: "default", Split: testDatasetLoaderSFTSplit, Revision: revisionB},
+			}},
+		},
+		{
+			name:     "reordered",
+			datasets: []config.Dataset{secondDataset, firstDataset},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			changedCfg := fineTuneTestConfig()
+			changedCfg.Datasets = tt.datasets
+			changedOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, changedCfg))
+			if got, want := findFineTuneExec(t, changedOps, "uv pip sync").digest, findFineTuneExec(t, baseOps, "uv pip sync").digest; got != want {
+				t.Fatalf("%s change invalidated dependency installation: got %s, want %s", tt.name, got, want)
+			}
+			if got, want := findFineTuneExec(t, changedOps, "target_unsloth.py train").digest, findFineTuneExec(t, baseOps, "target_unsloth.py train").digest; got == want {
+				t.Fatalf("%s change did not invalidate training: %s", tt.name, got)
+			}
+			if got, want := findFineTuneExec(t, changedOps, "target_unsloth.py export").digest, findFineTuneExec(t, baseOps, "target_unsloth.py export").digest; got == want {
+				t.Fatalf("%s change did not invalidate export: %s", tt.name, got)
+			}
+		})
+	}
+}
+
+func TestAikit2LLBSecondDatasetChecksumChangesTrainingAfterDependencies(t *testing.T) {
+	const (
+		checksumA = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		checksumB = "sha256:89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+	)
+
+	makeConfig := func(checksum string) *config.FineTuneConfig {
+		cfg := fineTuneTestConfig()
+		cfg.Datasets = []config.Dataset{
+			{Source: "organization/first", Type: utils.DatasetPromptCompletion},
+			{
+				Source: "https://example.test/second.parquet",
+				Type:   utils.DatasetPromptCompletion,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderParquet, Split: "train", Checksum: checksum},
+			},
+		}
+		return cfg
+	}
+
+	beforeOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, makeConfig(checksumA)))
+	afterOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, makeConfig(checksumB)))
+	if got, want := findFineTuneExec(t, beforeOps, "uv pip sync").digest, findFineTuneExec(t, afterOps, "uv pip sync").digest; got != want {
+		t.Fatalf("second checksum change invalidated dependency installation: got %s, want %s", got, want)
+	}
+	if got, want := findFineTuneExec(t, beforeOps, "target_unsloth.py train").digest, findFineTuneExec(t, afterOps, "target_unsloth.py train").digest; got == want {
+		t.Fatalf("second checksum change did not invalidate training: %s", got)
+	}
+	if got, want := findFineTuneExec(t, beforeOps, "target_unsloth.py export").digest, findFineTuneExec(t, afterOps, "target_unsloth.py export").digest; got == want {
+		t.Fatalf("second checksum change did not invalidate export: %s", got)
 	}
 }
 

@@ -504,3 +504,51 @@ datasets:
 		t.Fatalf("loader split = %q, want train", got)
 	}
 }
+
+func TestNewFromBytesPreservesMultipleDatasetOrderAndLoaders(t *testing.T) {
+	input := []byte(`
+apiVersion: v1alpha1
+baseModel: test-model
+datasets:
+  - source: organization/first
+    type: text
+    loader:
+      type: huggingface
+      split: train
+      revision: 0123456789abcdef0123456789abcdef01234567
+  - source: https://example.test/second.parquet
+    type: prompt-completion
+    loader:
+      type: parquet
+      split: validation
+      checksum: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+`)
+
+	_, fineTuneConfig, err := NewFromBytes(input)
+	if err != nil {
+		t.Fatalf("NewFromBytes() error = %v", err)
+	}
+	want := []Dataset{
+		{
+			Source: "organization/first",
+			Type:   utils.DatasetText,
+			Loader: &DatasetLoaderSpec{
+				Type:     utils.DatasetLoaderHuggingFace,
+				Split:    "train",
+				Revision: "0123456789abcdef0123456789abcdef01234567",
+			},
+		},
+		{
+			Source: "https://example.test/second.parquet",
+			Type:   utils.DatasetPromptCompletion,
+			Loader: &DatasetLoaderSpec{
+				Type:     utils.DatasetLoaderParquet,
+				Split:    "validation",
+				Checksum: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			},
+		},
+	}
+	if !reflect.DeepEqual(fineTuneConfig.Datasets, want) {
+		t.Fatalf("datasets = %#v, want %#v", fineTuneConfig.Datasets, want)
+	}
+}

@@ -120,6 +120,9 @@ DPO_LOSS_SIGMOID = "sigmoid"
 DPO_TRUNCATION_KEEP_END = "keep_end"
 DEFAULT_DPO_BETA = 0.1
 DEFAULT_DPO_MAX_PROMPT_LENGTH = 512
+DATASET_COMPATIBILITY_FULL_SEQUENCE = "full-sequence"
+DATASET_COMPATIBILITY_PROMPT_COMPLETION = "completion-only"
+DATASET_COMPATIBILITY_RESPONSE_CHAT = "response-only chat"
 UNSUPPORTED_MESSAGES_TOP_LEVEL_FIELDS = frozenset(
     (
         "add_generation_prompt",
@@ -207,6 +210,7 @@ class TrainingDatasetSpec(NamedTuple):
     source: str
     dataset_type: str
     loader: DatasetLoaderSpec
+    index: int | None = None
 
 
 class TrainingObjectiveSpec(NamedTuple):
@@ -266,6 +270,7 @@ class TrainDependencies(NamedTuple):
     dpo_trainer: Callable[..., Any]
     get_chat_template_parts: Callable[..., tuple[str, str]]
     train_on_responses_only: Callable[..., Any]
+    concatenate_datasets: Callable[[list[Any]], Any] | None = None
 
 
 class ExportDependencies(NamedTuple):
@@ -531,7 +536,13 @@ def parse_dataset_loader_spec(
     dataset: Mapping[str, Any],
     *,
     source: str,
+    dataset_index: int | None = None,
 ) -> DatasetLoaderSpec:
+    path = (
+        "training dataset loader"
+        if dataset_index is None
+        else f"datasets[{dataset_index}].loader"
+    )
     if "loader" not in dataset:
         return DatasetLoaderSpec(
             loader_type=None,
@@ -543,9 +554,9 @@ def parse_dataset_loader_spec(
 
     loader = dataset["loader"]
     if not isinstance(loader, Mapping):
-        raise ValueError("training dataset loader must be a mapping")
+        raise ValueError(f"{path} must be a mapping")
     if any(not isinstance(field, str) for field in loader):
-        raise ValueError("training dataset loader field names must be strings")
+        raise ValueError(f"{path} field names must be strings")
 
     allowed_fields = frozenset(
         ("type", "subset", "split", "revision", "checksum")
@@ -554,29 +565,31 @@ def parse_dataset_loader_spec(
     if unknown_fields:
         quoted_fields = ", ".join(repr(field) for field in unknown_fields)
         raise ValueError(
-            f"training dataset loader contains unknown fields: {quoted_fields}"
+            f"{path} contains unknown fields: {quoted_fields}"
         )
 
     for field, value in loader.items():
         if not isinstance(value, str):
             raise ValueError(
-                f"training dataset loader field {field!r} must be a string"
+                f"{path} field {field!r} must be a string"
             )
         if field in {"subset", "revision", "checksum"} and not value.strip():
             raise ValueError(
-                f"training dataset loader field {field!r} must not be empty"
+                f"{path} field {field!r} must not be empty"
             )
 
     loader_type = loader.get("type")
     if not isinstance(loader_type, str) or not loader_type.strip():
-        raise ValueError("training dataset loader type must be a non-empty string")
+        raise ValueError(f"{path} type must be a non-empty string")
     if loader_type not in SUPPORTED_DATASET_LOADERS:
-        raise ValueError(f"unsupported training dataset loader {loader_type!r}")
+        raise ValueError(
+            f"{path}: unsupported training dataset loader {loader_type!r}"
+        )
 
     split = loader.get("split", DEFAULT_DATASET_SPLIT)
     if not isinstance(split, str) or not DATASET_SPLIT_PATTERN.fullmatch(split):
         raise ValueError(
-            "training dataset loader split must be a named split containing "
+            f"{path} split must be a named split containing "
             "letters, numbers, or underscores in dot-separated segments"
         )
 
@@ -586,38 +599,38 @@ def parse_dataset_loader_spec(
     if loader_type == DATASET_LOADER_HUGGINGFACE:
         if is_http_dataset_source(source):
             raise ValueError(
-                "huggingface dataset loader does not support an HTTP(S) source"
+                f"{path}: huggingface dataset loader does not support an HTTP(S) source"
             )
         if checksum is not None:
             raise ValueError(
-                "huggingface dataset loader does not support checksum"
+                f"{path}: huggingface dataset loader does not support checksum"
             )
         if revision is not None and not HF_COMMIT_HASH_PATTERN.fullmatch(
             revision
         ):
             raise ValueError(
-                "huggingface dataset loader revision must be a lowercase "
+                f"{path} revision must be a lowercase "
                 "40-character commit hash"
             )
     else:
         if not is_http_dataset_source(source):
             raise ValueError(
-                f"{loader_type} dataset loader requires an absolute HTTP(S) "
+                f"{path}: {loader_type} dataset loader requires an absolute HTTP(S) "
                 "source"
             )
         if subset is not None:
             raise ValueError(
-                "remote-file dataset loaders do not support subset"
+                f"{path}: remote-file dataset loaders do not support subset"
             )
         if revision is not None:
             raise ValueError(
-                "remote-file dataset loaders do not support revision"
+                f"{path}: remote-file dataset loaders do not support revision"
             )
         if checksum is not None and not DATASET_CHECKSUM_PATTERN.fullmatch(
             checksum
         ):
             raise ValueError(
-                "remote-file dataset loader checksum must use lowercase "
+                f"{path}: remote-file dataset loader checksum must use lowercase "
                 "sha256:<64 hex> format"
             )
 
@@ -691,41 +704,63 @@ def dataset_source_description(
     return f"source {source!r}"
 
 
-def training_dataset_spec(
+def training_dataset_specs(
     train_config: Mapping[str, Any],
-) -> TrainingDatasetSpec:
+) -> tuple[TrainingDatasetSpec, ...]:
     datasets = train_config.get("datasets")
     if (
         not isinstance(datasets, Sequence)
         or isinstance(datasets, (str, bytes))
-        or len(datasets) != 1
+        or len(datasets) == 0
     ):
-        raise ValueError("training configuration must define exactly one dataset")
+        raise ValueError("training configuration must define at least one dataset")
 
-    dataset = datasets[0]
-    if not isinstance(dataset, Mapping):
-        raise ValueError("training dataset configuration must be a mapping")
+    specs = []
+    for dataset_index, dataset in enumerate(datasets):
+        path = f"datasets[{dataset_index}]"
+        if not isinstance(dataset, Mapping):
+            raise ValueError(f"{path} must be a mapping")
 
-    dataset_type = dataset.get("type")
-    if (
-        not isinstance(dataset_type, str)
-        or dataset_type not in SUPPORTED_DATASET_TYPES
-    ):
-        raise ValueError(f"unsupported dataset type {dataset_type!r}")
+        dataset_type = dataset.get("type")
+        if (
+            not isinstance(dataset_type, str)
+            or dataset_type not in SUPPORTED_DATASET_TYPES
+        ):
+            raise ValueError(
+                f"{path}.type has unsupported dataset type {dataset_type!r}"
+            )
 
-    source = dataset.get("source")
-    if not isinstance(source, str) or not source.strip():
-        raise ValueError("training dataset source must be a non-empty string")
-    if has_http_dataset_scheme(source) and not is_http_dataset_source(source):
-        raise ValueError(
-            "training dataset HTTP(S) source must be an absolute URL with a host"
+        source = dataset.get("source")
+        if not isinstance(source, str) or not source.strip():
+            raise ValueError(f"{path}.source must be a non-empty string")
+        if has_http_dataset_scheme(source) and not is_http_dataset_source(source):
+            raise ValueError(
+                f"{path} HTTP(S) source must be an absolute URL with a host"
+            )
+
+        specs.append(
+            TrainingDatasetSpec(
+                source=source,
+                dataset_type=dataset_type,
+                loader=parse_dataset_loader_spec(
+                    dataset,
+                    source=source,
+                    dataset_index=dataset_index,
+                ),
+                index=dataset_index,
+            )
         )
 
-    return TrainingDatasetSpec(
-        source=source,
-        dataset_type=dataset_type,
-        loader=parse_dataset_loader_spec(dataset, source=source),
-    )
+    return tuple(specs)
+
+
+def training_dataset_spec(
+    train_config: Mapping[str, Any],
+) -> TrainingDatasetSpec:
+    specs = training_dataset_specs(train_config)
+    if len(specs) != 1:
+        raise ValueError("training configuration must define exactly one dataset")
+    return specs[0]
 
 
 def dataset_cache_directory() -> Path:
@@ -1156,30 +1191,110 @@ def load_training_dataset(
         try:
             return load_dataset(load_spec.path, **load_spec.kwargs)
         except Exception:
-            if is_remote or dataset_spec.dataset_type in (
-                *CHAT_DATASET_TYPES,
-                DATASET_TYPE_PREFERENCE,
-                DATASET_TYPE_TEXT,
-            ):
-                subject = dataset_error_subject(
-                    dataset_spec.dataset_type,
-                    source=dataset_spec.source,
-                    loader_type=loader_type,
-                )
-                raise RuntimeError(f"{subject} could not be loaded") from None
+            subject = dataset_error_subject(
+                dataset_spec.dataset_type,
+                source=dataset_spec.source,
+                loader_type=loader_type,
+                dataset_index=dataset_spec.index,
+            )
+            raise RuntimeError(f"{subject} could not be loaded") from None
+
+    try:
+        if not is_remote:
+            return load_materialized_dataset()
+
+        effective_loader = loader_type or DATASET_LOADER_JSON
+        with materialize_remote_dataset_file(
+            dataset_spec.source,
+            loader_type=effective_loader,
+            checksum=dataset_spec.loader.checksum,
+            cache_directory=cache_directory,
+        ) as local_file:
+            return load_materialized_dataset(local_file)
+    except (OSError, RuntimeError, ValueError) as error:
+        if dataset_spec.index is None or str(error).startswith(
+            f"datasets[{dataset_spec.index}] "
+        ):
             raise
+        raise type(error)(
+            f"datasets[{dataset_spec.index}] {error}"
+        ) from None
 
-    if not is_remote:
-        return load_materialized_dataset()
+def configured_training_loss(train_config: Mapping[str, Any]) -> str:
+    cfg = unsloth_config(train_config)
+    configured_loss = cfg.get("loss", LOSS_ALL)
+    loss = LOSS_ALL if configured_loss is None else configured_loss
+    if not isinstance(loss, str) or loss not in SUPPORTED_LOSSES:
+        raise ValueError(f"unsupported SFT loss {loss!r}")
+    return loss
 
-    effective_loader = loader_type or DATASET_LOADER_JSON
-    with materialize_remote_dataset_file(
-        dataset_spec.source,
-        loader_type=effective_loader,
-        checksum=dataset_spec.loader.checksum,
-        cache_directory=cache_directory,
-    ) as local_file:
-        return load_materialized_dataset(local_file)
+
+def dataset_compatibility_group(dataset_type: str, *, loss: str) -> str:
+    if dataset_type == DATASET_TYPE_PREFERENCE:
+        raise ValueError(
+            "preference datasets are supported only for the DPO objective"
+        )
+    if loss == LOSS_RESPONSE and dataset_type not in CHAT_DATASET_TYPES:
+        raise ValueError(
+            "response SFT loss is supported only for messages and sharegpt datasets"
+        )
+    if loss == LOSS_RESPONSE:
+        return DATASET_COMPATIBILITY_RESPONSE_CHAT
+    if dataset_type == DATASET_TYPE_PROMPT_COMPLETION:
+        return DATASET_COMPATIBILITY_PROMPT_COMPLETION
+    return DATASET_COMPATIBILITY_FULL_SEQUENCE
+
+
+def training_dataset_compatibility(
+    dataset_specs: Sequence[TrainingDatasetSpec],
+    *,
+    loss: str,
+) -> str:
+    if not dataset_specs:
+        raise ValueError("training configuration must define at least one dataset")
+
+    first_spec = dataset_specs[0]
+    try:
+        first_group = dataset_compatibility_group(
+            first_spec.dataset_type,
+            loss=loss,
+        )
+    except ValueError as error:
+        raise ValueError(
+            f"datasets[0] type {first_spec.dataset_type}: {error}"
+        ) from None
+
+    for dataset_index, dataset_spec in enumerate(dataset_specs[1:], start=1):
+        try:
+            group = dataset_compatibility_group(
+                dataset_spec.dataset_type,
+                loss=loss,
+            )
+        except ValueError as error:
+            raise ValueError(
+                f"datasets[{dataset_index}] type {dataset_spec.dataset_type}: {error}"
+            ) from None
+        if group != first_group:
+            raise ValueError(
+                f"datasets[{dataset_index}] type {dataset_spec.dataset_type} is "
+                f"incompatible with datasets[0] type {first_spec.dataset_type}: "
+                f"{group} and {first_group} datasets cannot be combined"
+            )
+    return first_group
+
+
+def validate_response_packing(
+    train_config: Mapping[str, Any],
+    *,
+    loss: str,
+) -> None:
+    cfg = unsloth_config(train_config)
+    if loss == LOSS_RESPONSE and bool(cfg.get("packing", False)):
+        raise ValueError(
+            "response SFT loss does not support packing because response masks "
+            "must not cross conversation boundaries; set config.unsloth.packing "
+            "to false"
+        )
 
 
 def training_loss(
@@ -1187,21 +1302,9 @@ def training_loss(
     *,
     dataset_type: str,
 ) -> str:
-    cfg = unsloth_config(train_config)
-    configured_loss = cfg.get("loss", LOSS_ALL)
-    loss = LOSS_ALL if configured_loss is None else configured_loss
-    if not isinstance(loss, str) or loss not in SUPPORTED_LOSSES:
-        raise ValueError(f"unsupported SFT loss {loss!r}")
-    if loss == LOSS_RESPONSE and dataset_type not in CHAT_DATASET_TYPES:
-        raise ValueError(
-            "response SFT loss is supported only for messages and sharegpt datasets"
-        )
-    if loss == LOSS_RESPONSE and bool(cfg.get("packing", False)):
-        raise ValueError(
-            "response SFT loss does not support packing because response masks "
-            "must not cross conversation boundaries; set config.unsloth.packing "
-            "to false"
-        )
+    loss = configured_training_loss(train_config)
+    dataset_compatibility_group(dataset_type, loss=loss)
+    validate_response_packing(train_config, loss=loss)
     return loss
 
 
@@ -1276,20 +1379,33 @@ def dataset_error_subject(
     source: str | None = None,
     record_index: int | None = None,
     loader_type: str | None = None,
+    dataset_index: int | None = None,
 ) -> str:
     if source is None:
         subject = f"{dataset_type} dataset"
         if record_index is not None:
             subject += f" record {record_index}"
-        return subject
-
-    subject = (
-        f"{dataset_type} dataset "
-        f"{dataset_source_description(source, loader_type=loader_type)}"
-    )
-    if record_index is not None:
-        subject += f" row {record_index}"
+    else:
+        subject = (
+            f"{dataset_type} dataset "
+            f"{dataset_source_description(source, loader_type=loader_type)}"
+        )
+        if record_index is not None:
+            subject += f" row {record_index}"
+    if dataset_index is not None:
+        subject = f"datasets[{dataset_index}] {subject}"
     return subject
+
+
+@contextmanager
+def indexed_dataset_errors(dataset_index: int) -> Iterator[None]:
+    try:
+        yield
+    except (RuntimeError, ValueError) as error:
+        prefix = f"datasets[{dataset_index}] "
+        if str(error).startswith(prefix):
+            raise
+        raise type(error)(f"{prefix}{error}") from None
 
 
 def validate_messages_value(
@@ -1800,6 +1916,21 @@ def messages_rendered_token_id_rows(
 
 def empty_messages_token_fingerprint() -> MessagesTokenFingerprint:
     return MessagesTokenFingerprint(0, 0, 0)
+
+
+def merge_messages_token_fingerprints(
+    fingerprints: Sequence[MessagesTokenFingerprint],
+) -> MessagesTokenFingerprint:
+    merged = empty_messages_token_fingerprint()
+    for fingerprint in fingerprints:
+        merged = MessagesTokenFingerprint(
+            merged.sequence_count + fingerprint.sequence_count,
+            (merged.first_digest_sum + fingerprint.first_digest_sum)
+            & MESSAGES_TOKEN_FINGERPRINT_MASK,
+            (merged.second_digest_sum + fingerprint.second_digest_sum)
+            & MESSAGES_TOKEN_FINGERPRINT_MASK,
+        )
+    return merged
 
 
 def extend_messages_token_fingerprint(
@@ -2427,6 +2558,201 @@ def prepare_training_dataset(
     raise ValueError(f"unsupported dataset type {dataset_type!r}")
 
 
+def canonical_string_examples(
+    examples: Mapping[str, Sequence[str]],
+    *,
+    fields: Sequence[str],
+) -> dict[str, list[str]]:
+    return {field: list(examples[field]) for field in fields}
+
+
+def normalize_canonical_string_dataset(
+    dataset: Any,
+    *,
+    fields: Sequence[str],
+    dataset_type: str,
+    source: str,
+    dataset_index: int,
+) -> Any:
+    subject = dataset_error_subject(
+        dataset_type,
+        source=source,
+        dataset_index=dataset_index,
+    )
+    canonical_fields = tuple(fields)
+    map_kwargs: dict[str, Any] = {}
+    canonical_features = None
+    if getattr(dataset, "features", None) is not None:
+        try:
+            from datasets import Features, Value
+
+            canonical_features = Features(
+                {field: Value("string") for field in canonical_fields}
+            )
+            map_kwargs["features"] = canonical_features
+        except Exception:
+            raise RuntimeError(
+                f"{subject} could not construct canonical string features"
+            ) from None
+
+    try:
+        normalized = dataset.map(
+            partial(canonical_string_examples, fields=canonical_fields),
+            batched=True,
+            remove_columns=list(dataset.column_names),
+            **map_kwargs,
+        )
+    except Exception:
+        raise RuntimeError(
+            f"{subject} could not be normalized to canonical string features"
+        ) from None
+
+    if list(getattr(normalized, "column_names", ())) != list(canonical_fields):
+        raise RuntimeError(
+            f"{subject} did not normalize to the canonical columns "
+            f"{list(canonical_fields)!r}"
+        )
+    if (
+        canonical_features is not None
+        and getattr(normalized, "features", None) != canonical_features
+    ):
+        raise RuntimeError(
+            f"{subject} did not normalize to canonical string features"
+        )
+    return normalized
+
+
+def validate_full_sequence_text_tokenization(
+    dataset: Any,
+    *,
+    processing_class: Any,
+    max_seq_length: int,
+    dataset_type: str,
+    source: str,
+    dataset_index: int,
+    add_special_tokens: bool | None = None,
+    batch_size: int = TEXT_VALIDATION_BATCH_SIZE,
+) -> MessagesTokenFingerprint:
+    if (
+        isinstance(batch_size, bool)
+        or not isinstance(batch_size, int)
+        or batch_size <= 0
+    ):
+        raise ValueError("full-sequence validation batch size must be positive")
+    if (
+        isinstance(max_seq_length, bool)
+        or not isinstance(max_seq_length, int)
+        or max_seq_length <= 0
+    ):
+        raise ValueError("full-sequence max sequence length must be positive")
+
+    effective_batch_size = min(
+        batch_size,
+        max(1, TEXT_VALIDATION_TOKEN_BUDGET // max_seq_length),
+    )
+    fingerprint = empty_messages_token_fingerprint()
+    texts: list[str] = []
+    batch_start = 0
+    record_count = 0
+    effective_add_special_tokens = add_special_tokens
+    source_add_special_tokens = None
+    unsloth_tokenizer = getattr(
+        processing_class,
+        "tokenizer",
+        processing_class,
+    )
+
+    def validate_batch() -> None:
+        nonlocal fingerprint
+        if source_add_special_tokens is None:
+            raise RuntimeError(
+                "full-sequence validation did not derive a source tokenization policy"
+            )
+        subject = dataset_error_subject(
+            dataset_type,
+            source=source,
+            dataset_index=dataset_index,
+        )
+        input_id_rows = text_token_id_rows(
+            unsloth_tokenizer,
+            texts,
+            add_special_tokens=bool(effective_add_special_tokens),
+            max_length=max_seq_length,
+            description=(
+                f"{subject} rows {batch_start}-{batch_start + len(texts) - 1}"
+            ),
+        )
+        source_input_id_rows = input_id_rows
+        if source_add_special_tokens != effective_add_special_tokens:
+            source_input_id_rows = text_token_id_rows(
+                unsloth_tokenizer,
+                texts,
+                add_special_tokens=source_add_special_tokens,
+                max_length=max_seq_length,
+                description=(
+                    f"{subject} source-policy rows {batch_start}-"
+                    f"{batch_start + len(texts) - 1}"
+                ),
+            )
+        for batch_index, (input_ids, source_input_ids) in enumerate(
+            zip(input_id_rows, source_input_id_rows)
+        ):
+            record_index = batch_start + batch_index
+            if input_ids != source_input_ids:
+                row_subject = dataset_error_subject(
+                    dataset_type,
+                    source=source,
+                    record_index=record_index,
+                    dataset_index=dataset_index,
+                )
+                raise ValueError(
+                    f"{row_subject} tokenizes differently with its source "
+                    f"add_special_tokens={source_add_special_tokens} policy and "
+                    "the combined full-sequence "
+                    f"add_special_tokens={effective_add_special_tokens} policy "
+                    "derived from datasets[0]; combining these records would "
+                    "change tokenizer special-token boundaries"
+                )
+            if not input_ids:
+                raise RuntimeError(
+                    f"{subject} row {record_index} produced no training tokens"
+                )
+            fingerprint = extend_messages_token_fingerprint(
+                fingerprint,
+                input_ids,
+                description=(
+                    f"datasets[{dataset_index}] source record {record_index}"
+                ),
+            )
+
+    for record in dataset:
+        text = record["text"]
+        if source_add_special_tokens is None:
+            source_add_special_tokens = messages_unsloth_add_special_tokens(
+                processing_class,
+                text,
+            )
+        if effective_add_special_tokens is None:
+            effective_add_special_tokens = source_add_special_tokens
+        texts.append(text)
+        record_count += 1
+        if len(texts) == effective_batch_size:
+            validate_batch()
+            texts.clear()
+            batch_start = record_count
+
+    if texts:
+        validate_batch()
+    if record_count == 0:
+        subject = dataset_error_subject(
+            dataset_type,
+            source=source,
+            dataset_index=dataset_index,
+        )
+        raise RuntimeError(f"{subject} produced no canonical records")
+    return fingerprint
+
+
 def sequence_values(
     value: Any,
     *,
@@ -2886,6 +3212,21 @@ def empty_prompt_prefix_fingerprint() -> PromptPrefixFingerprint:
     return PromptPrefixFingerprint(0, 0, 0)
 
 
+def merge_prompt_prefix_fingerprints(
+    fingerprints: Sequence[PromptPrefixFingerprint],
+) -> PromptPrefixFingerprint:
+    merged = empty_prompt_prefix_fingerprint()
+    for fingerprint in fingerprints:
+        merged = PromptPrefixFingerprint(
+            merged.sequence_count + fingerprint.sequence_count,
+            (merged.first_digest_sum + fingerprint.first_digest_sum)
+            & PROMPT_PREFIX_FINGERPRINT_MASK,
+            (merged.second_digest_sum + fingerprint.second_digest_sum)
+            & PROMPT_PREFIX_FINGERPRINT_MASK,
+        )
+    return merged
+
+
 def extend_prompt_prefix_fingerprint(
     fingerprint: PromptPrefixFingerprint,
     token_ids: Sequence[Any],
@@ -2927,6 +3268,7 @@ def validate_prompt_completion_tokenization(
     *,
     processing_class: Any,
     max_seq_length: int,
+    add_special_tokens: bool | None = None,
     batch_size: int = PROMPT_COMPLETION_VALIDATION_BATCH_SIZE,
 ) -> PromptPrefixFingerprint:
     """Validate source token boundaries in bounded tokenizer batches."""
@@ -2968,15 +3310,20 @@ def validate_prompt_completion_tokenization(
     batch_start = 0
     prompts: list[str] = []
     prompt_completions: list[str] = []
-    add_special_tokens: bool | None = None
+    effective_add_special_tokens = add_special_tokens
+    source_add_special_tokens = None
     fingerprint = empty_prompt_prefix_fingerprint()
 
     def validate_batch() -> None:
         nonlocal fingerprint
+        if source_add_special_tokens is None:
+            raise RuntimeError(
+                "prompt-completion validation did not derive a source tokenization policy"
+            )
         token_rows = tokenize_verification_texts(
             processing_class,
             prompts + prompt_completions,
-            add_special_tokens=add_special_tokens,
+            add_special_tokens=effective_add_special_tokens,
             description=(
                 f"records {batch_start}-{batch_start + len(prompts) - 1} "
                 "prompts and prompt-completions"
@@ -2984,12 +3331,60 @@ def validate_prompt_completion_tokenization(
         )
         prompt_token_rows = token_rows[: len(prompts)]
         prompt_completion_token_rows = token_rows[len(prompts) :]
-        for batch_index, (prompt_ids, input_ids) in enumerate(
-            zip(prompt_token_rows, prompt_completion_token_rows)
+        source_prompt_token_rows = prompt_token_rows
+        source_prompt_completion_token_rows = prompt_completion_token_rows
+        if source_add_special_tokens != effective_add_special_tokens:
+            source_token_rows = tokenize_verification_texts(
+                processing_class,
+                prompts + prompt_completions,
+                add_special_tokens=source_add_special_tokens,
+                description=(
+                    f"source-policy records {batch_start}-"
+                    f"{batch_start + len(prompts) - 1} prompts and prompt-completions"
+                ),
+            )
+            source_prompt_token_rows = source_token_rows[: len(prompts)]
+            source_prompt_completion_token_rows = source_token_rows[len(prompts) :]
+        for batch_index, (
+            prompt_ids,
+            input_ids,
+            source_prompt_ids,
+            source_input_ids,
+        ) in enumerate(
+            zip(
+                prompt_token_rows,
+                prompt_completion_token_rows,
+                source_prompt_token_rows,
+                source_prompt_completion_token_rows,
+            )
         ):
             record_index = batch_start + batch_index
             input_ids = input_ids[:max_seq_length]
             prompt_length = min(len(prompt_ids), len(input_ids))
+            source_input_ids = source_input_ids[:max_seq_length]
+            source_prompt_length = min(
+                len(source_prompt_ids),
+                len(source_input_ids),
+            )
+            completion_mask = [0] * prompt_length + [1] * (
+                len(input_ids) - prompt_length
+            )
+            source_completion_mask = [0] * source_prompt_length + [1] * (
+                len(source_input_ids) - source_prompt_length
+            )
+            if (
+                input_ids != source_input_ids
+                or completion_mask != source_completion_mask
+            ):
+                raise ValueError(
+                    f"prompt-completion preprocessing record {record_index} "
+                    "tokenizes differently with its source "
+                    f"add_special_tokens={source_add_special_tokens} policy and "
+                    "the combined dataset "
+                    f"add_special_tokens={effective_add_special_tokens} policy; "
+                    "combining these records would change token or completion-mask "
+                    "boundaries"
+                )
             if len(input_ids) <= prompt_length:
                 raise RuntimeError(
                     f"prompt-completion preprocessing record {record_index} retains no completion tokens after truncation to maxSeqLength {max_seq_length}"
@@ -3005,11 +3400,13 @@ def validate_prompt_completion_tokenization(
             )
 
     for record in dataset:
-        if add_special_tokens is None:
-            add_special_tokens = prompt_completion_add_special_tokens(
+        if source_add_special_tokens is None:
+            source_add_special_tokens = prompt_completion_add_special_tokens(
                 processing_class,
                 record["prompt"],
             )
+        if effective_add_special_tokens is None:
+            effective_add_special_tokens = source_add_special_tokens
 
         completion = record["completion"]
         if not completion.endswith(eos_token):
@@ -4025,7 +4422,7 @@ def load_train_dependencies() -> TrainDependencies:
     from unsloth.chat_templates import train_on_responses_only
     from unsloth.models.loader_utils import get_model_name
     from unsloth_zoo.dataset_utils import get_chat_template_parts
-    from datasets import Dataset, load_dataset
+    from datasets import Dataset, concatenate_datasets, load_dataset
     from huggingface_hub import model_info
     from trl import DPOConfig, DPOTrainer, SFTConfig, SFTTrainer
 
@@ -4042,6 +4439,7 @@ def load_train_dependencies() -> TrainDependencies:
         dpo_trainer=DPOTrainer,
         get_chat_template_parts=get_chat_template_parts,
         train_on_responses_only=train_on_responses_only,
+        concatenate_datasets=concatenate_datasets,
     )
 
 
@@ -4074,12 +4472,26 @@ def train_model(
     dependencies: TrainDependencies | None = None,
 ) -> Path:
     objective = training_objective_spec(train_config)
-    dataset_spec = training_dataset_spec(train_config)
-    loss = validate_training_objective(
-        train_config,
-        objective=objective,
-        dataset_spec=dataset_spec,
-    )
+    dataset_specs = training_dataset_specs(train_config)
+
+    if objective.objective_type == OBJECTIVE_TYPE_DPO:
+        if len(dataset_specs) != 1:
+            raise ValueError(
+                "DPO objective requires exactly one preference dataset"
+            )
+        loss = validate_training_objective(
+            train_config,
+            objective=objective,
+            dataset_spec=dataset_specs[0],
+        )
+        compatibility = None
+    else:
+        loss = configured_training_loss(train_config)
+        compatibility = training_dataset_compatibility(
+            dataset_specs,
+            loss=loss,
+        )
+        validate_response_packing(train_config, loss=loss)
 
     if dependencies is None:
         dependencies = load_train_dependencies()
@@ -4097,38 +4509,49 @@ def train_model(
         allow_zero=True,
     )
 
-    dataset = load_training_dataset(
-        dataset_spec,
-        load_dataset=dependencies.load_dataset,
-    )
-    validation_source = None
-    if (
-        dataset_spec.dataset_type in CHAT_DATASET_TYPES
-        or dataset_spec.dataset_type == DATASET_TYPE_PREFERENCE
-        or dataset_spec.dataset_type == DATASET_TYPE_TEXT
-    ):
-        validation_source = dataset_spec.source
-    dataset = project_training_dataset(
-        dataset,
-        dataset_type=dataset_spec.dataset_type,
-        source=validation_source,
-    )
-    validate_training_dataset(
-        dataset,
-        dataset_type=dataset_spec.dataset_type,
-        source=validation_source,
-    )
-    if dataset_spec.dataset_type == DATASET_TYPE_SHAREGPT:
-        dataset = normalize_sharegpt_dataset(
-            dataset,
-            source=dataset_spec.source,
-        )
-    if dataset_spec.dataset_type in CHAT_DATASET_TYPES and loss == LOSS_RESPONSE:
-        validate_response_training_dataset(
-            dataset,
-            dataset_type=dataset_spec.dataset_type,
-            source=dataset_spec.source,
-        )
+    source_datasets = []
+    for dataset_spec in dataset_specs:
+        dataset_index = dataset_spec.index
+        if dataset_index is None:
+            raise RuntimeError("parsed training dataset is missing its index")
+        with indexed_dataset_errors(dataset_index):
+            source_dataset = load_training_dataset(
+                dataset_spec,
+                load_dataset=dependencies.load_dataset,
+            )
+            validation_source = None
+            if (
+                dataset_spec.dataset_type in CHAT_DATASET_TYPES
+                or dataset_spec.dataset_type == DATASET_TYPE_PREFERENCE
+                or dataset_spec.dataset_type == DATASET_TYPE_TEXT
+            ):
+                validation_source = dataset_spec.source
+            source_dataset = project_training_dataset(
+                source_dataset,
+                dataset_type=dataset_spec.dataset_type,
+                source=validation_source,
+            )
+            validate_training_dataset(
+                source_dataset,
+                dataset_type=dataset_spec.dataset_type,
+                source=validation_source,
+            )
+            if dataset_spec.dataset_type == DATASET_TYPE_SHAREGPT:
+                source_dataset = normalize_sharegpt_dataset(
+                    source_dataset,
+                    source=dataset_spec.source,
+                )
+            if (
+                objective.objective_type == OBJECTIVE_TYPE_SFT
+                and dataset_spec.dataset_type in CHAT_DATASET_TYPES
+                and loss == LOSS_RESPONSE
+            ):
+                validate_response_training_dataset(
+                    source_dataset,
+                    dataset_type=dataset_spec.dataset_type,
+                    source=dataset_spec.source,
+                )
+            source_datasets.append(source_dataset)
 
     model, tokenizer = dependencies.fast_language_model.from_pretrained(
         model_name=train_config["baseModel"],
@@ -4136,52 +4559,119 @@ def train_model(
         dtype=None,
         load_in_4bit=cfg["loadIn4bit"],
     )
+
+    dataset = None
+    has_chat_dataset = False
+    has_text_dataset = False
+    response_only = False
+    completion_only = False
+    validate_all_full_sequence_records = False
+    response_markers = None
+    text_policy = None
+    prompt_prefix_fingerprint = None
+    messages_token_fingerprint = None
+
     if objective.objective_type == OBJECTIVE_TYPE_DPO:
         require_dpo_tokenizer(tokenizer)
-    messages_token_fingerprint = None
-    response_markers = None
-    if dataset_spec.dataset_type in CHAT_DATASET_TYPES:
-        require_messages_chat_template(tokenizer)
-        if loss == LOSS_RESPONSE:
-            response_markers = derive_response_markers(
+        dataset = source_datasets[0]
+    else:
+        has_chat_dataset = any(
+            dataset_spec.dataset_type in CHAT_DATASET_TYPES
+            for dataset_spec in dataset_specs
+        )
+        has_text_dataset = any(
+            dataset_spec.dataset_type == DATASET_TYPE_TEXT
+            for dataset_spec in dataset_specs
+        )
+        response_only = compatibility == DATASET_COMPATIBILITY_RESPONSE_CHAT
+        completion_only = (
+            compatibility == DATASET_COMPATIBILITY_PROMPT_COMPLETION
+        )
+        validate_all_full_sequence_records = (
+            compatibility == DATASET_COMPATIBILITY_FULL_SEQUENCE
+            and (len(dataset_specs) > 1 or has_chat_dataset)
+        )
+
+        if has_chat_dataset:
+            require_messages_chat_template(tokenizer)
+            if response_only:
+                response_markers = derive_response_markers(
+                    tokenizer,
+                    get_chat_template_parts=(
+                        dependencies.get_chat_template_parts
+                    ),
+                )
+
+        if has_text_dataset:
+            text_policy = text_boundary_policy(tokenizer)
+
+        prompt_add_special_tokens = None
+        if completion_only:
+            first_prompt_record = next(iter(source_datasets[0]))
+            prompt_add_special_tokens = prompt_completion_add_special_tokens(
                 tokenizer,
-                get_chat_template_parts=dependencies.get_chat_template_parts,
+                first_prompt_record["prompt"],
             )
-        messages_source_dataset = dataset
-        dataset = render_messages_dataset(
-            messages_source_dataset,
-            processing_class=tokenizer,
-            source=dataset_spec.source,
-            dataset_type=dataset_spec.dataset_type,
-        )
-        messages_token_fingerprint = validate_messages_tokenization(
-            messages_source_dataset,
-            dataset,
-            processing_class=tokenizer,
-            max_seq_length=max_seq_length,
-            source=dataset_spec.source,
-            dataset_type=dataset_spec.dataset_type,
-            response_markers=response_markers,
-        )
 
-    prompt_prefix_fingerprint = None
-    if dataset_spec.dataset_type == DATASET_TYPE_PROMPT_COMPLETION:
-        prompt_prefix_fingerprint = validate_prompt_completion_tokenization(
-            dataset,
-            processing_class=tokenizer,
-            max_seq_length=max_seq_length,
-        )
+        rendered_source_datasets = []
+        canonical_chat_fingerprints = []
+        prompt_prefix_fingerprints = []
+        for dataset_spec, source_dataset in zip(
+            dataset_specs,
+            source_datasets,
+        ):
+            dataset_index = dataset_spec.index
+            if dataset_index is None:
+                raise RuntimeError(
+                    "parsed training dataset is missing its index"
+                )
+            with indexed_dataset_errors(dataset_index):
+                if dataset_spec.dataset_type in CHAT_DATASET_TYPES:
+                    messages_source_dataset = source_dataset
+                    source_dataset = render_messages_dataset(
+                        messages_source_dataset,
+                        processing_class=tokenizer,
+                        source=dataset_spec.source,
+                        dataset_type=dataset_spec.dataset_type,
+                    )
+                    canonical_chat_fingerprints.append(
+                        validate_messages_tokenization(
+                            messages_source_dataset,
+                            source_dataset,
+                            processing_class=tokenizer,
+                            max_seq_length=max_seq_length,
+                            source=dataset_spec.source,
+                            dataset_type=dataset_spec.dataset_type,
+                            response_markers=response_markers,
+                        )
+                    )
+                elif (
+                    dataset_spec.dataset_type
+                    == DATASET_TYPE_PROMPT_COMPLETION
+                ):
+                    prompt_prefix_fingerprints.append(
+                        validate_prompt_completion_tokenization(
+                            source_dataset,
+                            processing_class=tokenizer,
+                            max_seq_length=max_seq_length,
+                            add_special_tokens=prompt_add_special_tokens,
+                        )
+                    )
+                elif dataset_spec.dataset_type == DATASET_TYPE_TEXT:
+                    if text_policy is None:
+                        raise RuntimeError(
+                            "text preprocessing did not produce a boundary "
+                            "policy"
+                        )
+                    validate_text_sequence_lengths(
+                        source_dataset,
+                        processing_class=tokenizer,
+                        policy=text_policy,
+                        max_seq_length=max_seq_length,
+                        source=dataset_spec.source,
+                    )
+                rendered_source_datasets.append(source_dataset)
 
-    text_policy = None
-    if dataset_spec.dataset_type == DATASET_TYPE_TEXT:
-        text_policy = text_boundary_policy(tokenizer)
-        validate_text_sequence_lengths(
-            dataset,
-            processing_class=tokenizer,
-            policy=text_policy,
-            max_seq_length=max_seq_length,
-            source=dataset_spec.source,
-        )
     base_model_name, base_model_revision = resolve_export_base_model(
         train_config["baseModel"],
         model_info=dependencies.model_info,
@@ -4268,12 +4758,93 @@ def train_model(
             trained_model_directory,
         )
 
-    dataset = prepare_training_dataset(
-        dataset,
-        dataset_type=dataset_spec.dataset_type,
-        end_of_sequence=tokenizer.eos_token,
-        text_policy=text_policy,
-    )
+    canonical_datasets = []
+    for dataset_spec, source_dataset in zip(
+        dataset_specs,
+        rendered_source_datasets,
+    ):
+        dataset_index = dataset_spec.index
+        if dataset_index is None:
+            raise RuntimeError("parsed training dataset is missing its index")
+        with indexed_dataset_errors(dataset_index):
+            source_dataset = prepare_training_dataset(
+                source_dataset,
+                dataset_type=dataset_spec.dataset_type,
+                end_of_sequence=tokenizer.eos_token,
+                text_policy=text_policy,
+            )
+
+            if len(dataset_specs) > 1:
+                canonical_fields = (
+                    DATASET_REQUIRED_FIELDS[DATASET_TYPE_PROMPT_COMPLETION]
+                    if completion_only
+                    else DATASET_REQUIRED_FIELDS[DATASET_TYPE_TEXT]
+                )
+                source_dataset = normalize_canonical_string_dataset(
+                    source_dataset,
+                    fields=canonical_fields,
+                    dataset_type=dataset_spec.dataset_type,
+                    source=dataset_spec.source,
+                    dataset_index=dataset_index,
+                )
+
+            canonical_datasets.append(source_dataset)
+
+    messages_token_fingerprints = []
+    if response_only or validate_all_full_sequence_records:
+        if len(canonical_datasets) == 1 and has_chat_dataset:
+            messages_token_fingerprints = canonical_chat_fingerprints
+        else:
+            first_record = next(iter(canonical_datasets[0]))
+            full_sequence_add_special_tokens = (
+                messages_unsloth_add_special_tokens(
+                    tokenizer,
+                    first_record["text"],
+                )
+            )
+            for dataset_spec, canonical_dataset in zip(
+                dataset_specs,
+                canonical_datasets,
+            ):
+                dataset_index = dataset_spec.index
+                if dataset_index is None:
+                    raise RuntimeError(
+                        "parsed training dataset is missing its index"
+                    )
+                with indexed_dataset_errors(dataset_index):
+                    messages_token_fingerprints.append(
+                        validate_full_sequence_text_tokenization(
+                            canonical_dataset,
+                            processing_class=tokenizer,
+                            max_seq_length=max_seq_length,
+                            dataset_type=dataset_spec.dataset_type,
+                            source=dataset_spec.source,
+                            dataset_index=dataset_index,
+                            add_special_tokens=(
+                                full_sequence_add_special_tokens
+                            ),
+                        )
+                    )
+
+    if len(canonical_datasets) == 1:
+        dataset = canonical_datasets[0]
+    else:
+        if not callable(dependencies.concatenate_datasets):
+            raise RuntimeError(
+                "multiple training datasets require "
+                "datasets.concatenate_datasets"
+            )
+        dataset = dependencies.concatenate_datasets(canonical_datasets)
+
+    if response_only or validate_all_full_sequence_records:
+        messages_token_fingerprint = merge_messages_token_fingerprints(
+            messages_token_fingerprints
+        )
+    if completion_only:
+        prompt_prefix_fingerprint = merge_prompt_prefix_fingerprints(
+            prompt_prefix_fingerprints
+        )
+
     bfloat16_supported = dependencies.is_bfloat16_supported()
 
     trainer = dependencies.sft_trainer(
@@ -4285,9 +4856,7 @@ def train_model(
             dataset_text_field="text",
             dataset_num_proc=2,
             assistant_only_loss=False,
-            completion_only_loss=(
-                dataset_spec.dataset_type == DATASET_TYPE_PROMPT_COMPLETION
-            ),
+            completion_only_loss=completion_only,
             max_length=max_seq_length,
             packing=cfg["packing"],
             per_device_train_batch_size=cfg["batchSize"],
@@ -4306,12 +4875,12 @@ def train_model(
             report_to="none",
         ),
     )
-    if dataset_spec.dataset_type in CHAT_DATASET_TYPES and loss == LOSS_RESPONSE:
+    if response_only:
         if bool(getattr(trainer.args, "packing", False)):
             raise RuntimeError(
-                "response-only messages preprocessing does not support effective "
-                "trainer packing because response masks must not cross "
-                "conversation boundaries"
+                "response-only messages preprocessing does not support "
+                "effective trainer packing because response masks must not "
+                "cross conversation boundaries"
             )
         if response_markers is None:
             raise RuntimeError(
@@ -4331,7 +4900,7 @@ def train_model(
             raise RuntimeError(
                 "response-only messages preprocessing did not return a trainer"
             )
-    if dataset_spec.dataset_type == DATASET_TYPE_PROMPT_COMPLETION:
+    if completion_only:
         # This is exercised by the GPU smoke path against the exact locked,
         # Unsloth-patched TRL trainer before any training step can silently use
         # full-sequence loss or omit EOS supervision.
@@ -4345,11 +4914,15 @@ def train_model(
             eos_token_id=tokenizer.eos_token_id,
             max_seq_length=max_seq_length,
             packing=bool(getattr(trainer.args, "packing", False)),
-            packing_strategy=getattr(trainer.args, "packing_strategy", "bfd"),
+            packing_strategy=getattr(
+                trainer.args,
+                "packing_strategy",
+                "bfd",
+            ),
             expected_prompt_prefix_fingerprint=prompt_prefix_fingerprint,
         )
 
-    if dataset_spec.dataset_type in CHAT_DATASET_TYPES:
+    if response_only or validate_all_full_sequence_records:
         if messages_token_fingerprint is None:
             raise RuntimeError(
                 "messages preprocessing did not produce a source fingerprint"
@@ -4360,13 +4933,21 @@ def train_model(
             max_seq_length=max_seq_length,
             packing=bool(getattr(trainer.args, "packing", False)),
             padding_free=bool(getattr(trainer.args, "padding_free", False)),
-            packing_strategy=getattr(trainer.args, "packing_strategy", "bfd"),
+            packing_strategy=getattr(
+                trainer.args,
+                "packing_strategy",
+                "bfd",
+            ),
             expected_fingerprint=messages_token_fingerprint,
             loss=loss,
             response_markers=response_markers,
         )
 
-    if dataset_spec.dataset_type == DATASET_TYPE_TEXT:
+    if has_text_dataset:
+        if text_policy is None:
+            raise RuntimeError(
+                "text preprocessing did not produce a boundary policy"
+            )
         verify_text_preprocessing(
             trainer,
             dataset_from_dict=dependencies.dataset_from_dict,
@@ -4375,7 +4956,6 @@ def train_model(
         )
     trainer.train()
     return save_trained_model(model, tokenizer, trained_model_directory)
-
 
 def export_model(
     export_config: Mapping[str, Any],
