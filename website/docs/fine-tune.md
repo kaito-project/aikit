@@ -127,13 +127,15 @@ AIKit supports one or more datasets in an SFT configuration. All entries must re
 
 | SFT mode | Compatible dataset combination |
 | --- | --- |
-| Full-sequence | Any mix of `alpaca`, `text`, `messages`, and `sharegpt` with global `loss: all` |
+| Full-sequence | Any mix of `alpaca`, `text`, `messages`, and `sharegpt` with global `loss: all` and compatible tokenizer special-token boundaries |
 | Completion-only | One or more `prompt-completion` datasets |
 | Response-only chat | Any mix of `messages` and `sharegpt` with global `loss: response` and `packing: false` |
 
 Mixing modes is unsupported. For example, `alpaca` cannot be combined with `prompt-completion`, and response-only chat cannot be combined with `text`. `config.unsloth.loss` applies to the whole job; per-dataset loss, weighted sampling, and random interleaving are not supported.
 
 AIKit loads sources sequentially in YAML order, validates every source as nonempty, normalizes each source independently, and concatenates records in configured order while preserving row order within each source. This deterministic order is the input to the SFT trainer; packing, shuffling, or sampling may reorder records afterward. Datasets are not deduplicated, over- or undersampled, so repeating an entry intentionally repeats its rows. A one-source configuration retains the existing single-source path.
+
+The locked Unsloth trainer selects one rendered-text `add_special_tokens` setting from the first canonical record. AIKit verifies that every record in a combined full-sequence job produces the same token IDs under that dataset-wide setting as it would under its source-specific setting. If, for example, rendered chat records already contain BOS while Alpaca records rely on the tokenizer to add BOS, AIKit rejects the mix with the failing `datasets[n]` index instead of allowing dataset order to duplicate or omit BOS tokens. A setting difference that does not change token IDs remains valid; reordering sources cannot bypass a real boundary mismatch.
 
 This example combines pinned Alpaca and preformatted-text sources in the full-sequence group while using different loaders:
 

@@ -5543,7 +5543,10 @@ class MultipleTrainingDatasetsTest(unittest.TestCase):
                 FunctionalDataset([{"conversations": sharegpt, "id": 4}]),
             ]
         )
-        tokenizer = MessagesTokenizer()
+        # Use a tokenizer without a BOS token so every full-sequence source has
+        # the same rendered-text special-token policy. A separate regression
+        # test covers mixed policies that change token boundaries.
+        tokenizer = MessagesTokenizer(bos_token=None, bos_token_id=None)
         base_model = dependencies.fast_language_model.from_pretrained.return_value[0]
         dependencies.fast_language_model.from_pretrained.return_value = (
             base_model,
@@ -5666,6 +5669,73 @@ class MultipleTrainingDatasetsTest(unittest.TestCase):
         )
         dependencies.train_on_responses_only.assert_not_called()
         trainer.train.assert_called_once_with()
+
+    def test_rejects_mixed_full_sequence_special_token_boundary_changes(self):
+        alpaca_row = {
+            "instruction": "Summarize",
+            "input": "First source",
+            "output": "Summary",
+        }
+        messages_row = {
+            "messages": [
+                {"role": "user", "content": "Question?"},
+                {"role": "assistant", "content": "Answer."},
+            ]
+        }
+        cases = (
+            (
+                ["alpaca", "messages"],
+                [FunctionalDataset([alpaca_row]), FunctionalDataset([messages_row])],
+                r"datasets\[1\] messages dataset.*tokenizes differently.*"
+                r"source add_special_tokens=False.*"
+                r"combined full-sequence add_special_tokens=True",
+            ),
+            (
+                ["messages", "alpaca"],
+                [FunctionalDataset([messages_row]), FunctionalDataset([alpaca_row])],
+                r"datasets\[1\] alpaca dataset.*tokenizes differently.*"
+                r"source add_special_tokens=True.*"
+                r"combined full-sequence add_special_tokens=False",
+            ),
+        )
+
+        for dataset_types, datasets, error_pattern in cases:
+            with self.subTest(dataset_types=dataset_types):
+                dependencies = self.dependencies_for(datasets)
+                base_model = (
+                    dependencies.fast_language_model.from_pretrained.return_value[0]
+                )
+                dependencies.fast_language_model.from_pretrained.return_value = (
+                    base_model,
+                    MessagesTokenizer(),
+                )
+
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.train_model(
+                        self.config_for(dataset_types),
+                        dependencies=dependencies,
+                    )
+
+                dependencies.concatenate_datasets.assert_not_called()
+                dependencies.sft_trainer.assert_not_called()
+
+    def test_allows_noop_full_sequence_special_token_policy_difference(self):
+        tokenizer = TextPreprocessingTokenizer(auto_bos=False)
+        fingerprint = target_unsloth.validate_full_sequence_text_tokenization(
+            FunctionalDataset([{"text": "plain text"}]),
+            processing_class=tokenizer,
+            max_seq_length=128,
+            dataset_type="alpaca",
+            source="organization/source-0",
+            dataset_index=0,
+            add_special_tokens=False,
+        )
+
+        self.assertEqual(fingerprint.sequence_count, 1)
+        self.assertEqual(
+            [call["add_special_tokens"] for call in tokenizer.calls],
+            [False, True],
+        )
 
     def test_multiple_prompt_completion_sources_preserve_duplicates_through_bfd(self):
         config = self.config_for(

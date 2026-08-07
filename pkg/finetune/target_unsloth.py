@@ -2432,6 +2432,8 @@ def validate_full_sequence_text_tokenization(
     texts: list[str] = []
     batch_start = 0
     record_count = 0
+    effective_add_special_tokens = add_special_tokens
+    source_add_special_tokens = None
     unsloth_tokenizer = getattr(
         processing_class,
         "tokenizer",
@@ -2440,6 +2442,10 @@ def validate_full_sequence_text_tokenization(
 
     def validate_batch() -> None:
         nonlocal fingerprint
+        if source_add_special_tokens is None:
+            raise RuntimeError(
+                "full-sequence validation did not derive a source tokenization policy"
+            )
         subject = dataset_error_subject(
             dataset_type,
             source=source,
@@ -2448,14 +2454,43 @@ def validate_full_sequence_text_tokenization(
         input_id_rows = text_token_id_rows(
             unsloth_tokenizer,
             texts,
-            add_special_tokens=bool(add_special_tokens),
+            add_special_tokens=bool(effective_add_special_tokens),
             max_length=max_seq_length,
             description=(
                 f"{subject} rows {batch_start}-{batch_start + len(texts) - 1}"
             ),
         )
-        for batch_index, input_ids in enumerate(input_id_rows):
+        source_input_id_rows = input_id_rows
+        if source_add_special_tokens != effective_add_special_tokens:
+            source_input_id_rows = text_token_id_rows(
+                unsloth_tokenizer,
+                texts,
+                add_special_tokens=source_add_special_tokens,
+                max_length=max_seq_length,
+                description=(
+                    f"{subject} source-policy rows {batch_start}-"
+                    f"{batch_start + len(texts) - 1}"
+                ),
+            )
+        for batch_index, (input_ids, source_input_ids) in enumerate(
+            zip(input_id_rows, source_input_id_rows)
+        ):
             record_index = batch_start + batch_index
+            if input_ids != source_input_ids:
+                row_subject = dataset_error_subject(
+                    dataset_type,
+                    source=source,
+                    record_index=record_index,
+                    dataset_index=dataset_index,
+                )
+                raise ValueError(
+                    f"{row_subject} tokenizes differently with its source "
+                    f"add_special_tokens={source_add_special_tokens} policy and "
+                    "the combined full-sequence "
+                    f"add_special_tokens={effective_add_special_tokens} policy "
+                    "derived from datasets[0]; combining these records would "
+                    "change tokenizer special-token boundaries"
+                )
             if not input_ids:
                 raise RuntimeError(
                     f"{subject} row {record_index} produced no training tokens"
@@ -2470,11 +2505,13 @@ def validate_full_sequence_text_tokenization(
 
     for record in dataset:
         text = record["text"]
-        if add_special_tokens is None:
-            add_special_tokens = messages_unsloth_add_special_tokens(
+        if source_add_special_tokens is None:
+            source_add_special_tokens = messages_unsloth_add_special_tokens(
                 processing_class,
                 text,
             )
+        if effective_add_special_tokens is None:
+            effective_add_special_tokens = source_add_special_tokens
         texts.append(text)
         record_count += 1
         if len(texts) == effective_batch_size:

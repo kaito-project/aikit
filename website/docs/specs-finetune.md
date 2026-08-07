@@ -107,13 +107,15 @@ One or more datasets are supported for SFT. The global `config.unsloth.loss` and
 
 | Compatibility group | Supported entries | Training behavior |
 | --- | --- | --- |
-| Full-sequence | Any mix of `alpaca`, `text`, `messages`, and `sharegpt` with `loss: all` | Normalizes to a canonical string `text` column and supervises the full sequence |
+| Full-sequence | Any mix of `alpaca`, `text`, `messages`, and `sharegpt` with `loss: all` and compatible tokenizer special-token boundaries | Normalizes to a canonical string `text` column and supervises the full sequence |
 | Completion-only | One or more `prompt-completion` entries | Preserves canonical string `prompt` and `completion` columns and supervises completion and EOS tokens |
 | Response-only chat | Any mix of `messages` and `sharegpt` with `loss: response` | Normalizes to canonical rendered `text`, masks non-assistant tokens, and requires `packing: false` |
 
 Entries from different groups cannot be combined. In particular, prompt-completion data cannot be mixed with full-sequence data, and response-only chat cannot be mixed with `alpaca`, `prompt-completion`, or `text`. Per-dataset loss, source weights, random interleaving, deduplication, and automatic over- or undersampling are not supported.
 
 AIKit loads entries sequentially in YAML order, validates and normalizes every source independently, then concatenates their canonical records in configured order while preserving row order within each source. This ordering is the input to trainer preprocessing; packing and trainer-level sampling may reorder records afterward. A single entry bypasses concatenation and retains the established single-source path. Repeating an entry intentionally repeats its rows, and every source must contain at least one record.
+
+The locked Unsloth SFT path derives one rendered-text `add_special_tokens` value from the first canonical record. Before concatenation, AIKit compares every full-sequence record's token IDs under that dataset-wide value with its token IDs under the source-specific value. A mix in which one source already renders BOS and another relies on tokenizer-added BOS is rejected with the failing `datasets[n]` index when the values change the effective tokens; otherwise dataset order could duplicate BOS on one source or omit it from another. No-op setting differences remain valid, and reordering cannot bypass a real boundary mismatch.
 
 The following SFT configuration combines two full-sequence schemas with independent pinned loaders:
 
