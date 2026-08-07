@@ -10,7 +10,7 @@ apiVersion: # required. only v1alpha1 is supported at the moment
 baseModel: # required. any base model from Huggingface. for unsloth, see for 4bit pre-quantized models: https://huggingface.co/unsloth
 datasets:
   - source: # required. this can be a Huggingface dataset repo or a URL pointing to a JSON or JSON Lines file
-    type: # required. can be "alpaca", "prompt-completion", or "text"
+    type: # required. can be "alpaca", "messages", "prompt-completion", or "text"
 config:
   unsloth:
     packing: # optional. defaults to false. can make training 5x faster for short sequences.
@@ -35,9 +35,10 @@ output:
 
 Only one dataset is currently supported. Its `type` determines the required columns and loss behavior.
 
-| Type | Required string columns | Loss behavior |
+| Type | Required record shape | Loss behavior |
 | --- | --- | --- |
 | `alpaca` | `instruction`, `input`, `output` | Renders the existing Alpaca prompt, appends EOS, and supervises the full sequence. |
+| `messages` | Non-empty `messages` list containing text-only `role` and `content` mappings | Applies the tokenizer's chat template and supervises the full rendered sequence. |
 | `prompt-completion` | `prompt`, non-empty `completion` | Keeps both columns separate, masks prompt tokens, and supervises completion and EOS tokens. |
 | `text` | non-empty `text` | Preserves the preformatted sequence, normalizes BOS/EOS boundaries, and supervises the full sequence. |
 
@@ -54,6 +55,24 @@ datasets:
 ```json
 {"prompt":"Question: What is a container image?\nAnswer:","completion":" An immutable package containing an application and its dependencies."}
 ```
+
+For a `messages` dataset, each record is a canonical text-only conversation:
+
+```yaml
+datasets:
+  - source: organization/chat-data
+    type: messages
+```
+
+```json
+{"messages":[{"role":"system","content":"You are concise."},{"role":"user","content":"What is a container image?"},{"role":"assistant","content":"An immutable application package."}]}
+```
+
+The `messages` list must be non-empty. Every turn must contain exactly the string fields `role` and `content`; only `system`, `user`, and `assistant` roles are supported. Each conversation must contain at least one assistant turn and end with an assistant turn. Extra metadata, tool calls, structured content, and multimodal content are rejected. AIKit does not perform ShareGPT conversion or accept a custom chat template.
+
+The base model tokenizer must provide a usable chat template. Before LoRA allocation, AIKit calls `apply_chat_template` with `tokenize=False` and `add_generation_prompt=False`, stores the result in the canonical `text` field, and sends rendered text rather than raw messages to the locked Unsloth SFT path. It adds no special tokens to that rendering. Direct chat-template token IDs must exactly match the locked rendered-text tokenization; mismatches and records over `maxSeqLength` fail instead of being silently changed or truncated. Source-aware errors redact URL credentials and query values.
+
+Messages use full-sequence SFT. All system, user, assistant, and template tokens are supervised with no completion-only loss or assistant mask. AIKit verifies the actual prepared labels and per-record packing boundaries before training, including when records are duplicated or reordered by packing.
 
 For a `text` dataset, each record is already the complete sequence to train on:
 

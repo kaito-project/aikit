@@ -70,6 +70,202 @@ def in_memory_dataset(rows):
     return dataset
 
 
+class FunctionalDataset:
+    def __init__(self, rows):
+        self.rows = tuple(dict(row) for row in rows)
+        self.column_names = list(
+            dict.fromkeys(key for row in self.rows for key in row)
+        )
+        self.select_columns = mock.Mock(side_effect=self._select_columns)
+        self.map = mock.Mock(side_effect=self._map)
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def __getitem__(self, index):
+        return self.rows[index]
+
+    def _select_columns(self, column_names):
+        return FunctionalDataset(
+            {
+                column_name: row[column_name]
+                for column_name in column_names
+                if column_name in row
+            }
+            for row in self.rows
+        )
+
+    def _map(
+        self,
+        function,
+        *,
+        batched=False,
+        batch_size=None,
+        with_indices=False,
+        remove_columns=None,
+    ):
+        if not batched:
+            raise AssertionError("FunctionalDataset only supports batched maps")
+        if batch_size is None:
+            batch_size = len(self.rows) or 1
+        removed = set(remove_columns or ())
+        mapped_rows = []
+        for batch_start in range(0, len(self.rows), batch_size):
+            rows = self.rows[batch_start : batch_start + batch_size]
+            examples = {
+                column_name: [row[column_name] for row in rows]
+                for column_name in self.column_names
+            }
+            if with_indices:
+                output = function(
+                    examples,
+                    list(range(batch_start, batch_start + len(rows))),
+                )
+            else:
+                output = function(examples)
+            for batch_index, row in enumerate(rows):
+                mapped_row = {
+                    key: value for key, value in row.items() if key not in removed
+                }
+                mapped_row.update(
+                    {
+                        key: values[batch_index]
+                        for key, values in output.items()
+                    }
+                )
+                mapped_rows.append(mapped_row)
+        return FunctionalDataset(mapped_rows)
+
+
+class MessagesTokenizer:
+    def __init__(
+        self,
+        *,
+        chat_template="{{ bos_token }}{{ messages }}{{ eos_token }}",
+        bos_token="<bos>",
+        bos_token_id=1,
+        eos_token="<eos>",
+        eos_token_id=2,
+    ):
+        self.chat_template = chat_template
+        self.bos_token = bos_token
+        self.bos_token_id = bos_token_id
+        self.eos_token = eos_token
+        self.eos_token_id = eos_token_id
+        self.apply_calls = []
+        self.text_calls = []
+        self.render_error = None
+        self.tokenize_error = None
+        self.text_error = None
+        self.mutate_rendered_tokenization = False
+        self.save_pretrained = mock.Mock()
+
+    def render(self, messages):
+        prefix = self.bos_token or ""
+        body = "".join(
+            f"<{message['role']}>{message['content']}</{message['role']}>"
+            for message in messages
+        )
+        return prefix + body + self.eos_token
+
+    def raw_token_ids(self, text):
+        input_ids = []
+        offset = 0
+        special_tokens = tuple(
+            (token, token_id)
+            for token, token_id in (
+                (self.bos_token, self.bos_token_id),
+                (self.eos_token, self.eos_token_id),
+            )
+            if token is not None
+        )
+        while offset < len(text):
+            for token, token_id in special_tokens:
+                if text.startswith(token, offset):
+                    input_ids.append(token_id)
+                    offset += len(token)
+                    break
+            else:
+                input_ids.append(1000 + ord(text[offset]))
+                offset += 1
+        return input_ids
+
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize,
+        add_generation_prompt,
+        truncation=False,
+        max_length=None,
+        return_dict=True,
+    ):
+        self.apply_calls.append(
+            {
+                "messages": messages,
+                "tokenize": tokenize,
+                "add_generation_prompt": add_generation_prompt,
+                "truncation": truncation,
+                "max_length": max_length,
+                "return_dict": return_dict,
+            }
+        )
+        if not tokenize and self.render_error is not None:
+            raise self.render_error
+        if tokenize and self.tokenize_error is not None:
+            raise self.tokenize_error
+
+        rendered = self.render(messages)
+        if not tokenize:
+            return rendered
+        input_ids = self.raw_token_ids(rendered)
+        if truncation:
+            if max_length is None:
+                raise AssertionError("truncation requires max_length")
+            input_ids = input_ids[:max_length]
+        if return_dict:
+            return {"input_ids": input_ids}
+        return input_ids
+
+    def __call__(
+        self,
+        text,
+        *,
+        add_special_tokens=True,
+        truncation=False,
+        max_length=None,
+    ):
+        if self.text_error is not None:
+            raise self.text_error
+        self.text_calls.append(
+            {
+                "text": text,
+                "add_special_tokens": add_special_tokens,
+                "truncation": truncation,
+                "max_length": max_length,
+            }
+        )
+
+        def token_ids(value):
+            input_ids = self.raw_token_ids(value)
+            if add_special_tokens and self.bos_token_id is not None:
+                input_ids.insert(0, self.bos_token_id)
+            if self.mutate_rendered_tokenization and input_ids:
+                input_ids[0] += 100
+            if truncation:
+                if max_length is None:
+                    raise AssertionError("truncation requires max_length")
+                input_ids = input_ids[:max_length]
+            return input_ids
+
+        if isinstance(text, list):
+            return {"input_ids": [token_ids(value) for value in text]}
+        return {"input_ids": token_ids(text)}
+
+
 def preprocessing_tokenizer():
     tokenizer = mock.Mock(
         eos_token="<eos>",
@@ -416,6 +612,476 @@ class DatasetSourceTest(unittest.TestCase):
                 path="organization/dataset",
                 kwargs={"split": "train"},
             ),
+        )
+
+
+class MessagesSchemaTest(unittest.TestCase):
+    def test_accepts_single_and_multi_turn_text_conversations(self):
+        rows = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Question?"},
+                    {"role": "assistant", "content": "Answer."},
+                ]
+            },
+            {
+                "messages": [
+                    {"role": "system", "content": "Be concise."},
+                    {"role": "user", "content": "First question?"},
+                    {"role": "assistant", "content": "First answer."},
+                    {"role": "user", "content": "Follow-up?"},
+                    {"role": "assistant", "content": ""},
+                ]
+            },
+        ]
+
+        target_unsloth.validate_training_dataset(
+            rows,
+            dataset_type=target_unsloth.DATASET_TYPE_MESSAGES,
+            source="organization/chat-data",
+        )
+
+    def test_rejects_malformed_or_unsupported_conversations(self):
+        valid_user = {"role": "user", "content": "Question?"}
+        valid_assistant = {"role": "assistant", "content": "Answer."}
+        cases = (
+            ("empty list", [], "non-empty list"),
+            (
+                "non-list sequence",
+                (valid_user, valid_assistant),
+                "non-empty list",
+            ),
+            ("non-mapping message", [valid_user, "answer"], "message 1.*mapping"),
+            (
+                "missing role",
+                [{"content": "Question?"}, valid_assistant],
+                "message 0.*role",
+            ),
+            (
+                "missing content",
+                [{"role": "user"}, valid_assistant],
+                "message 0.*content",
+            ),
+            (
+                "metadata field",
+                [
+                    {"role": "user", "content": "Question?", "name": "alice"},
+                    valid_assistant,
+                ],
+                "message 0.*unsupported fields.*name",
+            ),
+            (
+                "tool call field",
+                [
+                    valid_user,
+                    {
+                        "role": "assistant",
+                        "content": "Answer.",
+                        "tool_calls": [],
+                    },
+                ],
+                "message 1.*unsupported fields.*tool_calls",
+            ),
+            (
+                "non-string role",
+                [{"role": 7, "content": "Question?"}, valid_assistant],
+                "message 0.*role.*string",
+            ),
+            (
+                "structured content",
+                [
+                    {"role": "user", "content": [{"type": "text"}]},
+                    valid_assistant,
+                ],
+                "message 0.*content.*string",
+            ),
+            (
+                "tool role",
+                [valid_user, {"role": "tool", "content": "result"}],
+                "unsupported role 'tool'",
+            ),
+            (
+                "developer role",
+                [
+                    {"role": "developer", "content": "instructions"},
+                    valid_assistant,
+                ],
+                "unsupported role 'developer'",
+            ),
+            (
+                "no assistant",
+                [valid_user],
+                "at least one assistant",
+            ),
+            (
+                "user final",
+                [valid_user, valid_assistant, valid_user],
+                "final message.*assistant",
+            ),
+        )
+
+        for name, messages, error_pattern in cases:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.validate_training_dataset(
+                        [{"messages": messages}],
+                        dataset_type=target_unsloth.DATASET_TYPE_MESSAGES,
+                        source="organization/chat-data",
+                    )
+
+    def test_rejects_record_level_metadata_and_tools(self):
+        messages = [
+            {"role": "user", "content": "Question?"},
+            {"role": "assistant", "content": "Answer."},
+        ]
+        for field, value in (
+            ("id", "record-id"),
+            ("tools", []),
+            ("chat_template_kwargs", {}),
+        ):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    rf"unsupported record fields.*{field}",
+                ):
+                    target_unsloth.validate_training_dataset(
+                        [{"messages": messages, field: value}],
+                        dataset_type=target_unsloth.DATASET_TYPE_MESSAGES,
+                        source="organization/chat-data",
+                    )
+
+    def test_redacts_signed_url_in_schema_errors(self):
+        source = (
+            "https://alice:password@example.test/private/train.json?"
+            "X-Amz-Credential=credential-marker&X-Amz-Signature=signature-marker"
+            "#fragment-marker"
+        )
+
+        with self.assertRaises(ValueError) as raised:
+            target_unsloth.validate_training_dataset(
+                [{"messages": []}],
+                dataset_type=target_unsloth.DATASET_TYPE_MESSAGES,
+                source=source,
+            )
+
+        message = str(raised.exception)
+        self.assertIn("messages dataset remote JSON URL row 0", message)
+        for secret in (
+            source,
+            "alice",
+            "password",
+            "credential-marker",
+            "signature-marker",
+            "fragment-marker",
+        ):
+            self.assertNotIn(secret, message)
+
+
+class MessagesRenderingTest(unittest.TestCase):
+    def messages_rows(self):
+        duplicate = [
+            {"role": "user", "content": "Question?"},
+            {"role": "assistant", "content": "Answer."},
+        ]
+        return [
+            {
+                "messages": [
+                    {"role": "system", "content": "Be concise."},
+                    *duplicate,
+                    {"role": "user", "content": "Follow-up?"},
+                    {"role": "assistant", "content": "Follow-up answer."},
+                ]
+            },
+            {"messages": duplicate},
+            {"messages": duplicate},
+        ]
+
+    def render_dataset(self, rows, tokenizer):
+        source_dataset = FunctionalDataset(rows)
+        rendered_dataset = target_unsloth.render_messages_dataset(
+            source_dataset,
+            processing_class=tokenizer,
+            source="organization/chat-data",
+        )
+        return source_dataset, rendered_dataset
+
+    def test_requires_a_usable_model_chat_template(self):
+        cases = (
+            (MessagesTokenizer(chat_template=None), "usable tokenizer chat template"),
+            (MessagesTokenizer(chat_template="  "), "usable tokenizer chat template"),
+            (
+                MessagesTokenizer(chat_template={"tool_use": "template"}),
+                "usable tokenizer chat template",
+            ),
+            (SimpleNamespace(chat_template="template"), "apply_chat_template"),
+        )
+
+        for tokenizer, error_pattern in cases:
+            with self.subTest(error_pattern=error_pattern):
+                with self.assertRaisesRegex(RuntimeError, error_pattern):
+                    target_unsloth.require_messages_chat_template(tokenizer)
+
+        target_unsloth.require_messages_chat_template(MessagesTokenizer())
+        target_unsloth.require_messages_chat_template(
+            MessagesTokenizer(
+                chat_template={"default": "{{ messages }}"},
+                bos_token=None,
+                bos_token_id=None,
+            )
+        )
+
+    def test_renders_only_canonical_text_with_required_flags(self):
+        tokenizer = MessagesTokenizer()
+        rows = self.messages_rows()
+        source_dataset, rendered_dataset = self.render_dataset(rows, tokenizer)
+
+        self.assertEqual(rendered_dataset.column_names, ["text"])
+        self.assertEqual(
+            [row["text"] for row in rendered_dataset],
+            [tokenizer.render(row["messages"]) for row in rows],
+        )
+        source_dataset.map.assert_called_once_with(
+            mock.ANY,
+            batched=True,
+            batch_size=target_unsloth.MESSAGES_RENDER_BATCH_SIZE,
+            with_indices=True,
+            remove_columns=["messages"],
+        )
+        self.assertEqual(len(tokenizer.apply_calls), len(rows))
+        for call in tokenizer.apply_calls:
+            self.assertFalse(call["tokenize"])
+            self.assertFalse(call["add_generation_prompt"])
+
+    def test_render_failure_redacts_source_and_suppresses_sensitive_cause(self):
+        source = (
+            "https://alice:password@example.test/train.json?"
+            "token=credential-marker#fragment-marker"
+        )
+        tokenizer = MessagesTokenizer()
+        tokenizer.render_error = RuntimeError(source)
+
+        with self.assertRaises(RuntimeError) as raised:
+            target_unsloth.render_messages_examples(
+                {"messages": [self.messages_rows()[0]["messages"]]},
+                [7],
+                processing_class=tokenizer,
+                source_description=target_unsloth.dataset_source_description(
+                    source
+                ),
+            )
+
+        self.assertIsNone(raised.exception.__cause__)
+        message = str(raised.exception)
+        self.assertIn("messages dataset remote JSON URL row 7", message)
+        for secret in (source, "alice", "password", "credential-marker"):
+            self.assertNotIn(secret, message)
+
+    def test_dataset_map_failure_redacts_source_and_suppresses_cause(self):
+        source = (
+            "https://alice:password@example.test/train.json?"
+            "token=credential-marker#fragment-marker"
+        )
+        dataset = mock.Mock(column_names=["messages"])
+        dataset.map.side_effect = RuntimeError(source)
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "messages dataset remote JSON URL could not be rendered",
+        ) as raised:
+            target_unsloth.render_messages_dataset(
+                dataset,
+                processing_class=MessagesTokenizer(),
+                source=source,
+            )
+
+        message = str(raised.exception)
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
+        for secret in (source, "alice", "password", "credential-marker"):
+            self.assertNotIn(secret, message)
+
+    def test_matches_canonical_ids_with_bounded_locked_text_tokenization(self):
+        tokenizer = MessagesTokenizer()
+        rows = self.messages_rows()
+        source_dataset, rendered_dataset = self.render_dataset(rows, tokenizer)
+        tokenizer.apply_calls.clear()
+
+        fingerprint = target_unsloth.validate_messages_tokenization(
+            source_dataset,
+            rendered_dataset,
+            processing_class=tokenizer,
+            max_seq_length=512,
+            source="organization/chat-data",
+            batch_size=2,
+        )
+
+        self.assertEqual(fingerprint.sequence_count, len(rows))
+        self.assertEqual(
+            [len(call["text"]) for call in tokenizer.text_calls],
+            [2, 1],
+        )
+        for call in tokenizer.text_calls:
+            self.assertFalse(call["add_special_tokens"])
+            self.assertTrue(call["truncation"])
+            self.assertEqual(call["max_length"], 513)
+        self.assertEqual(len(tokenizer.apply_calls), len(rows))
+        for call in tokenizer.apply_calls:
+            self.assertTrue(call["tokenize"])
+            self.assertFalse(call["add_generation_prompt"])
+            self.assertTrue(call["truncation"])
+            self.assertEqual(call["max_length"], 513)
+            self.assertFalse(call["return_dict"])
+
+    def test_matches_qwen_like_tokenizer_without_bos(self):
+        tokenizer = MessagesTokenizer(
+            chat_template="{{ messages }}{{ eos_token }}",
+            bos_token=None,
+            bos_token_id=None,
+        )
+        rows = [self.messages_rows()[1]]
+        source_dataset, rendered_dataset = self.render_dataset(rows, tokenizer)
+
+        fingerprint = target_unsloth.validate_messages_tokenization(
+            source_dataset,
+            rendered_dataset,
+            processing_class=tokenizer,
+            max_seq_length=512,
+            source="organization/chat-data",
+        )
+
+        self.assertEqual(fingerprint.sequence_count, 1)
+        self.assertEqual(len(tokenizer.text_calls), 1)
+        self.assertTrue(tokenizer.text_calls[0]["add_special_tokens"])
+
+    def test_matches_locked_unsloth_tokenizer_wrapper_selection(self):
+        inner_tokenizer = MessagesTokenizer()
+        processing_class = SimpleNamespace(
+            tokenizer=inner_tokenizer,
+            chat_template="",
+            bos_token=None,
+            apply_chat_template=inner_tokenizer.apply_chat_template,
+        )
+        processing_class.__call__ = mock.Mock(
+            side_effect=AssertionError("outer processor must not tokenize text")
+        )
+        rows = [self.messages_rows()[1]]
+        source_dataset, rendered_dataset = self.render_dataset(
+            rows,
+            processing_class,
+        )
+
+        target_unsloth.require_messages_chat_template(processing_class)
+        fingerprint = target_unsloth.validate_messages_tokenization(
+            source_dataset,
+            rendered_dataset,
+            processing_class=processing_class,
+            max_seq_length=512,
+            source="organization/chat-data",
+        )
+
+        self.assertEqual(fingerprint.sequence_count, 1)
+        self.assertEqual(len(inner_tokenizer.text_calls), 1)
+        self.assertFalse(inner_tokenizer.text_calls[0]["add_special_tokens"])
+        processing_class.__call__.assert_not_called()
+
+    def test_accepts_exact_limit_and_rejects_overflow_before_truncation(self):
+        tokenizer = MessagesTokenizer()
+        rows = [self.messages_rows()[1]]
+        source_dataset, rendered_dataset = self.render_dataset(rows, tokenizer)
+        token_count = len(tokenizer.raw_token_ids(rendered_dataset[0]["text"]))
+
+        target_unsloth.validate_messages_tokenization(
+            source_dataset,
+            rendered_dataset,
+            processing_class=tokenizer,
+            max_seq_length=token_count,
+            source="organization/chat-data",
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            rf"row 0.*at least {token_count} tokens.*maxSeqLength {token_count - 1}",
+        ):
+            target_unsloth.validate_messages_tokenization(
+                source_dataset,
+                rendered_dataset,
+                processing_class=tokenizer,
+                max_seq_length=token_count - 1,
+                source="organization/chat-data",
+            )
+
+    def test_rejects_canonical_and_locked_text_token_mismatch(self):
+        tokenizer = MessagesTokenizer()
+        rows = [self.messages_rows()[1]]
+        source_dataset, rendered_dataset = self.render_dataset(rows, tokenizer)
+        tokenizer.mutate_rendered_tokenization = True
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "canonical chat-template token IDs do not match.*locked Unsloth",
+        ):
+            target_unsloth.validate_messages_tokenization(
+                source_dataset,
+                rendered_dataset,
+                processing_class=tokenizer,
+                max_seq_length=512,
+                source="organization/chat-data",
+            )
+
+    def test_tokenization_errors_redact_source_and_suppress_causes(self):
+        source = (
+            "https://alice:password@example.test/train.json?"
+            "token=credential-marker#fragment-marker"
+        )
+        rows = [self.messages_rows()[1]]
+        cases = ("tokenize_error", "text_error")
+
+        for error_attribute in cases:
+            with self.subTest(error_attribute=error_attribute):
+                tokenizer = MessagesTokenizer()
+                setattr(tokenizer, error_attribute, RuntimeError(source))
+                source_dataset, rendered_dataset = self.render_dataset(
+                    rows,
+                    tokenizer,
+                )
+
+                with self.assertRaises(RuntimeError) as raised:
+                    target_unsloth.validate_messages_tokenization(
+                        source_dataset,
+                        rendered_dataset,
+                        processing_class=tokenizer,
+                        max_seq_length=512,
+                        source=source,
+                    )
+
+                message = str(raised.exception)
+                self.assertIsNone(raised.exception.__cause__)
+                self.assertTrue(raised.exception.__suppress_context__)
+                for secret in (
+                    source,
+                    "alice",
+                    "password",
+                    "credential-marker",
+                ):
+                    self.assertNotIn(secret, message)
+
+    def test_limits_batches_by_retained_token_budget(self):
+        tokenizer = MessagesTokenizer()
+        row = self.messages_rows()[1]
+        rows = [row for _ in range(65)]
+        source_dataset, rendered_dataset = self.render_dataset(rows, tokenizer)
+        tokenizer.text_calls.clear()
+
+        target_unsloth.validate_messages_tokenization(
+            source_dataset,
+            rendered_dataset,
+            processing_class=tokenizer,
+            max_seq_length=4095,
+            source="organization/chat-data",
+        )
+
+        self.assertEqual(
+            [len(call["text"]) for call in tokenizer.text_calls],
+            [32, 32, 1],
         )
 
 
@@ -1105,6 +1771,207 @@ class PromptCompletionPreprocessingContractTest(unittest.TestCase):
             )
 
 
+class MessagesPreprocessingContractTest(unittest.TestCase):
+    def fingerprint(self, segments):
+        fingerprint = target_unsloth.empty_messages_token_fingerprint()
+        for index, segment in enumerate(segments):
+            fingerprint = target_unsloth.extend_messages_token_fingerprint(
+                fingerprint,
+                segment,
+                description=f"test segment {index}",
+            )
+        return fingerprint
+
+    def packed_collator(self, records):
+        record = records[0]
+        input_ids = list(record["input_ids"])
+        labels = list(input_ids)
+        offset = 0
+        for length in record["seq_lengths"]:
+            labels[offset] = -100
+            offset += length
+        return {"input_ids": [input_ids], "labels": [labels]}
+
+    def test_accepts_reordered_duplicate_bfd_segments_and_full_labels(self):
+        first = [11, 12, 13]
+        duplicate = [21, 22]
+        final = [31, 32, 33]
+        expected = self.fingerprint([first, duplicate, duplicate, final])
+        prepared_dataset = [
+            {
+                "input_ids": final + duplicate,
+                "seq_lengths": [len(final), len(duplicate)],
+            },
+            {
+                "input_ids": duplicate + first,
+                "seq_lengths": [len(duplicate), len(first)],
+            },
+        ]
+
+        target_unsloth.validate_prepared_messages_dataset(
+            prepared_dataset,
+            data_collator=self.packed_collator,
+            max_seq_length=16,
+            packing=True,
+            padding_free=True,
+            packing_strategy="bfd",
+            expected_fingerprint=expected,
+        )
+
+    def test_accepts_non_packed_and_padding_free_start_labels(self):
+        segments = ([11, 12, 13], [21, 22])
+        expected = self.fingerprint(segments)
+        prepared_dataset = [{"input_ids": segment} for segment in segments]
+
+        def full_collator(records):
+            input_ids = list(records[0]["input_ids"])
+            return {"input_ids": [input_ids], "labels": [list(input_ids)]}
+
+        target_unsloth.validate_prepared_messages_dataset(
+            prepared_dataset,
+            data_collator=full_collator,
+            max_seq_length=8,
+            packing=False,
+            padding_free=False,
+            expected_fingerprint=expected,
+        )
+
+        def padding_free_collator(records):
+            input_ids = list(records[0]["input_ids"])
+            labels = list(input_ids)
+            labels[0] = -100
+            return {"input_ids": [input_ids], "labels": [labels]}
+
+        target_unsloth.validate_prepared_messages_dataset(
+            prepared_dataset,
+            data_collator=padding_free_collator,
+            max_seq_length=8,
+            packing=False,
+            padding_free=True,
+            expected_fingerprint=expected,
+        )
+
+    def test_rejects_non_bfd_packing_and_invalid_boundaries(self):
+        expected = self.fingerprint([[11, 12]])
+        with self.assertRaisesRegex(RuntimeError, "requires the bfd"):
+            target_unsloth.validate_prepared_messages_dataset(
+                [{"input_ids": [11, 12], "seq_lengths": [2]}],
+                data_collator=mock.Mock(),
+                max_seq_length=8,
+                packing=True,
+                padding_free=True,
+                packing_strategy="wrapped",
+                expected_fingerprint=expected,
+            )
+
+        cases = (
+            ({"input_ids": [11, 12]}, "did not produce seq_lengths"),
+            (
+                {"input_ids": [11, 12], "seq_lengths": [1]},
+                "seq_lengths do not match",
+            ),
+            (
+                {"input_ids": [11, 12], "seq_lengths": [0, 2]},
+                "invalid sequence length",
+            ),
+            (
+                {"input_ids": [11, 12], "seq_lengths": [True, 1]},
+                "invalid sequence length",
+            ),
+        )
+        for record, error_pattern in cases:
+            with self.subTest(error_pattern=error_pattern):
+                with self.assertRaisesRegex(RuntimeError, error_pattern):
+                    target_unsloth.validate_prepared_messages_dataset(
+                        [record],
+                        data_collator=mock.Mock(),
+                        max_seq_length=8,
+                        packing=True,
+                        padding_free=True,
+                        expected_fingerprint=expected,
+                    )
+
+    def test_rejects_masks_and_non_full_sequence_labels(self):
+        segment = [11, 12, 13]
+        expected = self.fingerprint([segment])
+        for mask_field in ("assistant_masks", "completion_mask"):
+            with self.subTest(mask_field=mask_field):
+                with self.assertRaisesRegex(RuntimeError, mask_field):
+                    target_unsloth.validate_prepared_messages_dataset(
+                        [{"input_ids": segment, mask_field: [0, 1, 1]}],
+                        data_collator=mock.Mock(),
+                        max_seq_length=8,
+                        packing=False,
+                        padding_free=False,
+                        expected_fingerprint=expected,
+                    )
+
+        def masked_interior_collator(records):
+            input_ids = list(records[0]["input_ids"])
+            labels = list(input_ids)
+            labels[1] = -100
+            return {"input_ids": [input_ids], "labels": [labels]}
+
+        with self.assertRaisesRegex(RuntimeError, "full-sequence labels"):
+            target_unsloth.validate_prepared_messages_dataset(
+                [{"input_ids": segment}],
+                data_collator=masked_interior_collator,
+                max_seq_length=8,
+                packing=False,
+                padding_free=False,
+                expected_fingerprint=expected,
+            )
+
+    def test_rejects_one_token_segment_with_no_supervised_label(self):
+        segment = [11]
+        expected = self.fingerprint([segment])
+
+        def masked_collator(records):
+            return {"input_ids": [[11]], "labels": [[-100]]}
+
+        with self.assertRaisesRegex(RuntimeError, "final tokens must be supervised"):
+            target_unsloth.validate_prepared_messages_dataset(
+                [{"input_ids": segment, "seq_lengths": [1]}],
+                data_collator=masked_collator,
+                max_seq_length=8,
+                packing=True,
+                padding_free=True,
+                expected_fingerprint=expected,
+            )
+
+    def test_fingerprint_rejects_mutation_missing_or_extra_duplicate(self):
+        first = [11, 12]
+        duplicate = [21, 22]
+        expected = self.fingerprint([first, duplicate, duplicate])
+
+        def full_collator(records):
+            input_ids = list(records[0]["input_ids"])
+            return {"input_ids": [input_ids], "labels": [list(input_ids)]}
+
+        cases = (
+            [first, duplicate],
+            [first, duplicate, duplicate, duplicate],
+            [first, duplicate, [21, 99]],
+        )
+        for prepared_segments in cases:
+            with self.subTest(prepared_segments=prepared_segments):
+                prepared_dataset = [
+                    {"input_ids": segment} for segment in prepared_segments
+                ]
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "do not match the canonical conversations",
+                ):
+                    target_unsloth.validate_prepared_messages_dataset(
+                        prepared_dataset,
+                        data_collator=full_collator,
+                        max_seq_length=8,
+                        packing=False,
+                        padding_free=False,
+                        expected_fingerprint=expected,
+                    )
+
+
 class TextPreprocessingContractTest(unittest.TestCase):
     def packed_verification_record(self, tokenizer, policy):
         normalized_texts = [
@@ -1495,6 +2362,213 @@ class TrainingPhaseTest(unittest.TestCase):
             False,
         )
 
+    def test_messages_dataset_renders_to_text_and_verifies_actual_full_loss(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "messages"
+        train_config["config"]["unsloth"]["packing"] = True
+        duplicate = [
+            {"role": "user", "content": "Question?"},
+            {"role": "assistant", "content": "Answer."},
+        ]
+        rows = [
+            {
+                "messages": [
+                    {"role": "system", "content": "Be concise."},
+                    *duplicate,
+                ],
+            },
+            {"messages": duplicate},
+            {"messages": duplicate},
+        ]
+        dataset = FunctionalDataset(rows)
+        dependencies = example_train_dependencies(dataset)
+        fast_language_model = dependencies.fast_language_model
+        base_model = fast_language_model.from_pretrained.return_value[0]
+        tokenizer = MessagesTokenizer()
+        fast_language_model.from_pretrained.return_value = (base_model, tokenizer)
+        segments = [
+            tokenizer.raw_token_ids(tokenizer.render(row["messages"]))
+            for row in rows
+        ]
+        reordered_segments = [segments[2], segments[0], segments[1]]
+        prepared_record = {
+            "input_ids": [
+                input_id
+                for segment in reordered_segments
+                for input_id in segment
+            ],
+            "seq_lengths": [len(segment) for segment in reordered_segments],
+        }
+        trainer = dependencies.sft_trainer.return_value
+        trainer.args = SimpleNamespace(
+            packing=True,
+            padding_free=True,
+            packing_strategy="bfd",
+            max_length=512,
+            dataset_num_proc=2,
+        )
+        trainer.train_dataset = [prepared_record]
+
+        def collate(records):
+            input_ids = list(records[0]["input_ids"])
+            labels = list(input_ids)
+            offset = 0
+            for length in records[0]["seq_lengths"]:
+                labels[offset] = -100
+                offset += length
+            return {"input_ids": [input_ids], "labels": [labels]}
+
+        trainer.data_collator.side_effect = collate
+
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            mock.patch.object(
+                target_unsloth,
+                "format_alpaca_examples",
+                wraps=target_unsloth.format_alpaca_examples,
+            ) as format_alpaca_examples,
+        ):
+            target_unsloth.train_model(
+                train_config,
+                trained_model_directory=Path(temporary_directory)
+                / "trained-model",
+                dependencies=dependencies,
+            )
+
+        dataset.select_columns.assert_called_once_with(["messages"])
+        rendered_dataset = dependencies.sft_trainer.call_args.kwargs[
+            "train_dataset"
+        ]
+        self.assertEqual(rendered_dataset.column_names, ["text"])
+        self.assertEqual(
+            [row["text"] for row in rendered_dataset],
+            [tokenizer.render(row["messages"]) for row in rows],
+        )
+        for row in rendered_dataset:
+            self.assertNotIn("messages", row)
+            self.assertNotIn("assistant_masks", row)
+        format_alpaca_examples.assert_not_called()
+        self.assertEqual(
+            dependencies.sft_config.call_args.kwargs["dataset_text_field"],
+            "text",
+        )
+        self.assertIs(
+            dependencies.sft_config.call_args.kwargs["completion_only_loss"],
+            False,
+        )
+        self.assertIs(
+            dependencies.sft_config.call_args.kwargs["assistant_only_loss"],
+            False,
+        )
+        self.assertEqual(trainer.data_collator.call_count, 1)
+        trainer.train.assert_called_once_with()
+        tokenizer.save_pretrained.assert_called_once()
+
+    def test_messages_template_render_and_token_checks_precede_lora(self):
+        valid_row = {
+            "messages": [
+                {"role": "user", "content": "Question?"},
+                {"role": "assistant", "content": "Answer."},
+            ]
+        }
+        cases = (
+            (
+                "missing template",
+                MessagesTokenizer(chat_template=None),
+                512,
+                "usable tokenizer chat template",
+            ),
+            (
+                "render failure",
+                MessagesTokenizer(),
+                512,
+                "could not be rendered",
+            ),
+            (
+                "token mismatch",
+                MessagesTokenizer(),
+                512,
+                "canonical chat-template token IDs do not match",
+            ),
+            (
+                "overflow",
+                MessagesTokenizer(),
+                2,
+                "exceeding maxSeqLength 2",
+            ),
+        )
+        cases[1][1].render_error = RuntimeError("template failure")
+        cases[2][1].mutate_rendered_tokenization = True
+
+        for name, tokenizer, max_seq_length, error_pattern in cases:
+            with self.subTest(name=name):
+                train_config = example_train_config()
+                train_config["datasets"][0]["type"] = "messages"
+                train_config["config"]["unsloth"][
+                    "maxSeqLength"
+                ] = max_seq_length
+                dataset = FunctionalDataset([valid_row])
+                dependencies = example_train_dependencies(dataset)
+                base_model = (
+                    dependencies.fast_language_model.from_pretrained.return_value[0]
+                )
+                dependencies.fast_language_model.from_pretrained.return_value = (
+                    base_model,
+                    tokenizer,
+                )
+
+                with self.assertRaisesRegex(
+                    (RuntimeError, ValueError),
+                    error_pattern,
+                ):
+                    target_unsloth.train_model(
+                        train_config,
+                        dependencies=dependencies,
+                    )
+
+                dependencies.fast_language_model.get_peft_model.assert_not_called()
+                dependencies.resolve_model_name.assert_not_called()
+                dependencies.model_info.assert_not_called()
+                dependencies.sft_trainer.assert_not_called()
+
+    def test_messages_loader_failure_redacts_signed_url_and_cause(self):
+        signed_url = (
+            "https://user:password@example.com/messages.jsonl"
+            "?X-Amz-Credential=secret&token=private#fragment"
+        )
+        train_config = example_train_config()
+        train_config["datasets"][0].update(
+            {"type": "messages", "source": signed_url}
+        )
+        dependencies = example_train_dependencies(mock.Mock())
+        dependencies.load_dataset.side_effect = RuntimeError(
+            f"failed to load {signed_url}"
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "messages dataset remote JSON URL could not be loaded",
+        ) as raised:
+            target_unsloth.train_model(
+                train_config,
+                dependencies=dependencies,
+            )
+
+        message = str(raised.exception)
+        self.assertNotIn("user", message)
+        self.assertNotIn("password", message)
+        self.assertNotIn("secret", message)
+        self.assertNotIn("private", message)
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
+        dependencies.load_dataset.assert_called_once_with(
+            "json",
+            data_files={"train": signed_url},
+            split="train",
+        )
+        dependencies.fast_language_model.from_pretrained.assert_not_called()
+        dependencies.fast_language_model.get_peft_model.assert_not_called()
+
     def test_prompt_completion_dataset_is_passed_through_with_completion_loss(self):
         train_config = example_train_config()
         train_config["datasets"][0]["type"] = "prompt-completion"
@@ -1881,8 +2955,38 @@ class TrainingPhaseTest(unittest.TestCase):
             "prompt": "Question?",
             "completion": " Answer.",
         }
+        valid_messages = {
+            "messages": [
+                {"role": "user", "content": "Question?"},
+                {"role": "assistant", "content": "Answer."},
+            ]
+        }
         valid_text = {"text": "A complete preformatted sequence."}
         cases = (
+            (
+                "empty messages dataset",
+                "messages",
+                [],
+                "messages dataset source 'organization/dataset'.*at least one",
+            ),
+            (
+                "missing messages column",
+                "messages",
+                [{"content": "Not a conversation."}],
+                "messages dataset source 'organization/dataset' row 0.*unsupported record fields|missing.*messages",
+            ),
+            (
+                "invalid messages value",
+                "messages",
+                [{"messages": "not a list"}],
+                "messages.*non-empty list",
+            ),
+            (
+                "messages metadata",
+                "messages",
+                [{**valid_messages, "tools": []}],
+                "unsupported record fields.*tools",
+            ),
             (
                 "empty prompt-completion dataset",
                 "prompt-completion",

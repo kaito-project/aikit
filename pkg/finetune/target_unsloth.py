@@ -22,16 +22,25 @@ ARTIFACT_DIRECTORY = Path("/model")
 ADAPTER_CONFIG_FILENAME = "adapter_config.json"
 HF_COMMIT_HASH_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DATASET_TYPE_ALPACA = "alpaca"
+DATASET_TYPE_MESSAGES = "messages"
 DATASET_TYPE_PROMPT_COMPLETION = "prompt-completion"
 DATASET_TYPE_TEXT = "text"
 SUPPORTED_DATASET_TYPES = frozenset(
-    (DATASET_TYPE_ALPACA, DATASET_TYPE_PROMPT_COMPLETION, DATASET_TYPE_TEXT)
+    (
+        DATASET_TYPE_ALPACA,
+        DATASET_TYPE_MESSAGES,
+        DATASET_TYPE_PROMPT_COMPLETION,
+        DATASET_TYPE_TEXT,
+    )
 )
 DATASET_REQUIRED_FIELDS = {
     DATASET_TYPE_ALPACA: ("instruction", "input", "output"),
+    DATASET_TYPE_MESSAGES: ("messages",),
     DATASET_TYPE_PROMPT_COMPLETION: ("prompt", "completion"),
     DATASET_TYPE_TEXT: ("text",),
 }
+MESSAGE_FIELDS = frozenset(("role", "content"))
+SUPPORTED_MESSAGE_ROLES = frozenset(("system", "user", "assistant"))
 PREPROCESSING_VERIFICATION_PROMPT = "Question: What is 2 + 2?\nAnswer:"
 PREPROCESSING_VERIFICATION_COMPLETION = " 4."
 PROMPT_COMPLETION_VALIDATION_BATCH_SIZE = 128
@@ -45,6 +54,10 @@ TEXT_PREPROCESSING_VERIFICATION_TEXTS = (
     "AIKit text boundary verification one.",
     "AIKit text boundary verification two!",
 )
+MESSAGES_RENDER_BATCH_SIZE = 128
+# Bound canonical and rendered-path token IDs retained for one validation batch.
+MESSAGES_VALIDATION_TOKEN_BUDGET = 262_144
+MESSAGES_TOKEN_FINGERPRINT_MASK = (1 << 256) - 1
 
 # Keep the Alpaca prompt byte-for-byte compatible with existing fine-tuning builds.
 ALPACA_PROMPT = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -78,6 +91,16 @@ class PromptPrefixFingerprint(NamedTuple):
     sequence_count: int
     first_digest_sum: int
     second_digest_sum: int
+
+
+class MessagesTokenFingerprint(NamedTuple):
+    sequence_count: int
+    first_digest_sum: int
+    second_digest_sum: int
+
+
+class MessagesRenderError(RuntimeError):
+    pass
 
 
 class TextBoundaryPolicy(NamedTuple):
@@ -288,6 +311,64 @@ def dataset_error_subject(
     return subject
 
 
+def validate_messages_value(
+    messages: Any,
+    *,
+    subject: str,
+) -> None:
+    if not isinstance(messages, list) or not messages:
+        raise ValueError(f'{subject} field "messages" must be a non-empty list')
+
+    has_assistant = False
+    for message_index, message in enumerate(messages):
+        message_subject = f"{subject} message {message_index}"
+        if not isinstance(message, Mapping):
+            raise ValueError(f"{message_subject} must be a mapping")
+
+        missing_fields = [
+            field for field in MESSAGE_FIELDS if field not in message
+        ]
+        if missing_fields:
+            quoted_fields = ", ".join(
+                f'"{field}"' for field in sorted(missing_fields)
+            )
+            raise ValueError(
+                f"{message_subject} is missing required fields: {quoted_fields}"
+            )
+
+        unsupported_fields = [
+            field for field in message if field not in MESSAGE_FIELDS
+        ]
+        if unsupported_fields:
+            quoted_fields = ", ".join(
+                sorted(repr(field) for field in unsupported_fields)
+            )
+            raise ValueError(
+                f"{message_subject} contains unsupported fields: {quoted_fields}"
+            )
+
+        role = message["role"]
+        content = message["content"]
+        if not isinstance(role, str):
+            raise ValueError(f'{message_subject} field "role" must be a string')
+        if role not in SUPPORTED_MESSAGE_ROLES:
+            raise ValueError(
+                f"{message_subject} has unsupported role {role!r}; "
+                "supported roles are system, user, and assistant"
+            )
+        if not isinstance(content, str):
+            raise ValueError(
+                f'{message_subject} field "content" must be a string'
+            )
+        if role == "assistant":
+            has_assistant = True
+
+    if not has_assistant:
+        raise ValueError(f"{subject} must contain at least one assistant message")
+    if messages[-1]["role"] != "assistant":
+        raise ValueError(f"{subject} final message must have role 'assistant'")
+
+
 def validate_training_dataset(
     dataset: Any,
     *,
@@ -307,6 +388,18 @@ def validate_training_dataset(
         if not isinstance(record, Mapping):
             raise ValueError(f"{subject} must be a mapping")
 
+        if dataset_type == DATASET_TYPE_MESSAGES:
+            unsupported_fields = [
+                field for field in record if field != "messages"
+            ]
+            if unsupported_fields:
+                quoted_fields = ", ".join(
+                    sorted(repr(field) for field in unsupported_fields)
+                )
+                raise ValueError(
+                    f"{subject} contains unsupported record fields: {quoted_fields}"
+                )
+
         for field in required_fields:
             if field not in record:
                 raise ValueError(
@@ -314,11 +407,15 @@ def validate_training_dataset(
                 )
 
             value = record[field]
+            if dataset_type == DATASET_TYPE_MESSAGES:
+                continue
             if not isinstance(value, str):
                 raise ValueError(
                     f'{subject} field "{field}" must be a string'
                 )
 
+        if dataset_type == DATASET_TYPE_MESSAGES:
+            validate_messages_value(record["messages"], subject=subject)
         if (
             dataset_type == DATASET_TYPE_PROMPT_COMPLETION
             and record["completion"] == ""
@@ -363,6 +460,420 @@ def project_training_dataset(
         )
 
     return dataset.select_columns(list(required_fields))
+
+
+def require_messages_chat_template(processing_class: Any) -> None:
+    if not callable(getattr(processing_class, "apply_chat_template", None)):
+        raise RuntimeError(
+            "messages preprocessing requires a tokenizer with apply_chat_template"
+        )
+
+    chat_template = getattr(processing_class, "chat_template", None)
+    inner_tokenizer = getattr(processing_class, "tokenizer", processing_class)
+    if not chat_template and inner_tokenizer is not processing_class:
+        chat_template = getattr(inner_tokenizer, "chat_template", None)
+    if isinstance(chat_template, str):
+        usable = bool(chat_template.strip())
+    elif isinstance(chat_template, Mapping):
+        default_template = chat_template.get("default")
+        usable = isinstance(default_template, str) and bool(
+            default_template.strip()
+        )
+    else:
+        usable = False
+
+    if not usable:
+        raise RuntimeError(
+            "messages preprocessing requires a usable tokenizer chat template; "
+            "use an instruct/chat model that defines tokenizer.chat_template"
+        )
+
+
+def render_messages_examples(
+    examples: Mapping[str, Sequence[Any]],
+    indices: Sequence[Any],
+    *,
+    processing_class: Any,
+    source_description: str,
+) -> dict[str, list[str]]:
+    messages_rows = examples["messages"]
+    if len(messages_rows) != len(indices):
+        raise MessagesRenderError(
+            "messages preprocessing received mismatched records and row indices"
+        )
+
+    texts = []
+    for messages, raw_index in zip(messages_rows, indices):
+        try:
+            record_index = operator.index(raw_index)
+        except TypeError as error:
+            raise MessagesRenderError(
+                "messages preprocessing row index must be an integer"
+            ) from error
+        subject = (
+            f"{DATASET_TYPE_MESSAGES} dataset {source_description} "
+            f"row {record_index}"
+        )
+        try:
+            text = processing_class.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=False,
+            )
+        except Exception:
+            # Do not propagate template errors that may echo sensitive source data.
+            raise MessagesRenderError(
+                f"{subject} could not be rendered with the tokenizer chat template"
+            ) from None
+        if not isinstance(text, str) or not text:
+            raise MessagesRenderError(
+                f"{subject} tokenizer chat template must render a non-empty string"
+            )
+        texts.append(text)
+
+    return {"text": texts}
+
+
+def render_messages_dataset(
+    dataset: Any,
+    *,
+    processing_class: Any,
+    source: str,
+) -> Any:
+    source_description = dataset_source_description(source)
+    try:
+        return dataset.map(
+            partial(
+                render_messages_examples,
+                processing_class=processing_class,
+                source_description=source_description,
+            ),
+            batched=True,
+            batch_size=MESSAGES_RENDER_BATCH_SIZE,
+            with_indices=True,
+            remove_columns=list(dataset.column_names),
+        )
+    except MessagesRenderError:
+        raise
+    except Exception:
+        subject = dataset_error_subject(DATASET_TYPE_MESSAGES, source=source)
+        raise RuntimeError(
+            f"{subject} could not be rendered with the tokenizer chat template"
+        ) from None
+
+
+def messages_unsloth_add_special_tokens(
+    processing_class: Any,
+    first_text: str,
+) -> bool:
+    """Match the locked Unsloth rendered-text special-token decision."""
+    tokenizer = getattr(processing_class, "tokenizer", processing_class)
+    chat_template = getattr(processing_class, "chat_template", "")
+    if chat_template == "" and tokenizer is not processing_class:
+        chat_template = getattr(tokenizer, "chat_template", "")
+    if chat_template is None:
+        chat_template = ""
+    bos_token = getattr(processing_class, "bos_token", None) or getattr(
+        tokenizer,
+        "bos_token",
+        None,
+    )
+    return not (
+        bos_token is not None
+        and (first_text.startswith(bos_token) or bos_token in chat_template)
+    )
+
+
+def messages_chat_template_token_ids(
+    processing_class: Any,
+    messages: list[Mapping[str, str]],
+    *,
+    max_length: int,
+    subject: str,
+) -> list[Any]:
+    try:
+        tokenized = processing_class.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=False,
+            truncation=True,
+            max_length=max_length,
+            return_dict=False,
+        )
+    except Exception:
+        raise RuntimeError(
+            f"{subject} could not be tokenized with the tokenizer chat template"
+        ) from None
+
+    if isinstance(tokenized, Mapping):
+        try:
+            tokenized = tokenized["input_ids"]
+        except KeyError as error:
+            raise RuntimeError(
+                f"{subject} chat-template tokenization did not produce input_ids"
+            ) from error
+    input_ids = sequence_values(
+        tokenized,
+        description="chat-template token IDs",
+        preprocessing="messages",
+    )
+    if input_ids and isinstance(input_ids[0], Sequence):
+        raise RuntimeError(
+            f"{subject} chat-template token IDs must be one-dimensional"
+        )
+    if len(input_ids) > max_length:
+        raise RuntimeError(
+            f"{subject} chat-template tokenization did not honor its truncation limit"
+        )
+    return input_ids
+
+
+def messages_rendered_token_id_rows(
+    processing_class: Any,
+    texts: Sequence[str],
+    *,
+    add_special_tokens: bool,
+    max_length: int,
+    subject: str,
+) -> list[list[Any]]:
+    try:
+        tokenized = processing_class(
+            list(texts),
+            add_special_tokens=add_special_tokens,
+            truncation=True,
+            max_length=max_length,
+        )
+    except Exception:
+        raise RuntimeError(f"{subject} could not be tokenized") from None
+    if not isinstance(tokenized, Mapping):
+        raise RuntimeError(f"{subject} tokenization must return a mapping")
+    try:
+        token_rows = sequence_values(
+            tokenized["input_ids"],
+            description=f"{subject} token ID rows",
+            preprocessing="messages",
+        )
+    except KeyError as error:
+        raise RuntimeError(
+            f"{subject} tokenization did not produce input_ids"
+        ) from error
+    if len(token_rows) != len(texts):
+        raise RuntimeError(
+            f"{subject} tokenization returned an unexpected number of rows"
+        )
+
+    input_id_rows = []
+    for row_index, input_ids in enumerate(token_rows):
+        row = sequence_values(
+            input_ids,
+            description=f"{subject} token IDs row {row_index}",
+            preprocessing="messages",
+        )
+        if len(row) > max_length:
+            raise RuntimeError(
+                f"{subject} tokenization did not honor its truncation limit"
+            )
+        input_id_rows.append(row)
+    return input_id_rows
+
+
+def empty_messages_token_fingerprint() -> MessagesTokenFingerprint:
+    return MessagesTokenFingerprint(0, 0, 0)
+
+
+def extend_messages_token_fingerprint(
+    fingerprint: MessagesTokenFingerprint,
+    token_ids: Sequence[Any],
+    *,
+    description: str,
+) -> MessagesTokenFingerprint:
+    encoded_token_ids = bytearray()
+    for token_index, raw_token_id in enumerate(token_ids):
+        try:
+            token_id = operator.index(raw_token_id)
+        except TypeError as error:
+            raise RuntimeError(
+                f"messages preprocessing {description} token ID {token_index} must be an integer"
+            ) from error
+        if isinstance(raw_token_id, bool) or not 0 <= token_id < 1 << 64:
+            raise RuntimeError(
+                f"messages preprocessing {description} token ID {token_index} must be an unsigned 64-bit integer"
+            )
+        encoded_token_ids.extend(token_id.to_bytes(8, byteorder="big"))
+
+    first_hasher = hashlib.sha256(b"aikit-messages-token-sequence-1\x00")
+    first_hasher.update(encoded_token_ids)
+    second_hasher = hashlib.sha256(b"aikit-messages-token-sequence-2\x00")
+    second_hasher.update(encoded_token_ids)
+    first_digest = int.from_bytes(first_hasher.digest(), byteorder="big")
+    second_digest = int.from_bytes(second_hasher.digest(), byteorder="big")
+
+    return MessagesTokenFingerprint(
+        fingerprint.sequence_count + 1,
+        (fingerprint.first_digest_sum + first_digest)
+        & MESSAGES_TOKEN_FINGERPRINT_MASK,
+        (fingerprint.second_digest_sum + second_digest)
+        & MESSAGES_TOKEN_FINGERPRINT_MASK,
+    )
+
+
+def validate_messages_tokenization(
+    source_dataset: Any,
+    rendered_dataset: Any,
+    *,
+    processing_class: Any,
+    max_seq_length: int,
+    source: str,
+    batch_size: int = MESSAGES_RENDER_BATCH_SIZE,
+) -> MessagesTokenFingerprint:
+    if (
+        isinstance(batch_size, bool)
+        or not isinstance(batch_size, int)
+        or batch_size <= 0
+    ):
+        raise ValueError("messages validation batch size must be positive")
+    if (
+        isinstance(max_seq_length, bool)
+        or not isinstance(max_seq_length, int)
+        or max_seq_length <= 0
+    ):
+        raise ValueError("messages max sequence length must be positive")
+
+    try:
+        first_rendered_record = next(iter(rendered_dataset))
+    except StopIteration as error:
+        raise RuntimeError(
+            "messages preprocessing produced an empty rendered dataset"
+        ) from error
+    if not isinstance(first_rendered_record, Mapping) or not isinstance(
+        first_rendered_record.get("text"), str
+    ):
+        raise RuntimeError(
+            "messages preprocessing rendered records must contain string text"
+        )
+    add_special_tokens = messages_unsloth_add_special_tokens(
+        processing_class,
+        first_rendered_record["text"],
+    )
+    unsloth_tokenizer = getattr(
+        processing_class,
+        "tokenizer",
+        processing_class,
+    )
+
+    token_limit = max_seq_length + 1
+    estimated_tokens_per_record = token_limit * 2
+    effective_batch_size = min(
+        batch_size,
+        max(
+            1,
+            MESSAGES_VALIDATION_TOKEN_BUDGET
+            // estimated_tokens_per_record,
+        ),
+    )
+    fingerprint = empty_messages_token_fingerprint()
+    record_count = 0
+    batch_start = 0
+    rendered_texts: list[str] = []
+    canonical_token_rows: list[list[Any]] = []
+
+    def validate_batch() -> None:
+        nonlocal fingerprint
+        batch_subject = dataset_error_subject(
+            DATASET_TYPE_MESSAGES,
+            source=source,
+        )
+        batch_subject += (
+            f" rows {batch_start}-{batch_start + len(rendered_texts) - 1}"
+        )
+        rendered_token_rows = messages_rendered_token_id_rows(
+            unsloth_tokenizer,
+            rendered_texts,
+            add_special_tokens=add_special_tokens,
+            max_length=token_limit,
+            subject=batch_subject,
+        )
+        for batch_index, (canonical_ids, rendered_ids) in enumerate(
+            zip(canonical_token_rows, rendered_token_rows)
+        ):
+            record_index = batch_start + batch_index
+            subject = dataset_error_subject(
+                DATASET_TYPE_MESSAGES,
+                source=source,
+                record_index=record_index,
+            )
+            if len(canonical_ids) > max_seq_length:
+                raise ValueError(
+                    f"{subject} produces at least {len(canonical_ids)} tokens "
+                    f"after chat-template rendering, exceeding maxSeqLength "
+                    f"{max_seq_length}; training truncation would discard part "
+                    "of the conversation"
+                )
+            if not canonical_ids:
+                raise ValueError(
+                    f"{subject} chat template must produce at least one token"
+                )
+            if canonical_ids != rendered_ids:
+                raise RuntimeError(
+                    f"{subject} canonical chat-template token IDs do not match "
+                    "the locked Unsloth rendered-text tokenization"
+                )
+            fingerprint = extend_messages_token_fingerprint(
+                fingerprint,
+                canonical_ids,
+                description=f"source record {record_index}",
+            )
+
+    sentinel = object()
+    source_iterator = iter(source_dataset)
+    rendered_iterator = iter(rendered_dataset)
+    while True:
+        source_record = next(source_iterator, sentinel)
+        rendered_record = next(rendered_iterator, sentinel)
+        if source_record is sentinel and rendered_record is sentinel:
+            break
+        if source_record is sentinel or rendered_record is sentinel:
+            raise RuntimeError(
+                "messages preprocessing rendered record count does not match the source"
+            )
+        if not isinstance(source_record, Mapping) or not isinstance(
+            rendered_record, Mapping
+        ):
+            raise RuntimeError(
+                "messages preprocessing source and rendered records must be mappings"
+            )
+        text = rendered_record.get("text")
+        if not isinstance(text, str):
+            raise RuntimeError(
+                "messages preprocessing rendered records must contain string text"
+            )
+        subject = dataset_error_subject(
+            DATASET_TYPE_MESSAGES,
+            source=source,
+            record_index=record_count,
+        )
+        canonical_ids = messages_chat_template_token_ids(
+            processing_class,
+            source_record["messages"],
+            max_length=token_limit,
+            subject=subject,
+        )
+        rendered_texts.append(text)
+        canonical_token_rows.append(canonical_ids)
+        record_count += 1
+        if len(rendered_texts) == effective_batch_size:
+            validate_batch()
+            rendered_texts.clear()
+            canonical_token_rows.clear()
+            batch_start = record_count
+
+    if rendered_texts:
+        validate_batch()
+    if record_count == 0:
+        raise RuntimeError(
+            "messages preprocessing produced an empty source dataset"
+        )
+    return fingerprint
 
 
 def text_token_ids(
@@ -763,6 +1274,8 @@ def prepare_training_dataset(
             partial(format_alpaca_examples, end_of_sequence=end_of_sequence),
             batched=True,
         )
+    if dataset_type == DATASET_TYPE_MESSAGES:
+        return dataset
     if dataset_type == DATASET_TYPE_PROMPT_COMPLETION:
         return dataset
     if dataset_type == DATASET_TYPE_TEXT:
@@ -1325,6 +1838,189 @@ def validate_prepared_prompt_completion_dataset(
         )
 
 
+def messages_preprocessing_segments(
+    prepared_record: Mapping[str, Any],
+    *,
+    record_index: int,
+    packing: bool,
+) -> tuple[list[Any], list[list[Any]]]:
+    try:
+        input_ids = sequence_values(
+            prepared_record["input_ids"],
+            description=f"record {record_index} input_ids",
+            preprocessing="messages",
+        )
+    except KeyError as error:
+        raise RuntimeError(
+            f"messages preprocessing record {record_index} did not produce input_ids"
+        ) from error
+    if not input_ids:
+        raise RuntimeError(
+            f"messages preprocessing record {record_index} produced no tokens"
+        )
+    if not packing:
+        return input_ids, [input_ids]
+
+    try:
+        raw_sequence_lengths = sequence_values(
+            prepared_record["seq_lengths"],
+            description=f"record {record_index} seq_lengths",
+            preprocessing="messages",
+        )
+    except KeyError as error:
+        raise RuntimeError(
+            f"messages preprocessing packed record {record_index} did not produce seq_lengths"
+        ) from error
+
+    sequence_lengths = []
+    for raw_sequence_length in raw_sequence_lengths:
+        try:
+            sequence_length = operator.index(raw_sequence_length)
+        except TypeError as error:
+            raise RuntimeError(
+                f"messages preprocessing packed record {record_index} has an invalid sequence length"
+            ) from error
+        if isinstance(raw_sequence_length, bool) or sequence_length <= 0:
+            raise RuntimeError(
+                f"messages preprocessing packed record {record_index} has an invalid sequence length"
+            )
+        sequence_lengths.append(sequence_length)
+    if not sequence_lengths or sum(sequence_lengths) != len(input_ids):
+        raise RuntimeError(
+            f"messages preprocessing packed record {record_index} seq_lengths do not match input_ids"
+        )
+
+    segments = []
+    offset = 0
+    for sequence_length in sequence_lengths:
+        segments.append(input_ids[offset : offset + sequence_length])
+        offset += sequence_length
+    return input_ids, segments
+
+
+def validate_prepared_messages_dataset(
+    dataset: Any,
+    *,
+    data_collator: Callable[[list[Mapping[str, Any]]], Mapping[str, Any]],
+    max_seq_length: int,
+    packing: bool,
+    padding_free: bool,
+    packing_strategy: str = "bfd",
+    expected_fingerprint: MessagesTokenFingerprint,
+) -> None:
+    """Verify actual rendered-message boundaries and full-sequence labels."""
+    if packing and packing_strategy != "bfd":
+        raise RuntimeError(
+            "messages preprocessing validation requires the bfd packing strategy"
+        )
+
+    fingerprint = empty_messages_token_fingerprint()
+    record_count = 0
+    for record_index, prepared_record in enumerate(dataset):
+        record_count += 1
+        if not isinstance(prepared_record, Mapping):
+            raise RuntimeError(
+                f"messages preprocessing record {record_index} must be a mapping"
+            )
+        for mask_field in ("assistant_masks", "completion_mask"):
+            if mask_field in prepared_record:
+                raise RuntimeError(
+                    f"messages preprocessing must not produce {mask_field}"
+                )
+
+        input_ids, segments = messages_preprocessing_segments(
+            prepared_record,
+            record_index=record_index,
+            packing=packing,
+        )
+        if len(input_ids) > max_seq_length:
+            raise RuntimeError(
+                f"messages preprocessing record {record_index} exceeds maxSeqLength {max_seq_length}"
+            )
+
+        sequence_starts = set()
+        sequence_ends = set()
+        offset = 0
+        for segment_index, segment in enumerate(segments):
+            location = f"prepared record {record_index}"
+            if packing:
+                location += f" packed segment {segment_index}"
+            if not segment or len(segment) > max_seq_length:
+                raise RuntimeError(
+                    f"messages preprocessing {location} has an invalid sequence length"
+            )
+            sequence_starts.add(offset)
+            offset += len(segment)
+            sequence_ends.add(offset - 1)
+            fingerprint = extend_messages_token_fingerprint(
+                fingerprint,
+                segment,
+                description=location,
+            )
+
+        collated = data_collator([prepared_record])
+        if not isinstance(collated, Mapping):
+            raise RuntimeError(
+                "messages preprocessing data collator must return a mapping"
+            )
+        for mask_field in ("assistant_masks", "completion_mask"):
+            if mask_field in collated:
+                raise RuntimeError(
+                    f"messages preprocessing data collator must not produce {mask_field}"
+                )
+        try:
+            collated_input_ids = single_batch_row(
+                collated["input_ids"],
+                description="collated input_ids",
+                preprocessing="messages",
+            )
+            labels = single_batch_row(
+                collated["labels"],
+                description="collated labels",
+                preprocessing="messages",
+            )
+        except KeyError as error:
+            raise RuntimeError(
+                f"messages preprocessing data collator did not produce {error.args[0]}"
+            ) from error
+        if collated_input_ids[: len(input_ids)] != input_ids:
+            raise RuntimeError(
+                "messages preprocessing data collator changed the token sequence"
+            )
+        if len(labels) < len(input_ids):
+            raise RuntimeError(
+                "messages preprocessing labels are shorter than input_ids"
+            )
+
+        allow_sequence_start_masking = packing or padding_free
+        for token_index, input_id in enumerate(input_ids):
+            if labels[token_index] == input_id:
+                continue
+            if (
+                allow_sequence_start_masking
+                and token_index in sequence_starts
+                and labels[token_index] == -100
+            ):
+                continue
+            raise RuntimeError(
+                "messages preprocessing must use full-sequence labels"
+            )
+        for sequence_end in sequence_ends:
+            if labels[sequence_end] != input_ids[sequence_end]:
+                raise RuntimeError(
+                    "messages preprocessing final tokens must be supervised"
+                )
+
+    if record_count == 0:
+        raise RuntimeError(
+            "messages preprocessing produced an empty training dataset"
+        )
+    if fingerprint != expected_fingerprint:
+        raise RuntimeError(
+            "messages preprocessing prepared token sequences do not match the canonical conversations"
+        )
+
+
 def text_preprocessing_segments(
     prepared_record: Mapping[str, Any],
     *,
@@ -1610,22 +2306,39 @@ def train_model(
     max_seq_length = cfg["maxSeqLength"]
 
     load_spec = dataset_load_spec(dataset_spec.source)
-    dataset = dependencies.load_dataset(load_spec.path, **load_spec.kwargs)
+    try:
+        dataset = dependencies.load_dataset(load_spec.path, **load_spec.kwargs)
+    except Exception:
+        if dataset_spec.dataset_type == DATASET_TYPE_MESSAGES:
+            subject = dataset_error_subject(
+                DATASET_TYPE_MESSAGES,
+                source=dataset_spec.source,
+            )
+            raise RuntimeError(f"{subject} could not be loaded") from None
+        raise
     validation_source = (
         dataset_spec.source
-        if dataset_spec.dataset_type == DATASET_TYPE_TEXT
+        if dataset_spec.dataset_type
+        in {DATASET_TYPE_MESSAGES, DATASET_TYPE_TEXT}
         else None
     )
+    if dataset_spec.dataset_type == DATASET_TYPE_MESSAGES:
+        validate_training_dataset(
+            dataset,
+            dataset_type=dataset_spec.dataset_type,
+            source=validation_source,
+        )
     dataset = project_training_dataset(
         dataset,
         dataset_type=dataset_spec.dataset_type,
         source=validation_source,
     )
-    validate_training_dataset(
-        dataset,
-        dataset_type=dataset_spec.dataset_type,
-        source=validation_source,
-    )
+    if dataset_spec.dataset_type != DATASET_TYPE_MESSAGES:
+        validate_training_dataset(
+            dataset,
+            dataset_type=dataset_spec.dataset_type,
+            source=validation_source,
+        )
 
     model, tokenizer = dependencies.fast_language_model.from_pretrained(
         model_name=train_config["baseModel"],
@@ -1633,6 +2346,23 @@ def train_model(
         dtype=None,
         load_in_4bit=cfg["loadIn4bit"],
     )
+    messages_token_fingerprint = None
+    if dataset_spec.dataset_type == DATASET_TYPE_MESSAGES:
+        require_messages_chat_template(tokenizer)
+        messages_source_dataset = dataset
+        dataset = render_messages_dataset(
+            messages_source_dataset,
+            processing_class=tokenizer,
+            source=dataset_spec.source,
+        )
+        messages_token_fingerprint = validate_messages_tokenization(
+            messages_source_dataset,
+            dataset,
+            processing_class=tokenizer,
+            max_seq_length=max_seq_length,
+            source=dataset_spec.source,
+        )
+
     prompt_prefix_fingerprint = None
     if dataset_spec.dataset_type == DATASET_TYPE_PROMPT_COMPLETION:
         prompt_prefix_fingerprint = validate_prompt_completion_tokenization(
@@ -1701,6 +2431,7 @@ def train_model(
             output_dir="outputs",
             dataset_text_field="text",
             dataset_num_proc=2,
+            assistant_only_loss=False,
             completion_only_loss=(
                 dataset_spec.dataset_type == DATASET_TYPE_PROMPT_COMPLETION
             ),
@@ -1738,6 +2469,21 @@ def train_model(
             packing=bool(getattr(trainer.args, "packing", False)),
             packing_strategy=getattr(trainer.args, "packing_strategy", "bfd"),
             expected_prompt_prefix_fingerprint=prompt_prefix_fingerprint,
+        )
+
+    if dataset_spec.dataset_type == DATASET_TYPE_MESSAGES:
+        if messages_token_fingerprint is None:
+            raise RuntimeError(
+                "messages preprocessing did not produce a source fingerprint"
+            )
+        validate_prepared_messages_dataset(
+            trainer.train_dataset,
+            data_collator=trainer.data_collator,
+            max_seq_length=max_seq_length,
+            packing=bool(getattr(trainer.args, "packing", False)),
+            padding_free=bool(getattr(trainer.args, "padding_free", False)),
+            packing_strategy=getattr(trainer.args, "packing_strategy", "bfd"),
+            expected_fingerprint=messages_token_fingerprint,
         )
 
     if dataset_spec.dataset_type == DATASET_TYPE_TEXT:

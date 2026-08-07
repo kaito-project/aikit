@@ -53,7 +53,7 @@ apiVersion: v1alpha1
 baseModel: "unsloth/llama-2-7b-bnb-4bit" # base model to be fine tuned. this can be any model from Huggingface. For unsloth optimized base models, see https://huggingface.co/unsloth
 datasets:
   - source: "yahma/alpaca-cleaned" # data set to be used for fine tuning. This can be a Huggingface dataset or a URL pointing to a JSON or JSON Lines file
-    type: "alpaca" # supported types are alpaca, prompt-completion, and text
+    type: "alpaca" # supported types are alpaca, messages, prompt-completion, and text
 config:
   unsloth:
 ```
@@ -83,6 +83,26 @@ An expected JSON Lines record is:
 ```json
 {"prompt":"Question: What is a container image?\nAnswer:","completion":" An immutable package containing an application and its dependencies."}
 ```
+
+##### Messages
+
+The `messages` type accepts canonical text-only chat conversations and applies the base model tokenizer's existing chat template. Each record must contain a non-empty `messages` list. Every turn must be a mapping with exactly the string fields `role` and `content`; supported roles are `system`, `user`, and `assistant`. A conversation must contain at least one assistant turn and end with an assistant turn. Extra metadata, tool calls, unsupported roles, and structured or multimodal content are rejected instead of being passed to the tokenizer.
+
+```yaml
+datasets:
+  - source: organization/chat-data
+    type: messages
+```
+
+An expected JSON Lines record is:
+
+```json
+{"messages":[{"role":"system","content":"You are concise."},{"role":"user","content":"What is a container image?"},{"role":"assistant","content":"An immutable application package."}]}
+```
+
+AIKit requires the tokenizer to provide a usable chat template. Before allocating LoRA adapters, it renders each conversation to the canonical `text` field with `tokenize=False` and `add_generation_prompt=False`. It does not add special tokens around the rendered text. AIKit verifies that the locked Unsloth text path produces the same token IDs as direct chat-template tokenization and rejects mismatches or sequences longer than `maxSeqLength` instead of truncating them. Validation errors include source and row context while redacting URL credentials and query values.
+
+The `messages` type uses full-sequence SFT: system, user, assistant, and template tokens are all supervised. AIKit does not enable completion-only loss or assistant masks. Prepared labels and packed record boundaries are verified before training. ShareGPT conversion, tools, custom chat templates, and multimodal messages are not supported.
 
 ##### Text
 
@@ -115,6 +135,7 @@ Please make sure to change syntax to `#syntax=ghcr.io/kaito-project/aikit/aikit:
 :::
 
 - [Alpaca](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth.yaml)
+- [Messages smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-messages-smoke.yaml)
 - [Prompt-completion smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-prompt-completion-smoke.yaml)
 - [Text smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-text-smoke.yaml)
 

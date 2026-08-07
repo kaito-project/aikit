@@ -10,6 +10,7 @@ on:
         default: smoke
         options:
           - smoke
+          - messages-smoke
           - prompt-completion-smoke
           - text-smoke
           - full
@@ -39,6 +40,9 @@ jobs:
           case "$run_mode" in
             smoke)
               smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/alpaca-smoke.jsonl"
+              ;;
+            messages-smoke)
+              smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/messages-smoke.jsonl"
               ;;
             prompt-completion-smoke)
               smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/prompt-completion-smoke.jsonl"
@@ -201,6 +205,10 @@ jobs:
             smoke)
               source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-smoke.yaml"
               dataset_url="${SMOKE_DATASET_URL:?smoke dataset URL is required}"
+              ;;
+            messages-smoke)
+              source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-messages-smoke.yaml"
+              dataset_url="${SMOKE_DATASET_URL:?messages smoke dataset URL is required}"
               ;;
             prompt-completion-smoke)
               source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-prompt-completion-smoke.yaml"

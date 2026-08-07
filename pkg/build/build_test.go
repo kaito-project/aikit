@@ -300,6 +300,12 @@ func Test_validateFineTuneConfig(t *testing.T) {
 	}{
 		{name: "valid alpaca dataset type"},
 		{
+			name: "valid messages dataset type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetMessages
+			},
+		},
+		{
 			name: "valid prompt-completion dataset type",
 			mutate: func(c *config.FineTuneConfig) {
 				c.Datasets[0].Type = utils.DatasetPromptCompletion
@@ -568,7 +574,7 @@ func Test_validateFineTuneConfig(t *testing.T) {
 }
 
 func Test_validateNormalizedFineTuneConfig(t *testing.T) {
-	datasetTypes := []string{utils.DatasetAlpaca, utils.DatasetPromptCompletion, utils.DatasetText}
+	datasetTypes := []string{utils.DatasetAlpaca, utils.DatasetMessages, utils.DatasetPromptCompletion, utils.DatasetText}
 	for _, datasetType := range datasetTypes {
 		t.Run(datasetType, func(t *testing.T) {
 			_, fineTuneConfig, err := config.NewFromBytes([]byte(`

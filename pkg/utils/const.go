@@ -14,6 +14,7 @@ const (
 	TargetUnsloth = "unsloth"
 
 	DatasetAlpaca           = "alpaca"
+	DatasetMessages         = "messages"
 	DatasetPromptCompletion = "prompt-completion"
 	DatasetText             = "text"
 

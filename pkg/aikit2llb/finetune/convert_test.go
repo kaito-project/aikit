@@ -157,7 +157,7 @@ func TestAikit2LLBSeparatesTrainingAndExportPhases(t *testing.T) {
 }
 
 func TestAikit2LLBPropagatesDatasetType(t *testing.T) {
-	datasetTypes := []string{utils.DatasetPromptCompletion, utils.DatasetText}
+	datasetTypes := []string{utils.DatasetMessages, utils.DatasetPromptCompletion, utils.DatasetText}
 	for _, datasetType := range datasetTypes {
 		t.Run(datasetType, func(t *testing.T) {
 			cfg := fineTuneTestConfig()
