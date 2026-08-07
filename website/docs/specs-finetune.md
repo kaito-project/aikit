@@ -8,7 +8,7 @@ title: Fine Tuning API Specifications
 #syntax=ghcr.io/kaito-project/aikit/aikit:latest
 apiVersion: # required. only v1alpha1 is supported at the moment
 baseModel: # required. any base model from Huggingface. for unsloth, see for 4bit pre-quantized models: https://huggingface.co/unsloth
-datasets:
+datasets: # required. one or more entries, concatenated in configured order after normalization
   - source: # required. a Hugging Face dataset identifier or an absolute HTTP(S) URL
     type: # required record schema. can be "alpaca", "messages", "sharegpt", "prompt-completion", or "text"
     loader: # optional. omission preserves automatic legacy loading and the train split
@@ -40,7 +40,7 @@ output:
 
 ### Dataset Loaders
 
-The record `type` and `loader.type` are independent. The record type defines required columns and SFT loss behavior; the loader defines source transport and parsing. Loader options are included in the serialized training configuration, so changing `type`, `subset`, `split`, `revision`, or `checksum` invalidates training and downstream export without invalidating dependency installation.
+The record `type` and `loader.type` are independent. The record type defines required columns and SFT loss behavior; the loader defines source transport and parsing. Every dataset entry and its loader options are included in the serialized training configuration, so changing or reordering any entry, or changing its `type`, `subset`, `split`, `revision`, or `checksum`, invalidates training and downstream export without invalidating dependency installation.
 
 | Loader | Source | Loader-specific fields | Reproducibility |
 | --- | --- | --- | --- |
@@ -82,7 +82,30 @@ datasets:
 
 ### Dataset Types
 
-Only one dataset is currently supported. Its `type` determines the required columns and loss behavior.
+One or more datasets are supported. AIKit loads entries sequentially in YAML order, validates and normalizes every source independently, then concatenates their canonical records in configured order while preserving row order within each source. This ordering is the input to trainer preprocessing; packing and trainer-level sampling may reorder records afterward. A single entry bypasses concatenation and retains the established single-source path.
+
+Dataset composition is unweighted: AIKit does not interleave, shuffle, deduplicate, oversample, or infer per-source weights before trainer construction. Repeating an entry intentionally repeats its rows. Every source must contain at least one record. The global `config.unsloth.loss` and every dataset type must resolve to one compatibility group:
+
+| Compatibility group | Supported entries | Training behavior |
+| --- | --- | --- |
+| Full-sequence text | `alpaca`, `text`, `messages` with `loss: all`, `sharegpt` with `loss: all` | Normalizes to a canonical string `text` column and supervises the full sequence. |
+| Completion-only | `prompt-completion` | Preserves canonical string `prompt` and `completion` columns and supervises only completion and EOS tokens. |
+| Response-only chat | `messages` with `loss: response`, `sharegpt` with `loss: response` | Normalizes to canonical rendered `text` and masks non-assistant tokens. Packing remains unsupported. |
+
+Entries from different groups cannot be combined. `loss` is global rather than per dataset. For example, compatible full-sequence sources can be composed as:
+
+```yaml
+datasets:
+  - source: organization/instruction-data
+    type: alpaca
+  - source: organization/domain-corpus
+    type: text
+  - source: organization/chat-data
+    type: messages
+config:
+  unsloth:
+    loss: all
+```
 
 | Type | Required record shape | Loss behavior |
 | --- | --- | --- |
@@ -92,7 +115,7 @@ Only one dataset is currently supported. Its `type` determines the required colu
 | `prompt-completion` | `prompt`, non-empty `completion` | Keeps both columns separate, masks prompt tokens, and supervises completion and EOS tokens. |
 | `text` | non-empty `text` | Preserves the preformatted sequence, normalizes BOS/EOS boundaries, and supervises the full sequence. |
 
-Empty datasets, missing or null fields, values of the wrong type, and unknown dataset types are rejected. Existing `alpaca` configurations retain their current rendering and full-sequence loss behavior.
+Empty sources, missing or null fields, values of the wrong type, incompatible semantic groups, and unknown dataset types are rejected with the failing `datasets[n]` index. Existing single-source `alpaca` and other supported configurations retain their current rendering and loss behavior. URL details remain redacted in indexed errors.
 
 The chat loss setting defaults to `all` for backward compatibility when omitted or set to YAML `null`; an explicit empty string is invalid. `response` is accepted only for `messages` and `sharegpt`; `alpaca`, `prompt-completion`, and `text` retain their fixed loss behavior. Response-only training requires `packing: false` so masking cannot cross conversation boundaries. It derives markers from the model's deterministic chat template and uses Unsloth's response masking after trainer construction. AIKit rejects marker strings or token matches that collide with message content or fail to match the rendered role boundaries, then validates the actual prepared labels before training. If marker derivation fails, labels do not match the response spans, or a prepared dataset has no supervised response tokens, training fails without falling back to `all`. Native assistant-only loss, custom chat templates, custom markers, and per-dataset loss settings are not supported.
 

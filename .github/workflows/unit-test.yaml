@@ -61,6 +61,17 @@ jobs:
       - name: Go unit tests
         run: make test
 
+      - name: Install Python dataset test dependencies
+        run: |
+          uv pip install --system \
+            --exclude-newer 2026-08-05T00:00:00Z \
+            "datasets==4.3.0" \
+            "fsspec==2025.9.0" \
+            "huggingface-hub==1.26.0" \
+            "numpy==2.2.6" \
+            "pandas==2.3.3" \
+            "pyarrow==25.0.0"
+
       - name: Python unit tests
         run: make test-python
 

@@ -99,7 +99,32 @@ The loader `split` defaults to `train` and must contain letters, numbers, or und
 
 #### Dataset Types
 
-AIKit supports one dataset per fine-tuning configuration. The configured `type` selects the record schema and training loss behavior; unknown types fail instead of falling back to another formatter.
+AIKit supports one or more datasets per fine-tuning configuration. The configured `type` selects each source's record schema and training loss behavior; unknown types fail instead of falling back to another formatter.
+
+AIKit loads sources sequentially in YAML order, validates every source as nonempty, normalizes each one independently to canonical columns and string features, and concatenates records in configured order while preserving row order within each source. This deterministic order exists before SFT trainer packing, shuffling, or sampling. A one-source configuration uses the existing path without a concatenation call. Datasets are not weighted, randomly interleaved, deduplicated, over- or undersampled; duplicate entries intentionally duplicate their rows.
+
+All entries must share one semantic group:
+
+| Group | Compatible dataset types |
+| --- | --- |
+| Full-sequence | `alpaca`, `text`, `messages` with `loss: all`, and `sharegpt` with `loss: all` |
+| Completion-only | One or more `prompt-completion` datasets |
+| Response-only chat | `messages` and `sharegpt` with global `loss: response` and `packing: false` |
+
+Mixing groups fails with the relevant `datasets[n]` indexes instead of coercing records or silently ignoring later entries. `config.unsloth.loss` is global; per-dataset loss and weighted sampling are not supported. Each entry retains its own loader, split, subset, revision, and checksum identity. Changing or reordering any later entry invalidates training and export while leaving dependency installation cacheable.
+
+```yaml
+datasets:
+  - source: organization/instruction-data
+    type: alpaca
+  - source: organization/domain-text
+    type: text
+  - source: organization/chat-data
+    type: messages
+config:
+  unsloth:
+    loss: all
+```
 
 For the chat dataset types `messages` and `sharegpt`, `config.unsloth.loss` controls which tokens are supervised:
 
@@ -216,6 +241,7 @@ Please make sure to change syntax to `#syntax=ghcr.io/kaito-project/aikit/aikit:
 - [Prompt-completion smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-prompt-completion-smoke.yaml)
 - [Text smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-text-smoke.yaml)
 - [Checksummed Parquet loader smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-loader-smoke.yaml)
+- [Multiple compatible datasets smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-multiple-datasets-smoke.yaml)
 
 
 ## Build

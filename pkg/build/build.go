@@ -440,18 +440,14 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 		return errors.New("no datasets defined")
 	}
 
-	if len(c.Datasets) > 1 {
-		return errors.New("only one dataset is supported at this time")
-	}
-
 	for datasetIndex, dataset := range c.Datasets {
 		if strings.TrimSpace(dataset.Source) == "" {
-			return errors.New("dataset source is not defined")
+			return errors.Errorf("datasets[%d].source is not defined", datasetIndex)
 		}
 		switch dataset.Type {
 		case utils.DatasetAlpaca, utils.DatasetMessages, utils.DatasetPromptCompletion, utils.DatasetShareGPT, utils.DatasetText:
 		default:
-			return errors.Errorf("dataset type %s is not supported", dataset.Type)
+			return errors.Errorf("datasets[%d].type %s is not supported", datasetIndex, dataset.Type)
 		}
 		if err := validateDatasetLoader(datasetIndex, dataset); err != nil {
 			return err
@@ -465,15 +461,11 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 	if unsloth.Loss != utils.SFTLossAll && unsloth.Loss != utils.SFTLossResponse {
 		return errors.Errorf("config.unsloth.loss %s is not supported", unsloth.Loss)
 	}
-	if unsloth.Loss == utils.SFTLossResponse {
-		for _, dataset := range c.Datasets {
-			if dataset.Type != utils.DatasetMessages && dataset.Type != utils.DatasetShareGPT {
-				return errors.Errorf("config.unsloth.loss response is not supported for dataset type %s", dataset.Type)
-			}
-		}
-		if unsloth.Packing {
-			return errors.New("config.unsloth.loss response does not support packing because response masks must not cross conversation boundaries")
-		}
+	if err := validateSFTDatasetCompatibility(c.Datasets, unsloth.Loss); err != nil {
+		return err
+	}
+	if unsloth.Loss == utils.SFTLossResponse && unsloth.Packing {
+		return errors.New("config.unsloth.loss response does not support packing because response masks must not cross conversation boundaries")
 	}
 	if unsloth.MaxSeqLength <= 0 {
 		return errors.New("config.unsloth.maxSeqLength must be greater than zero")
@@ -528,6 +520,55 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 	}
 
 	return nil
+}
+
+type sftDatasetCompatibility string
+
+const (
+	sftCompatibilityFullSequence     sftDatasetCompatibility = "full-sequence"
+	sftCompatibilityPromptCompletion sftDatasetCompatibility = "completion-only"
+	sftCompatibilityResponseChat     sftDatasetCompatibility = "response-only chat"
+)
+
+func validateSFTDatasetCompatibility(datasets []config.Dataset, loss string) error {
+	firstCompatibility, err := sftDatasetCompatibilityFor(datasets[0].Type, loss)
+	if err != nil {
+		return errors.Errorf("datasets[0] type %s: %s", datasets[0].Type, err)
+	}
+
+	for datasetIndex := 1; datasetIndex < len(datasets); datasetIndex++ {
+		dataset := datasets[datasetIndex]
+		compatibility, compatibilityErr := sftDatasetCompatibilityFor(dataset.Type, loss)
+		if compatibilityErr != nil {
+			return errors.Errorf("datasets[%d] type %s: %s", datasetIndex, dataset.Type, compatibilityErr)
+		}
+		if compatibility != firstCompatibility {
+			return errors.Errorf(
+				"datasets[%d] type %s is incompatible with datasets[0] type %s: %s and %s datasets cannot be combined",
+				datasetIndex,
+				dataset.Type,
+				datasets[0].Type,
+				compatibility,
+				firstCompatibility,
+			)
+		}
+	}
+
+	return nil
+}
+
+func sftDatasetCompatibilityFor(datasetType, loss string) (sftDatasetCompatibility, error) {
+	if loss == utils.SFTLossResponse {
+		if datasetType != utils.DatasetMessages && datasetType != utils.DatasetShareGPT {
+			return "", errors.New("config.unsloth.loss response is supported only for messages and sharegpt datasets")
+		}
+		return sftCompatibilityResponseChat, nil
+	}
+
+	if datasetType == utils.DatasetPromptCompletion {
+		return sftCompatibilityPromptCompletion, nil
+	}
+	return sftCompatibilityFullSequence, nil
 }
 
 func validateDatasetLoader(datasetIndex int, dataset config.Dataset) error {
