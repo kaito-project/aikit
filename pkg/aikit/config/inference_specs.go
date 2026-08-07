@@ -1,12 +1,13 @@
 package config
 
 type InferenceConfig struct {
-	APIVersion string   `yaml:"apiVersion"`
-	Debug      bool     `yaml:"debug"`
-	Runtime    string   `yaml:"runtime"`
-	Backends   []string `yaml:"backends"`
-	Models     []Model  `yaml:"models"`
-	Config     string   `yaml:"config"`
+	APIVersion   string   `yaml:"apiVersion"`
+	Debug        bool     `yaml:"debug"`
+	Runtime      string   `yaml:"runtime"`
+	Backends     []string `yaml:"backends"`
+	Models       []Model  `yaml:"models"`
+	Config       string   `yaml:"config"`
+	LoadToMemory []string `yaml:"loadToMemory"`
 }
 
 type Model struct {

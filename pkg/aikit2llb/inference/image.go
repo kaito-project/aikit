@@ -11,6 +11,7 @@ import (
 
 const (
 	localAIEntrypointCommand = "local-ai"
+	localAILoadToMemoryEnv   = "LOCALAI_LOAD_TO_MEMORY="
 	runnerEntrypointPath     = "/usr/local/bin/aikit-runner"
 	runnerHFHomeEnv          = "HF_HOME=/models/.cache/huggingface"
 )
@@ -63,6 +64,9 @@ func emptyImage(c *config.InferenceConfig, platform *specs.Platform) *specs.Imag
 	img.Config.Env = []string{
 		"PATH=" + system.DefaultPathEnv(utils.PlatformLinux),
 		"CONFIG_FILE=/config.yaml",
+	}
+	if len(c.LoadToMemory) > 0 {
+		img.Config.Env = append(img.Config.Env, localAILoadToMemoryEnv+strings.Join(c.LoadToMemory, ","))
 	}
 
 	cudaEnv := []string{
