@@ -15,12 +15,24 @@ const (
 
 	DatasetAlpaca           = "alpaca"
 	DatasetMessages         = "messages"
+	DatasetPreference       = "preference"
 	DatasetPromptCompletion = "prompt-completion"
 	DatasetShareGPT         = "sharegpt"
 	DatasetText             = "text"
 
+	DatasetLoaderHuggingFace = "huggingface"
+	DatasetLoaderJSON        = "json"
+	DatasetLoaderCSV         = "csv"
+	DatasetLoaderParquet     = "parquet"
+	DatasetLoaderText        = "text"
+
 	SFTLossAll      = "all"
 	SFTLossResponse = "response"
+
+	ObjectiveSFT = "sft"
+	ObjectiveDPO = "dpo"
+
+	DPOLossSigmoid = "sigmoid"
 
 	APIv1alpha1 = "v1alpha1"
 

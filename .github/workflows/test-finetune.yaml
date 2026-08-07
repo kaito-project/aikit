@@ -15,6 +15,9 @@ on:
           - sharegpt-response-smoke
           - prompt-completion-smoke
           - text-smoke
+          - loader-smoke
+          - multiple-datasets-smoke
+          - dpo-smoke
           - full
 
 permissions: read-all
@@ -39,6 +42,7 @@ jobs:
 
           run_mode="${{ inputs.mode }}"
           smoke_dataset_file=""
+          smoke_dataset_file_2=""
           case "$run_mode" in
             smoke)
               smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/alpaca-smoke.jsonl"
@@ -57,6 +61,16 @@ jobs:
               ;;
             text-smoke)
               smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/text-smoke.jsonl"
+              ;;
+            loader-smoke)
+              smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/prompt-completion-loader-smoke.parquet"
+              ;;
+            multiple-datasets-smoke)
+              smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/multiple-alpaca-smoke.jsonl"
+              smoke_dataset_file_2="${GITHUB_WORKSPACE}/test/fixtures/multiple-text-smoke.jsonl"
+              ;;
+            dpo-smoke)
+              smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/preference-smoke.jsonl"
               ;;
             full) ;;
             *)
@@ -81,6 +95,7 @@ jobs:
             echo "DATASET_CONTAINER_NAME=aikit-finetune-$run_key-dataset"
             echo "DATASET_SERVER_IMAGE=busybox:1.37.0@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0"
             echo "SMOKE_DATASET_FILE=$smoke_dataset_file"
+            echo "SMOKE_DATASET_FILE_2=$smoke_dataset_file_2"
           } >> "$GITHUB_ENV"
 
       - name: Verify GPU and CDI builder
@@ -175,6 +190,10 @@ jobs:
 
           test -s "$SMOKE_DATASET_FILE"
           dataset_directory=$(dirname -- "$SMOKE_DATASET_FILE")
+          if [[ -n "$SMOKE_DATASET_FILE_2" ]]; then
+            test -s "$SMOKE_DATASET_FILE_2"
+            test "$(dirname -- "$SMOKE_DATASET_FILE_2")" = "$dataset_directory"
+          fi
           docker run \
             --name "$DATASET_CONTAINER_NAME" \
             --detach \
@@ -201,7 +220,15 @@ jobs:
           test -n "$host_ip"
           dataset_url="http://${host_ip}:${dataset_port}/$(basename "$SMOKE_DATASET_FILE")"
           curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 1 --retry-max-time 30 "$dataset_url" --output /dev/null
-          echo "SMOKE_DATASET_URL=$dataset_url" >> "$GITHUB_ENV"
+          dataset_url_2=""
+          if [[ -n "$SMOKE_DATASET_FILE_2" ]]; then
+            dataset_url_2="http://${host_ip}:${dataset_port}/$(basename "$SMOKE_DATASET_FILE_2")"
+            curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 1 --retry-max-time 30 "$dataset_url_2" --output /dev/null
+          fi
+          {
+            echo "SMOKE_DATASET_URL=$dataset_url"
+            echo "SMOKE_DATASET_URL_2=$dataset_url_2"
+          } >> "$GITHUB_ENV"
 
       - name: Generate mode-specific configs
         shell: bash
@@ -234,6 +261,21 @@ jobs:
               source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-text-smoke.yaml"
               dataset_url="${SMOKE_DATASET_URL:?text smoke dataset URL is required}"
               ;;
+            loader-smoke)
+              source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-loader-smoke.yaml"
+              dataset_url="${SMOKE_DATASET_URL:?loader smoke dataset URL is required}"
+              dataset_checksum="sha256:$(sha256sum "$SMOKE_DATASET_FILE" | awk '{print $1}')"
+              ;;
+            multiple-datasets-smoke)
+              source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-multiple-datasets-smoke.yaml"
+              dataset_url="${SMOKE_DATASET_URL:?first multiple-datasets smoke URL is required}"
+              dataset_url_2="${SMOKE_DATASET_URL_2:?second multiple-datasets smoke URL is required}"
+              ;;
+            dpo-smoke)
+              source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-dpo-smoke.yaml"
+              dataset_url="${SMOKE_DATASET_URL:?DPO smoke dataset URL is required}"
+              dataset_checksum="sha256:$(sha256sum "$SMOKE_DATASET_FILE" | awk '{print $1}')"
+              ;;
             full)
               source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth.yaml"
               dataset_url=""
@@ -241,7 +283,11 @@ jobs:
           esac
 
           dataset_placeholder="__AIKIT_SMOKE_DATASET_URL__"
+          dataset_placeholder_2="__AIKIT_SMOKE_DATASET_URL_2__"
+          dataset_checksum_placeholder="__AIKIT_SMOKE_DATASET_CHECKSUM__"
           gguf_placeholder="__AIKIT_GGUF_OUTPUT__"
+          dataset_url_2="${dataset_url_2:-}"
+          dataset_checksum="${dataset_checksum:-}"
 
           placeholder_count() {
             local source_path=$1
@@ -359,12 +405,37 @@ jobs:
           if [[ -n "$dataset_url" ]]; then
             dataset_placeholder_count=1
           fi
+          intermediate_config="${FINETUNE_CONFIG}.dataset"
+          second_intermediate_config="${FINETUNE_CONFIG}.dataset-second"
           render_config \
             "$source_config" \
-            "$FINETUNE_CONFIG" \
+            "$intermediate_config" \
             "$dataset_placeholder" \
             "$dataset_url" \
             "$dataset_placeholder_count"
+
+          dataset_placeholder_count_2=0
+          if [[ -n "$dataset_url_2" ]]; then
+            dataset_placeholder_count_2=1
+          fi
+          render_config \
+            "$intermediate_config" \
+            "$second_intermediate_config" \
+            "$dataset_placeholder_2" \
+            "$dataset_url_2" \
+            "$dataset_placeholder_count_2"
+
+          dataset_checksum_placeholder_count=0
+          if [[ -n "$dataset_checksum" ]]; then
+            dataset_checksum_placeholder_count=1
+          fi
+          render_config \
+            "$second_intermediate_config" \
+            "$FINETUNE_CONFIG" \
+            "$dataset_checksum_placeholder" \
+            "$dataset_checksum" \
+            "$dataset_checksum_placeholder_count"
+          rm -f -- "$intermediate_config" "$second_intermediate_config"
 
           output_name=$(output_scalar "$FINETUNE_CONFIG" "name")
           output_quantize=$(output_scalar "$FINETUNE_CONFIG" "quantize")
@@ -505,7 +576,7 @@ jobs:
           docker image rm --force "$CUSTOM_IMAGE" > /dev/null 2>&1 || true
           docker image rm --force "$AIKIT_IMAGE" > /dev/null 2>&1 || true
 
-          for generated_path in "$OUTPUT_DIR" "$FINETUNE_CONFIG" "$CUSTOM_CONFIG"; do
+          for generated_path in "$OUTPUT_DIR" "$FINETUNE_CONFIG" "${FINETUNE_CONFIG}.dataset" "${FINETUNE_CONFIG}.dataset-second" "$CUSTOM_CONFIG"; do
             case "$generated_path" in
               "$RUNNER_TEMP"/*) rm -rf -- "$generated_path" || true ;;
               *) echo "refusing to remove path outside runner temp: $generated_path" >&2 ;;
