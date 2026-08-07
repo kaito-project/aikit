@@ -43,16 +43,30 @@ output:
   name: # optional. defaults to "aikit-model"
 ```
 
-### Training Objectives
+### Training Objectives and Compatibility
 
-The top-level `objective` selects the trainer independently of `datasets[].type` and `datasets[].loader`. Omission, YAML `null`, an empty mapping, and explicit `type: sft` all select the existing SFT path. Default SFT serialization and cache keys omit the objective, so existing configurations retain their prior training definition and the `0.0002` learning-rate default.
+The Unsloth target supports two offline training objectives: SFT and DPO. SFT learns from demonstrated outputs or complete sequences. DPO learns a relative preference between `chosen` and `rejected` responses for the same prompt. DPO is preference optimization, not an online reinforcement-learning environment loop; this API does not define environment interaction, policy rollouts, or live reward collection.
 
-| Objective | Dataset type | Defaults | Restrictions |
+The configuration has three independent layers:
+
+| Layer | Field | Allowed values | Contract |
 | --- | --- | --- | --- |
-| omitted or `sft` | `alpaca`, `messages`, `sharegpt`, `prompt-completion`, or `text` | `learningRate: 0.0002` | Rejects `preference`; existing SFT loss behavior is unchanged. |
-| `dpo` | Exactly one `preference` dataset | `beta: 0.1`, `lossType: sigmoid`, `maxPromptLength: 512`, `learningRate: 0.000001` | Requires `packing: false`, rejects `config.unsloth.loss: response`, and requires `maxPromptLength <= maxSeqLength`. |
+| Training objective | `objective.type` | `sft`, `dpo` | Selects the SFT or DPO trainer. |
+| Record schema | `datasets[].type` | `alpaca`, `messages`, `sharegpt`, `prompt-completion`, `text`, `preference` | Defines required record fields and loss semantics. |
+| Loader/parser | `datasets[].loader.type` | `huggingface`, `json`, `csv`, `parquet`, `text` | Defines how the source is located and parsed; it does not select the objective or record schema. |
 
-A DPO `beta` must be finite and greater than zero. The initial API supports only `lossType: sigmoid`. DPO uses the LoRA policy with `ref_model=None`; the same PEFT model with its adapter disabled supplies reference log probabilities. This is not reference-free DPO and does not accept a user-selected reference model. Preference data bypasses every SFT formatter and reaches the DPO trainer as `prompt`, `chosen`, and `rejected` strings.
+The record schema `type: text` and loader `loader.type: text` are distinct. The record schema requires a `text` field; the loader parses a remote text file into one `text` record per line.
+
+Exactly one dataset is supported in this v1alpha1 contract. Its record schema must match the selected objective:
+
+| Objective | Training signal | Allowed dataset record type | Defaults | Restrictions |
+| --- | --- | --- | --- | --- |
+| omitted, YAML `null`, empty mapping, or `sft` | Demonstrated outputs or complete sequences | Exactly one of `alpaca`, `messages`, `sharegpt`, `prompt-completion`, or `text` | `learningRate: 0.0002` | Rejects `preference`; existing SFT loss behavior is unchanged. |
+| `dpo` | A `chosen` response preferred over a `rejected` response for one prompt | Exactly one `preference` dataset | `beta: 0.1`, `lossType: sigmoid`, `maxPromptLength: 512`, `learningRate: 0.000001` | Requires `packing: false`, rejects `config.unsloth.loss: response`, and requires `maxPromptLength <= maxSeqLength`. |
+
+Default SFT serialization and cache keys omit the objective, so existing SFT configurations retain their prior training definition. A DPO `beta` must be finite and greater than zero. The initial API supports only `lossType: sigmoid`. DPO uses the LoRA policy with `ref_model=None`; the same PEFT model with its adapter disabled supplies reference log probabilities. This is not reference-free DPO and does not accept a user-selected reference model. Preference data bypasses every SFT formatter and reaches the DPO trainer as `prompt`, `chosen`, and `rejected` strings.
+
+A complete DPO objective and dataset declaration is:
 
 ```yaml
 objective:
@@ -71,6 +85,12 @@ config:
   unsloth:
     packing: false
     maxSeqLength: 2048
+```
+
+Each record has this explicit shape:
+
+```json
+{"prompt":"How should I rotate an API key?","chosen":"Deploy a replacement before revoking the old key.","rejected":"Revoke the old key before creating a replacement."}
 ```
 
 ### Dataset Loaders
@@ -130,13 +150,7 @@ Only one dataset is currently supported. Its `type` determines required columns 
 
 Empty datasets, missing or null fields, values of the wrong type, and unknown dataset types are rejected. Preference prompts and responses may not be empty or whitespace-only, and `chosen` must not equal `rejected`. Implicit prompt extraction and conversational preference arrays are not supported. Existing `alpaca` configurations retain their current rendering and full-sequence loss behavior.
 
-For example, a DPO preference record is:
-
-```json
-{"prompt":"How should I rotate an API key?","chosen":"Deploy a replacement before revoking the old key.","rejected":"Revoke the old key before creating a replacement."}
-```
-
-AIKit projects exactly these three columns before model allocation and does not append EOS text or run Alpaca, prompt-completion, text, messages, or ShareGPT preprocessing. Multiple preference datasets, implicit prompts, conversational preference arrays, evaluation datasets, alternate DPO losses, custom reference models, and reference-free DPO are outside the initial contract.
+AIKit projects exactly the three `preference` columns shown above before model allocation and does not append EOS text or run Alpaca, prompt-completion, text, messages, or ShareGPT preprocessing. Multiple preference datasets, implicit prompts, conversational preference arrays, evaluation datasets, alternate DPO losses, custom reference models, and reference-free DPO are outside the initial contract.
 
 The chat loss setting defaults to `all` for backward compatibility when omitted or set to YAML `null`; an explicit empty string is invalid. `response` is accepted only for `messages` and `sharegpt`; `alpaca`, `prompt-completion`, and `text` retain their fixed loss behavior. Response-only training requires `packing: false` so masking cannot cross conversation boundaries. It derives markers from the model's deterministic chat template and uses Unsloth's response masking after trainer construction. AIKit rejects marker strings or token matches that collide with message content or fail to match the rendered role boundaries, then validates the actual prepared labels before training. If marker derivation fails, labels do not match the response spans, or a prepared dataset has no supervised response tokens, training fails without falling back to `all`. Native assistant-only loss, custom chat templates, custom markers, and per-dataset loss settings are not supported.
 

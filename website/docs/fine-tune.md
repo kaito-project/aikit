@@ -60,11 +60,28 @@ config:
 
 For full configuration, please refer to [Fine Tune API Specifications](./specs-finetune.md).
 
-#### Training Objectives
+#### Choose SFT or DPO
 
-AIKit separates the training objective from the dataset record schema and loader. If `objective` is omitted, null, or explicitly set to `sft`, AIKit uses the existing supervised fine-tuning path without changing its serialized training definition. The SFT learning-rate default remains `0.0002`.
+AIKit's Unsloth target supports both supervised fine-tuning (SFT) and Direct Preference Optimization (DPO). Both objectives train from a fixed dataset. DPO is offline preference optimization, not an online reinforcement-learning environment loop: AIKit does not collect live rewards or run policy rollouts against an environment.
 
-Set `objective.type: dpo` for Direct Preference Optimization:
+| Choose | What the model learns from | Compatible `datasets[].type` | Use it when |
+| --- | --- | --- | --- |
+| SFT (default) | Demonstrated outputs or complete training sequences | Exactly one of `alpaca`, `messages`, `sharegpt`, `prompt-completion`, or `text` | Each record shows the response or sequence the model should learn to produce. |
+| DPO | A `chosen` response compared with a `rejected` response for the same prompt | Exactly one `preference` dataset | Each record expresses which of two responses the model should prefer. |
+
+If the workflow requires the model to interact with an environment and learn from resulting rewards, neither AIKit objective provides that online RL loop.
+
+The objective, record schema, and loader are separate choices:
+
+| Setting | Selects | Examples |
+| --- | --- | --- |
+| `objective.type` | Training objective | `sft`, `dpo` |
+| `datasets[].type` | Record schema and required fields | `messages`, `prompt-completion`, `preference` |
+| `datasets[].loader.type` | Source transport and file parser | `huggingface`, `json`, `csv`, `parquet`, `text` |
+
+For example, `type: preference` describes records with `prompt`, `chosen`, and `rejected` fields; `loader.type: json` only says that those records are read from JSON. A Parquet file can contain the same `preference` schema.
+
+If `objective` is omitted, null, or explicitly set to `sft`, AIKit uses SFT. The SFT learning-rate default remains `0.0002`. Set `objective.type: dpo` to use preference optimization:
 
 ```yaml
 objective:
