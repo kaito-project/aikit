@@ -779,6 +779,26 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 		return errors.Errorf("apiVersion %s is not supported", c.APIVersion)
 	}
 
+	loadToMemoryNames := make(map[string]struct{}, len(c.LoadToMemory))
+	for _, name := range c.LoadToMemory {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("loadToMemory model names cannot be empty")
+		}
+		if strings.ContainsRune(name, '\x00') {
+			return errors.New("loadToMemory model names cannot contain null characters")
+		}
+		if strings.Contains(name, ",") {
+			return errors.New("loadToMemory model names cannot contain commas")
+		}
+		if strings.Contains(name, `\`) {
+			return errors.New("loadToMemory model names cannot contain backslashes")
+		}
+		if _, exists := loadToMemoryNames[name]; exists {
+			return errors.Errorf("loadToMemory model name %q is duplicated", name)
+		}
+		loadToMemoryNames[name] = struct{}{}
+	}
+
 	if len(c.Backends) > 1 {
 		return errors.New("only one backend is supported at this time")
 	}

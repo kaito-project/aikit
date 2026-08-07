@@ -26,6 +26,9 @@ apiVersion: v1alpha1
 runtime: cuda
 backends:
 - diffusers
+loadToMemory:
+- test
+- embeddings
 models:
 - name: test
   source: foo
@@ -36,6 +39,7 @@ models:
 				Backends: []string{
 					utils.BackendDiffusers,
 				},
+				LoadToMemory: []string{"test", "embeddings"},
 				Models: []Model{
 					{
 						Name:   "test",
@@ -49,6 +53,24 @@ models:
 			name: "invalid yaml",
 			args: args{b: []byte(`
 foo
+`)},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "loadToMemory boolean is invalid",
+			args: args{b: []byte(`
+apiVersion: v1alpha1
+loadToMemory: true
+`)},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "loadToMemory string is invalid",
+			args: args{b: []byte(`
+apiVersion: v1alpha1
+loadToMemory: test
 `)},
 			want:    nil,
 			wantErr: true,

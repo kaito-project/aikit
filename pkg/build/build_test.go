@@ -12,11 +12,12 @@ import (
 )
 
 const (
-	testHTTPSPrefix       = "https://"
-	testMutableHubWarning = "datasets[0] Hugging Face dataset has no revision; its content is not reproducibly pinned"
-	testURLFragment       = "fragment"
-	testURLToken          = "token"
-	testURLValue          = "value"
+	loadToMemoryTestModelName = "model"
+	testHTTPSPrefix           = "https://"
+	testMutableHubWarning     = "datasets[0] Hugging Face dataset has no revision; its content is not reproducibly pinned"
+	testURLFragment           = "fragment"
+	testURLToken              = "token"
+	testURLValue              = "value"
 )
 
 func Test_validateConfig(t *testing.T) {
@@ -138,8 +139,9 @@ func Test_validateConfig(t *testing.T) {
 		{
 			name: "valid runner mode - backends with no models (llama-cpp cpu)",
 			args: args{c: &config.InferenceConfig{
-				APIVersion: "v1alpha1",
-				Backends:   []string{"llama-cpp"},
+				APIVersion:   "v1alpha1",
+				Backends:     []string{utils.BackendLlamaCpp},
+				LoadToMemory: []string{loadToMemoryTestModelName},
 			}},
 			wantErr: false,
 		},
@@ -176,6 +178,54 @@ func Test_validateConfig(t *testing.T) {
 				APIVersion: "v1alpha1",
 				Runtime:    "applesilicon",
 				Backends:   []string{"llama-cpp"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "loadToMemory rejects an empty model name",
+			args: args{c: &config.InferenceConfig{
+				APIVersion:   "v1alpha1",
+				LoadToMemory: []string{""},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "loadToMemory rejects a whitespace-only model name",
+			args: args{c: &config.InferenceConfig{
+				APIVersion:   "v1alpha1",
+				LoadToMemory: []string{" \t"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "loadToMemory rejects a null character",
+			args: args{c: &config.InferenceConfig{
+				APIVersion:   "v1alpha1",
+				LoadToMemory: []string{"model\x00name"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "loadToMemory rejects a comma",
+			args: args{c: &config.InferenceConfig{
+				APIVersion:   "v1alpha1",
+				LoadToMemory: []string{"chat,embeddings"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "loadToMemory rejects a backslash",
+			args: args{c: &config.InferenceConfig{
+				APIVersion:   "v1alpha1",
+				LoadToMemory: []string{`model\`, "embeddings"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "loadToMemory rejects duplicate model names",
+			args: args{c: &config.InferenceConfig{
+				APIVersion:   "v1alpha1",
+				LoadToMemory: []string{loadToMemoryTestModelName, loadToMemoryTestModelName},
 			}},
 			wantErr: true,
 		},
