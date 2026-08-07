@@ -1,0 +1,32 @@
+#syntax=aikit:test
+apiVersion: v1alpha1
+baseModel: unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit
+objective:
+  type: dpo
+  beta: 0.1
+  lossType: sigmoid
+  maxPromptLength: 96
+datasets:
+  - source: "__AIKIT_SMOKE_DATASET_URL__"
+    type: preference
+    loader:
+      type: json
+      split: train
+      checksum: "__AIKIT_SMOKE_DATASET_CHECKSUM__"
+config:
+  unsloth:
+    packing: false
+    maxSeqLength: 256
+    loadIn4bit: true
+    batchSize: 1
+    gradientAccumulationSteps: 1
+    warmupSteps: 0
+    maxSteps: 1
+    loggingSteps: 1
+    optimizer: adamw_8bit
+    weightDecay: 0.01
+    lrSchedulerType: linear
+    seed: 42
+output:
+  quantize: q4_k_m
+  name: model

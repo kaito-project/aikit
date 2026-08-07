@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/moby/buildkit/frontend/gateway/client"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -42,6 +44,9 @@ const (
 var (
 	nvidiaDriverVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+(?:\.[0-9]+)?$`)
 	nvidiaCDIDevicePattern     = regexp.MustCompile(`^nvidia\.com/gpu(?:=(?:all|[0-9]+(?::[0-9]+)?|gpu[0-9]+|mig[0-9]+:[0-9]+|(?:GPU|MIG)-` + nvidiaUUIDPattern + `))?$`)
+	datasetSplitPattern        = regexp.MustCompile(`^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$`)
+	datasetRevisionPattern     = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	datasetChecksumPattern     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
 func Build(ctx context.Context, c client.Client) (*client.Result, error) {
@@ -73,6 +78,9 @@ func buildFineTune(ctx context.Context, c client.Client, cfg *config.FineTuneCon
 	err := validateFinetuneConfig(cfg)
 	if err != nil {
 		return nil, errors.Wrap(err, "validating aikitfile")
+	}
+	for _, warning := range datasetReproducibilityWarnings(cfg) {
+		logrus.Warn(warning)
 	}
 
 	buildOpts := c.BuildOpts()
@@ -428,27 +436,96 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 		return errors.New("baseModel is not defined")
 	}
 
+	if strings.TrimSpace(c.Objective.Type) == "" {
+		return errors.New("objective.type is not defined")
+	}
+	if c.Objective.Type != utils.ObjectiveSFT && c.Objective.Type != utils.ObjectiveDPO {
+		return errors.Errorf("objective.type %s is not supported", c.Objective.Type)
+	}
+
 	if len(c.Datasets) == 0 {
 		return errors.New("no datasets defined")
 	}
 
-	if len(c.Datasets) > 1 {
-		return errors.New("only one dataset is supported at this time")
-	}
-
-	for _, dataset := range c.Datasets {
+	for datasetIndex, dataset := range c.Datasets {
 		if strings.TrimSpace(dataset.Source) == "" {
-			return errors.New("dataset source is not defined")
+			return errors.Errorf("datasets[%d].source is not defined", datasetIndex)
 		}
-		if dataset.Type != utils.DatasetAlpaca && dataset.Type != utils.DatasetPromptCompletion && dataset.Type != utils.DatasetText {
-			return errors.Errorf("dataset type %s is not supported", dataset.Type)
+		switch dataset.Type {
+		case utils.DatasetAlpaca, utils.DatasetMessages, utils.DatasetPreference, utils.DatasetPromptCompletion, utils.DatasetShareGPT, utils.DatasetText:
+		default:
+			return errors.Errorf("datasets[%d].type %s is not supported", datasetIndex, dataset.Type)
+		}
+		if err := validateDatasetLoader(datasetIndex, dataset); err != nil {
+			return err
 		}
 	}
 
 	unsloth := c.Config.Unsloth
+	if strings.TrimSpace(unsloth.Loss) == "" {
+		return errors.New("config.unsloth.loss is not defined")
+	}
+	if unsloth.Loss != utils.SFTLossAll && unsloth.Loss != utils.SFTLossResponse {
+		return errors.Errorf("config.unsloth.loss %s is not supported", unsloth.Loss)
+	}
 	if unsloth.MaxSeqLength <= 0 {
 		return errors.New("config.unsloth.maxSeqLength must be greater than zero")
 	}
+
+	switch c.Objective.Type {
+	case utils.ObjectiveSFT:
+		if c.Objective.HasDPOSettings() {
+			return errors.New("objective beta, lossType, and maxPromptLength are supported only for objective type dpo")
+		}
+		for datasetIndex, dataset := range c.Datasets {
+			if dataset.Type != utils.DatasetPreference {
+				continue
+			}
+			if datasetIndex == 0 {
+				return errors.New("dataset type preference is supported only for objective type dpo")
+			}
+			return errors.Errorf("datasets[%d].type preference is not supported", datasetIndex)
+		}
+		if err := validateSFTDatasetCompatibility(c.Datasets, unsloth.Loss); err != nil {
+			return err
+		}
+		if unsloth.Loss == utils.SFTLossResponse && unsloth.Packing {
+			return errors.New("config.unsloth.loss response does not support packing because response masks must not cross conversation boundaries")
+		}
+	case utils.ObjectiveDPO:
+		if len(c.Datasets) != 1 {
+			return errors.New("objective type dpo requires exactly one dataset")
+		}
+		dataset := c.Datasets[0]
+		if dataset.Type != utils.DatasetPreference {
+			return errors.Errorf("objective type dpo requires dataset type preference, got %s", dataset.Type)
+		}
+		if dataset.Loader != nil && dataset.Loader.Type == utils.DatasetLoaderText {
+			return errors.New("dataset type preference does not support loader type text because DPO requires prompt, chosen, and rejected columns")
+		}
+		if unsloth.Loss == utils.SFTLossResponse {
+			return errors.New("config.unsloth.loss response is an SFT-only setting and is not supported for objective type dpo")
+		}
+		if unsloth.Packing {
+			return errors.New("objective type dpo does not support config.unsloth.packing")
+		}
+		if c.Objective.Beta <= 0 || math.IsNaN(c.Objective.Beta) || math.IsInf(c.Objective.Beta, 0) {
+			return errors.New("objective.beta must be a finite value greater than zero")
+		}
+		if strings.TrimSpace(c.Objective.LossType) == "" {
+			return errors.New("objective.lossType is not defined")
+		}
+		if c.Objective.LossType != utils.DPOLossSigmoid {
+			return errors.Errorf("objective.lossType %s is not supported", c.Objective.LossType)
+		}
+		if c.Objective.MaxPromptLength <= 0 {
+			return errors.New("objective.maxPromptLength must be greater than zero")
+		}
+		if c.Objective.MaxPromptLength > unsloth.MaxSeqLength {
+			return errors.New("objective.maxPromptLength must not exceed config.unsloth.maxSeqLength")
+		}
+	}
+
 	if unsloth.BatchSize <= 0 {
 		return errors.New("config.unsloth.batchSize must be greater than zero")
 	}
@@ -499,6 +576,143 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 	}
 
 	return nil
+}
+
+type sftDatasetCompatibility string
+
+const (
+	sftCompatibilityFullSequence     sftDatasetCompatibility = "full-sequence"
+	sftCompatibilityPromptCompletion sftDatasetCompatibility = "completion-only"
+	sftCompatibilityResponseChat     sftDatasetCompatibility = "response-only chat"
+)
+
+func validateSFTDatasetCompatibility(datasets []config.Dataset, loss string) error {
+	firstCompatibility, err := sftDatasetCompatibilityFor(datasets[0].Type, loss)
+	if err != nil {
+		return errors.Errorf("datasets[0] type %s: %s", datasets[0].Type, err)
+	}
+
+	for datasetIndex := 1; datasetIndex < len(datasets); datasetIndex++ {
+		dataset := datasets[datasetIndex]
+		compatibility, compatibilityErr := sftDatasetCompatibilityFor(dataset.Type, loss)
+		if compatibilityErr != nil {
+			return errors.Errorf("datasets[%d] type %s: %s", datasetIndex, dataset.Type, compatibilityErr)
+		}
+		if compatibility != firstCompatibility {
+			return errors.Errorf(
+				"datasets[%d] type %s is incompatible with datasets[0] type %s: %s and %s datasets cannot be combined",
+				datasetIndex,
+				dataset.Type,
+				datasets[0].Type,
+				compatibility,
+				firstCompatibility,
+			)
+		}
+	}
+
+	return nil
+}
+
+func sftDatasetCompatibilityFor(datasetType, loss string) (sftDatasetCompatibility, error) {
+	if loss == utils.SFTLossResponse {
+		if datasetType != utils.DatasetMessages && datasetType != utils.DatasetShareGPT {
+			return "", errors.New("config.unsloth.loss response is supported only for messages and sharegpt datasets")
+		}
+		return sftCompatibilityResponseChat, nil
+	}
+
+	if datasetType == utils.DatasetPromptCompletion {
+		return sftCompatibilityPromptCompletion, nil
+	}
+	return sftCompatibilityFullSequence, nil
+}
+
+func validateDatasetLoader(datasetIndex int, dataset config.Dataset) error {
+	loader := dataset.Loader
+	if loader == nil {
+		return nil
+	}
+
+	path := fmt.Sprintf("datasets[%d].loader", datasetIndex)
+	if strings.TrimSpace(loader.Type) == "" {
+		return errors.Errorf("%s.type is not defined", path)
+	}
+	if strings.TrimSpace(loader.Split) == "" {
+		return errors.Errorf("%s.split is not defined", path)
+	}
+	if !datasetSplitPattern.MatchString(loader.Split) {
+		return errors.Errorf("%s.split must be a named split containing letters, numbers, or underscores in dot-separated segments", path)
+	}
+	if loader.Subset != "" && strings.TrimSpace(loader.Subset) == "" {
+		return errors.Errorf("%s.subset must not be empty", path)
+	}
+
+	switch loader.Type {
+	case utils.DatasetLoaderHuggingFace:
+		if isHTTPDatasetSource(dataset.Source) {
+			return errors.Errorf("%s type huggingface does not support an HTTP(S) source", path)
+		}
+		if loader.Checksum != "" {
+			return errors.Errorf("%s.checksum is not supported for type huggingface", path)
+		}
+		if loader.Revision != "" && !datasetRevisionPattern.MatchString(loader.Revision) {
+			return errors.Errorf("%s.revision must be a lowercase 40-character commit hash", path)
+		}
+	case utils.DatasetLoaderJSON, utils.DatasetLoaderCSV, utils.DatasetLoaderParquet, utils.DatasetLoaderText:
+		if !isHTTPDatasetSource(dataset.Source) {
+			return errors.Errorf("%s type %s requires an absolute HTTP(S) source", path, loader.Type)
+		}
+		if loader.Subset != "" {
+			return errors.Errorf("%s.subset is supported only for type huggingface", path)
+		}
+		if loader.Revision != "" {
+			return errors.Errorf("%s.revision is supported only for type huggingface", path)
+		}
+		if loader.Checksum != "" && !datasetChecksumPattern.MatchString(loader.Checksum) {
+			return errors.Errorf("%s.checksum must use lowercase sha256:<64 hex> format", path)
+		}
+	default:
+		return errors.Errorf("%s.type %s is not supported", path, loader.Type)
+	}
+
+	return nil
+}
+
+func isHTTPDatasetSource(source string) bool {
+	parsedSource, err := url.Parse(source)
+	if err != nil {
+		return false
+	}
+
+	scheme := strings.ToLower(parsedSource.Scheme)
+	return (scheme == "http" || scheme == "https") && parsedSource.IsAbs() && parsedSource.Host != ""
+}
+
+func datasetReproducibilityWarnings(c *config.FineTuneConfig) []string {
+	warnings := make([]string, 0, len(c.Datasets))
+	for datasetIndex, dataset := range c.Datasets {
+		if dataset.Loader == nil {
+			if isHTTPDatasetSource(dataset.Source) {
+				warnings = append(warnings, fmt.Sprintf("datasets[%d] remote JSON dataset has no checksum; its content is not reproducibly pinned", datasetIndex))
+			} else {
+				warnings = append(warnings, fmt.Sprintf("datasets[%d] Hugging Face dataset has no revision; its content is not reproducibly pinned", datasetIndex))
+			}
+			continue
+		}
+
+		switch dataset.Loader.Type {
+		case utils.DatasetLoaderHuggingFace:
+			if dataset.Loader.Revision == "" {
+				warnings = append(warnings, fmt.Sprintf("datasets[%d] Hugging Face dataset has no revision; its content is not reproducibly pinned", datasetIndex))
+			}
+		case utils.DatasetLoaderJSON, utils.DatasetLoaderCSV, utils.DatasetLoaderParquet, utils.DatasetLoaderText:
+			if dataset.Loader.Checksum == "" {
+				warnings = append(warnings, fmt.Sprintf("datasets[%d] remote %s dataset has no checksum; its content is not reproducibly pinned", datasetIndex, dataset.Loader.Type))
+			}
+		}
+	}
+
+	return warnings
 }
 
 // isSupportedUnslothOptimizer limits OptimizerNames to dependencies in the frozen environment.
