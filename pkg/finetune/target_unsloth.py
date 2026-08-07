@@ -14,6 +14,8 @@ import secrets
 import shutil
 import stat
 import tempfile
+import threading
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from enum import Enum
@@ -75,6 +77,12 @@ REMOTE_DATASET_COMPRESSION_SUFFIXES = frozenset(
     (".bz2", ".gz", ".xz", ".zip", ".zst")
 )
 REMOTE_DATASET_CHUNK_SIZE = 1024 * 1024
+# Bound both connection establishment and each blocking response read.
+REMOTE_DATASET_REQUEST_TIMEOUT_SECONDS = 60.0
+# Bound aggregate download time even when a server keeps each read active.
+REMOTE_DATASET_TOTAL_TIMEOUT_SECONDS = 60.0 * 60.0
+# Prevent one remote file from consuming unbounded temporary and cache storage.
+REMOTE_DATASET_MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024 * 1024
 DATASET_TYPE_ALPACA = "alpaca"
 DATASET_TYPE_MESSAGES = "messages"
 DATASET_TYPE_PREFERENCE = "preference"
@@ -159,6 +167,7 @@ UNSUPPORTED_MESSAGES_TOP_LEVEL_FIELDS = frozenset(
 )
 PREPROCESSING_VERIFICATION_PROMPT = "Question: What is 2 + 2?\nAnswer:"
 PREPROCESSING_VERIFICATION_COMPLETION = " 4."
+PROMPT_COMPLETION_PREPROCESSING_VERIFICATION_MAX_LENGTH = 4096
 PROMPT_COMPLETION_VALIDATION_BATCH_SIZE = 128
 # Bound the estimated retained token IDs for the prompt and combined text.
 PROMPT_COMPLETION_VALIDATION_TOKEN_BUDGET = 262_144
@@ -733,6 +742,10 @@ def training_dataset_specs(
         source = dataset.get("source")
         if not isinstance(source, str) or not source.strip():
             raise ValueError(f"{path}.source must be a non-empty string")
+        if source != source.strip():
+            raise ValueError(
+                f"{path}.source must not have leading or trailing whitespace"
+            )
         if has_http_dataset_scheme(source) and not is_http_dataset_source(source):
             raise ValueError(
                 f"{path} HTTP(S) source must be an absolute URL with a host"
@@ -872,6 +885,7 @@ def dataset_digest_lock(
 def open_regular_cache_entry(
     cache_descriptor: int,
     entry_name: str,
+    max_file_bytes: int | None = None,
 ) -> int | None:
     try:
         entry_descriptor = os.open(
@@ -891,7 +905,14 @@ def open_regular_cache_entry(
         ) from None
 
     entry_stat = os.fstat(entry_descriptor)
-    if not stat.S_ISREG(entry_stat.st_mode) or entry_stat.st_nlink != 1:
+    if (
+        not stat.S_ISREG(entry_stat.st_mode)
+        or entry_stat.st_nlink != 1
+        or (
+            max_file_bytes is not None
+            and entry_stat.st_size > max_file_bytes
+        )
+    ):
         os.close(entry_descriptor)
         return None
     return entry_descriptor
@@ -906,15 +927,24 @@ def write_file_descriptor(file_descriptor: int, data: bytes) -> None:
         remaining = remaining[written:]
 
 
-def copy_file_descriptor(source_descriptor: int, target_descriptor: int) -> str:
+def copy_file_descriptor(
+    source_descriptor: int,
+    target_descriptor: int,
+    *,
+    max_copy_bytes: int | None = None,
+) -> str | None:
     original_offset = os.lseek(source_descriptor, 0, os.SEEK_CUR)
     digest = hashlib.sha256()
+    copied_bytes = 0
     try:
         os.lseek(source_descriptor, 0, os.SEEK_SET)
         while chunk := os.read(
             source_descriptor,
             REMOTE_DATASET_CHUNK_SIZE,
         ):
+            copied_bytes += len(chunk)
+            if max_copy_bytes is not None and copied_bytes > max_copy_bytes:
+                return None
             write_file_descriptor(target_descriptor, chunk)
             digest.update(chunk)
     finally:
@@ -928,10 +958,12 @@ def create_verified_dataset_snapshot(
     expected_digest: str,
     snapshot_directory: Path,
     suffix: str,
+    max_file_bytes: int,
 ) -> Path | None:
     source_descriptor = open_regular_cache_entry(
         cache_descriptor,
         entry_name,
+        max_file_bytes,
     )
     if source_descriptor is None:
         return None
@@ -948,6 +980,7 @@ def create_verified_dataset_snapshot(
         actual_digest = copy_file_descriptor(
             source_descriptor,
             snapshot_descriptor,
+            max_copy_bytes=max_file_bytes,
         )
         os.fsync(snapshot_descriptor)
         if actual_digest != expected_digest:
@@ -970,6 +1003,248 @@ def create_verified_dataset_snapshot(
                 pass
 
 
+def set_remote_dataset_response_timeout(
+    response: Any,
+    timeout_seconds: float,
+) -> bool:
+    """Set the next blocking read timeout on urllib or injected responses."""
+    candidates = [response]
+    response_fp = getattr(response, "fp", None)
+    if response_fp is not None:
+        candidates.append(response_fp)
+        response_raw = getattr(response_fp, "raw", None)
+        if response_raw is not None:
+            candidates.append(response_raw)
+            response_socket = getattr(response_raw, "_sock", None)
+            if response_socket is not None:
+                candidates.append(response_socket)
+
+    seen_candidates = set()
+    for candidate in candidates:
+        candidate_id = id(candidate)
+        if candidate_id in seen_candidates:
+            continue
+        seen_candidates.add(candidate_id)
+        set_timeout = getattr(candidate, "settimeout", None)
+        if callable(set_timeout):
+            set_timeout(timeout_seconds)
+            return True
+    return False
+
+
+def close_remote_dataset_response(response: Any) -> None:
+    close_response = getattr(response, "close", None)
+    if callable(close_response):
+        try:
+            close_response()
+        except Exception:
+            pass
+
+
+def open_remote_dataset_response(
+    request_url: str,
+    *,
+    open_url: Callable[..., Any],
+    deadline: float,
+    monotonic: Callable[[], float],
+) -> Any:
+    """Open a URL without allowing DNS, redirects, or headers past deadline."""
+    remaining_seconds = deadline - monotonic()
+    if remaining_seconds <= 0:
+        raise TimeoutError("remote dataset open deadline exceeded")
+    request_timeout = min(
+        REMOTE_DATASET_REQUEST_TIMEOUT_SECONDS,
+        remaining_seconds,
+    )
+    request_deadline = min(deadline, monotonic() + request_timeout)
+
+    result_lock = threading.Lock()
+    result_ready = threading.Event()
+    cancelled = False
+    response_result: Any = None
+    error_result: BaseException | None = None
+
+    def open_worker() -> None:
+        nonlocal response_result, error_result
+        try:
+            response = open_url(request_url, timeout=request_timeout)
+        except BaseException as error:
+            with result_lock:
+                if cancelled:
+                    return
+                error_result = error
+                result_ready.set()
+            return
+
+        close_late_response = False
+        with result_lock:
+            if cancelled:
+                close_late_response = True
+            else:
+                response_result = response
+                result_ready.set()
+        if close_late_response:
+            close_remote_dataset_response(response)
+
+    opener_thread = threading.Thread(
+        target=open_worker,
+        name="aikit-remote-dataset-open",
+        daemon=True,
+    )
+    opener_thread.start()
+
+    remaining_seconds = request_deadline - monotonic()
+    opened_in_time = remaining_seconds > 0 and result_ready.wait(
+        timeout=remaining_seconds
+    )
+    timed_out = not opened_in_time or monotonic() >= request_deadline
+
+    response_to_close = None
+    with result_lock:
+        if timed_out:
+            cancelled = True
+            response_to_close = response_result
+            response_result = None
+        else:
+            response = response_result
+            error = error_result
+
+    if response_to_close is not None:
+        close_remote_dataset_response_in_background(response_to_close)
+    if timed_out:
+        raise TimeoutError("remote dataset open deadline exceeded")
+    if error is not None:
+        raise error
+    if response is None:
+        raise RuntimeError("remote dataset opener returned no response")
+    return response
+
+
+def read_remote_dataset_chunk(response: Any) -> bytes:
+    """Use one underlying urllib read, with a generic injected fallback."""
+    read_one = getattr(response, "read1", None)
+    if callable(read_one):
+        return read_one(REMOTE_DATASET_CHUNK_SIZE)
+    return response.read(REMOTE_DATASET_CHUNK_SIZE)
+
+
+class RemoteDatasetReadDeadlineExceeded(TimeoutError):
+    pass
+
+
+def close_remote_dataset_response_in_background(response: Any) -> None:
+    threading.Thread(
+        target=close_remote_dataset_response,
+        args=(response,),
+        name="aikit-remote-dataset-close",
+        daemon=True,
+    ).start()
+
+
+class RemoteDatasetChunkReader:
+    def __init__(self, response: Any) -> None:
+        self.response = response
+        self.request_ready = threading.Event()
+        self.result_ready = threading.Event()
+        self.cancelled = threading.Event()
+        self.result_lock = threading.Lock()
+        self.chunk_result: Any = None
+        self.error_result: BaseException | None = None
+        self.reader_thread = threading.Thread(
+            target=self.read_worker,
+            name="aikit-remote-dataset-read",
+            daemon=True,
+        )
+        self.reader_thread.start()
+
+    def cancel(self) -> None:
+        self.cancelled.set()
+        self.request_ready.set()
+
+    def read_worker(self) -> None:
+        while True:
+            self.request_ready.wait()
+            self.request_ready.clear()
+            if self.cancelled.is_set():
+                return
+
+            try:
+                chunk = read_remote_dataset_chunk(self.response)
+            except BaseException as error:
+                with self.result_lock:
+                    if self.cancelled.is_set():
+                        return
+                    self.error_result = error
+                    self.result_ready.set()
+                return
+
+            with self.result_lock:
+                if self.cancelled.is_set():
+                    return
+                self.chunk_result = chunk
+                self.result_ready.set()
+            if not chunk:
+                return
+
+    def read_before_deadline(
+        self,
+        *,
+        deadline: float,
+        monotonic: Callable[[], float],
+    ) -> bytes:
+        remaining_seconds = deadline - monotonic()
+        if remaining_seconds <= 0:
+            self.cancel()
+            close_remote_dataset_response_in_background(self.response)
+            raise RemoteDatasetReadDeadlineExceeded(
+                "remote dataset read deadline exceeded"
+            )
+
+        with self.result_lock:
+            self.chunk_result = None
+            self.error_result = None
+            self.result_ready.clear()
+        self.request_ready.set()
+
+        remaining_seconds = deadline - monotonic()
+        read_in_time = remaining_seconds > 0 and self.result_ready.wait(
+            timeout=remaining_seconds
+        )
+        timed_out = not read_in_time or monotonic() >= deadline
+        if timed_out:
+            self.cancel()
+            close_remote_dataset_response_in_background(self.response)
+            raise RemoteDatasetReadDeadlineExceeded(
+                "remote dataset read deadline exceeded"
+            )
+
+        with self.result_lock:
+            chunk = self.chunk_result
+            error = self.error_result
+        if error is not None:
+            raise error
+        return chunk
+
+
+def validate_remote_dataset_download_limits(
+    total_timeout_seconds: float,
+    max_download_bytes: int,
+) -> None:
+    if (
+        isinstance(total_timeout_seconds, bool)
+        or not isinstance(total_timeout_seconds, (int, float))
+        or not math.isfinite(total_timeout_seconds)
+        or total_timeout_seconds <= 0
+    ):
+        raise ValueError("remote dataset total download timeout must be positive")
+    if (
+        isinstance(max_download_bytes, bool)
+        or not isinstance(max_download_bytes, int)
+        or max_download_bytes <= 0
+    ):
+        raise ValueError("remote dataset maximum download size must be positive")
+
+
 @contextmanager
 def download_remote_dataset_file(
     request_url: str,
@@ -977,7 +1252,16 @@ def download_remote_dataset_file(
     loader_type: str,
     suffix: str,
     open_url: Callable[..., Any],
+    monotonic: Callable[[], float] = time.monotonic,
+    total_timeout_seconds: float = REMOTE_DATASET_TOTAL_TIMEOUT_SECONDS,
+    max_download_bytes: int = REMOTE_DATASET_MAX_DOWNLOAD_BYTES,
 ) -> Iterator[tuple[int, str]]:
+    validate_remote_dataset_download_limits(
+        total_timeout_seconds,
+        max_download_bytes,
+    )
+
+    deadline = monotonic() + total_timeout_seconds
     with tempfile.TemporaryDirectory(
         prefix="aikit-dataset-download-"
     ) as temporary_directory:
@@ -988,12 +1272,63 @@ def download_remote_dataset_file(
             0o600,
         )
         digest = hashlib.sha256()
+        downloaded_bytes = 0
         try:
             try:
-                with open_url(request_url) as response:
-                    while chunk := response.read(REMOTE_DATASET_CHUNK_SIZE):
+                response = open_remote_dataset_response(
+                    request_url,
+                    open_url=open_url,
+                    deadline=deadline,
+                    monotonic=monotonic,
+                )
+                response_close_deferred = False
+                chunk_reader: RemoteDatasetChunkReader | None = None
+                try:
+                    chunk_reader = RemoteDatasetChunkReader(response)
+                    while True:
+                        remaining_seconds = deadline - monotonic()
+                        if remaining_seconds <= 0:
+                            raise TimeoutError(
+                                "remote dataset total download deadline exceeded"
+                            )
+                        read_timeout = min(
+                            REMOTE_DATASET_REQUEST_TIMEOUT_SECONDS,
+                            remaining_seconds,
+                        )
+                        set_remote_dataset_response_timeout(
+                            response,
+                            read_timeout,
+                        )
+                        read_deadline = min(
+                            deadline,
+                            monotonic() + read_timeout,
+                        )
+                        try:
+                            chunk = chunk_reader.read_before_deadline(
+                                deadline=read_deadline,
+                                monotonic=monotonic,
+                            )
+                        except RemoteDatasetReadDeadlineExceeded:
+                            response_close_deferred = True
+                            raise
+                        if monotonic() >= deadline:
+                            raise TimeoutError(
+                                "remote dataset total download deadline exceeded"
+                            )
+                        if not chunk:
+                            break
+                        downloaded_bytes += len(chunk)
+                        if downloaded_bytes > max_download_bytes:
+                            raise RuntimeError(
+                                "remote dataset maximum download size exceeded"
+                            )
                         write_file_descriptor(download_descriptor, chunk)
                         digest.update(chunk)
+                finally:
+                    if chunk_reader is not None:
+                        chunk_reader.cancel()
+                    if not response_close_deferred:
+                        close_remote_dataset_response(response)
                 os.fsync(download_descriptor)
             except Exception:
                 raise RuntimeError(
@@ -1009,6 +1344,7 @@ def publish_cached_dataset_file(
     entry_name: str,
     source_descriptor: int,
     expected_digest: str,
+    max_file_bytes: int,
 ) -> None:
     temporary_name = (
         f".publish-{expected_digest}-{secrets.token_hex(16)}.tmp"
@@ -1024,6 +1360,7 @@ def publish_cached_dataset_file(
         actual_digest = copy_file_descriptor(
             source_descriptor,
             temporary_descriptor,
+            max_copy_bytes=max_file_bytes,
         )
         os.fsync(temporary_descriptor)
         if actual_digest != expected_digest:
@@ -1055,6 +1392,7 @@ def materialize_locked_dataset_snapshot(
     expected_digest: str,
     snapshot_directory: Path,
     suffix: str,
+    max_file_bytes: int,
     downloaded_descriptor: int | None = None,
 ) -> Path | None:
     snapshot_path = create_verified_dataset_snapshot(
@@ -1063,6 +1401,7 @@ def materialize_locked_dataset_snapshot(
         expected_digest,
         snapshot_directory,
         suffix,
+        max_file_bytes,
     )
     if snapshot_path is not None or downloaded_descriptor is None:
         return snapshot_path
@@ -1072,6 +1411,7 @@ def materialize_locked_dataset_snapshot(
         entry_name,
         downloaded_descriptor,
         expected_digest,
+        max_file_bytes,
     )
     snapshot_path = create_verified_dataset_snapshot(
         cache_descriptor,
@@ -1079,6 +1419,7 @@ def materialize_locked_dataset_snapshot(
         expected_digest,
         snapshot_directory,
         suffix,
+        max_file_bytes,
     )
     if snapshot_path is None:
         raise RuntimeError(
@@ -1095,6 +1436,9 @@ def materialize_remote_dataset_file(
     checksum: str | None,
     cache_directory: Path | str | None = None,
     open_url: Callable[..., Any] = urlopen,
+    monotonic: Callable[[], float] = time.monotonic,
+    total_timeout_seconds: float = REMOTE_DATASET_TOTAL_TIMEOUT_SECONDS,
+    max_download_bytes: int = REMOTE_DATASET_MAX_DOWNLOAD_BYTES,
 ) -> Iterator[Path]:
     if loader_type not in REMOTE_DATASET_LOADERS:
         raise ValueError(f"unsupported remote dataset loader {loader_type!r}")
@@ -1107,6 +1451,10 @@ def materialize_remote_dataset_file(
             "remote-file dataset loader checksum must use lowercase "
             "sha256:<64 hex> format"
         )
+    validate_remote_dataset_download_limits(
+        total_timeout_seconds,
+        max_download_bytes,
+    )
 
     cache_path = (
         Path(cache_directory)
@@ -1133,25 +1481,34 @@ def materialize_remote_dataset_file(
                         expected_digest,
                         snapshot_directory,
                         suffix,
+                        max_download_bytes,
                     )
-                    if snapshot_path is None:
-                        with download_remote_dataset_file(
-                            request_url,
-                            loader_type=loader_type,
-                            suffix=suffix,
-                            open_url=open_url,
-                        ) as (download_descriptor, actual_digest):
-                            if actual_digest != expected_digest:
-                                raise RuntimeError(
-                                    f"remote {loader_type} dataset checksum "
-                                    "does not match the configured sha256 digest"
-                                ) from None
+                if snapshot_path is None:
+                    with download_remote_dataset_file(
+                        request_url,
+                        loader_type=loader_type,
+                        suffix=suffix,
+                        open_url=open_url,
+                        monotonic=monotonic,
+                        total_timeout_seconds=total_timeout_seconds,
+                        max_download_bytes=max_download_bytes,
+                    ) as (download_descriptor, actual_digest):
+                        if actual_digest != expected_digest:
+                            raise RuntimeError(
+                                f"remote {loader_type} dataset checksum "
+                                "does not match the configured sha256 digest"
+                            ) from None
+                        with dataset_digest_lock(
+                            cache_descriptor,
+                            expected_digest,
+                        ):
                             snapshot_path = materialize_locked_dataset_snapshot(
                                 cache_descriptor,
                                 entry_name,
                                 expected_digest,
                                 snapshot_directory,
                                 suffix,
+                                max_download_bytes,
                                 downloaded_descriptor=download_descriptor,
                             )
             else:
@@ -1160,6 +1517,9 @@ def materialize_remote_dataset_file(
                     loader_type=loader_type,
                     suffix=suffix,
                     open_url=open_url,
+                    monotonic=monotonic,
+                    total_timeout_seconds=total_timeout_seconds,
+                    max_download_bytes=max_download_bytes,
                 ) as (download_descriptor, actual_digest):
                     entry_name = f"{actual_digest}{suffix}"
                     with dataset_digest_lock(cache_descriptor, actual_digest):
@@ -1169,6 +1529,7 @@ def materialize_remote_dataset_file(
                             actual_digest,
                             snapshot_directory,
                             suffix,
+                            max_download_bytes,
                             downloaded_descriptor=download_descriptor,
                         )
 
@@ -3128,24 +3489,57 @@ def expected_response_only_labels(
     return labels
 
 
+@contextmanager
+def prompt_completion_right_truncation(processing_class: Any) -> Iterator[None]:
+    """Match the pinned trainer's prefix truncation without unbounded outputs."""
+    candidates = [processing_class]
+    inner_tokenizer = getattr(processing_class, "tokenizer", None)
+    if inner_tokenizer is not None and inner_tokenizer is not processing_class:
+        candidates.append(inner_tokenizer)
+
+    changed_targets = []
+    try:
+        for candidate in candidates:
+            truncation_side = getattr(candidate, "truncation_side", None)
+            if truncation_side == "left":
+                candidate.truncation_side = "right"
+                changed_targets.append((candidate, truncation_side))
+    except Exception:
+        for candidate, truncation_side in reversed(changed_targets):
+            candidate.truncation_side = truncation_side
+        raise RuntimeError(
+            "prompt-completion preprocessing could not enforce right-side token truncation"
+        ) from None
+
+    try:
+        yield
+    finally:
+        for candidate, truncation_side in reversed(changed_targets):
+            candidate.truncation_side = truncation_side
+
+
 def tokenize_verification_text(
     processing_class: Any,
     text: str,
     *,
     add_special_tokens: bool,
+    max_length: int,
     description: str,
 ) -> list[Any]:
-    tokenized = processing_class(
-        text,
-        add_special_tokens=add_special_tokens,
-    )
+    with prompt_completion_right_truncation(processing_class):
+        tokenized = processing_class(
+            text,
+            add_special_tokens=add_special_tokens,
+            truncation=True,
+            max_length=max_length,
+        )
     if not isinstance(tokenized, Mapping):
         raise RuntimeError(
             f"prompt-completion preprocessing {description} tokenization must return a mapping"
         )
 
     try:
-        return sequence_values(
+        input_ids = sequence_values(
             tokenized["input_ids"],
             description=f"{description} token IDs",
         )
@@ -3153,6 +3547,11 @@ def tokenize_verification_text(
         raise RuntimeError(
             f"prompt-completion preprocessing {description} tokenization did not produce input_ids"
         ) from error
+    if len(input_ids) > max_length:
+        raise RuntimeError(
+            f"prompt-completion preprocessing {description} tokenization did not honor its truncation limit"
+        )
+    return input_ids
 
 
 def prompt_completion_add_special_tokens(
@@ -3173,12 +3572,16 @@ def tokenize_verification_texts(
     texts: Sequence[str],
     *,
     add_special_tokens: bool,
+    max_length: int,
     description: str,
 ) -> list[list[Any]]:
-    tokenized = processing_class(
-        list(texts),
-        add_special_tokens=add_special_tokens,
-    )
+    with prompt_completion_right_truncation(processing_class):
+        tokenized = processing_class(
+            list(texts),
+            add_special_tokens=add_special_tokens,
+            truncation=True,
+            max_length=max_length,
+        )
     if not isinstance(tokenized, Mapping):
         raise RuntimeError(
             f"prompt-completion preprocessing {description} tokenization must return a mapping"
@@ -3199,13 +3602,18 @@ def tokenize_verification_texts(
             f"prompt-completion preprocessing {description} tokenization returned an unexpected number of rows"
         )
 
-    return [
-        sequence_values(
+    input_id_rows = []
+    for row_index, token_row in enumerate(token_rows):
+        input_ids = sequence_values(
             token_row,
             description=f"{description} token IDs row {row_index}",
         )
-        for row_index, token_row in enumerate(token_rows)
-    ]
+        if len(input_ids) > max_length:
+            raise RuntimeError(
+                f"prompt-completion preprocessing {description} tokenization did not honor its truncation limit"
+            )
+        input_id_rows.append(input_ids)
+    return input_id_rows
 
 
 def empty_prompt_prefix_fingerprint() -> PromptPrefixFingerprint:
@@ -3324,6 +3732,7 @@ def validate_prompt_completion_tokenization(
             processing_class,
             prompts + prompt_completions,
             add_special_tokens=effective_add_special_tokens,
+            max_length=max_seq_length,
             description=(
                 f"records {batch_start}-{batch_start + len(prompts) - 1} "
                 "prompts and prompt-completions"
@@ -3338,6 +3747,7 @@ def validate_prompt_completion_tokenization(
                 processing_class,
                 prompts + prompt_completions,
                 add_special_tokens=source_add_special_tokens,
+                max_length=max_seq_length,
                 description=(
                     f"source-policy records {batch_start}-"
                     f"{batch_start + len(prompts) - 1} prompts and prompt-completions"
@@ -3359,9 +3769,7 @@ def validate_prompt_completion_tokenization(
             )
         ):
             record_index = batch_start + batch_index
-            input_ids = input_ids[:max_seq_length]
             prompt_length = min(len(prompt_ids), len(input_ids))
-            source_input_ids = source_input_ids[:max_seq_length]
             source_prompt_length = min(
                 len(source_prompt_ids),
                 len(source_input_ids),
@@ -3456,6 +3864,7 @@ def verify_prompt_completion_preprocessing(
         processing_class,
         PREPROCESSING_VERIFICATION_PROMPT,
         add_special_tokens=add_special_tokens,
+        max_length=PROMPT_COMPLETION_PREPROCESSING_VERIFICATION_MAX_LENGTH,
         description="prompt",
     )
     verification_completion = PREPROCESSING_VERIFICATION_COMPLETION
@@ -3465,6 +3874,7 @@ def verify_prompt_completion_preprocessing(
         processing_class,
         PREPROCESSING_VERIFICATION_PROMPT + verification_completion,
         add_special_tokens=add_special_tokens,
+        max_length=PROMPT_COMPLETION_PREPROCESSING_VERIFICATION_MAX_LENGTH,
         description="prompt-completion",
     )
     if not expected_prompt_ids or not expected_input_ids:
