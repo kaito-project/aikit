@@ -33,6 +33,8 @@ DATASET_REQUIRED_FIELDS = {
 PREPROCESSING_VERIFICATION_PROMPT = "Question: What is 2 + 2?\nAnswer:"
 PREPROCESSING_VERIFICATION_COMPLETION = " 4."
 PROMPT_COMPLETION_VALIDATION_BATCH_SIZE = 128
+# Bound the estimated retained token IDs for the prompt and combined text.
+PROMPT_COMPLETION_VALIDATION_TOKEN_BUDGET = 262_144
 PROMPT_PREFIX_FINGERPRINT_MASK = (1 << 256) - 1
 
 # Keep the Alpaca prompt byte-for-byte compatible with existing fine-tuning builds.
@@ -474,6 +476,22 @@ def validate_prompt_completion_tokenization(
         or batch_size <= 0
     ):
         raise ValueError("prompt-completion validation batch size must be positive")
+    if (
+        isinstance(max_seq_length, bool)
+        or not isinstance(max_seq_length, int)
+        or max_seq_length <= 0
+    ):
+        raise ValueError("prompt-completion max sequence length must be positive")
+
+    estimated_tokens_per_record = max_seq_length * 2
+    effective_batch_size = min(
+        batch_size,
+        max(
+            1,
+            PROMPT_COMPLETION_VALIDATION_TOKEN_BUDGET
+            // estimated_tokens_per_record,
+        ),
+    )
 
     eos_token = getattr(processing_class, "eos_token", None)
     eos_token_id = getattr(processing_class, "eos_token_id", None)
@@ -510,28 +528,19 @@ def validate_prompt_completion_tokenization(
             zip(prompt_token_rows, prompt_completion_token_rows)
         ):
             record_index = batch_start + batch_index
-            if input_ids[: len(prompt_ids)] != prompt_ids:
+            input_ids = input_ids[:max_seq_length]
+            prompt_length = min(len(prompt_ids), len(input_ids))
+            if len(input_ids) <= prompt_length:
                 raise RuntimeError(
-                    f"prompt-completion preprocessing record {record_index} tokenized prompt is not a prefix of the prompt-completion tokens"
-                )
-            if len(input_ids) <= len(prompt_ids):
-                raise RuntimeError(
-                    f"prompt-completion preprocessing record {record_index} produces no completion tokens"
-                )
-            if len(input_ids) > max_seq_length:
-                raise RuntimeError(
-                    f"prompt-completion preprocessing record {record_index} has "
-                    f"{len(input_ids)} tokens and would lose supervised completion "
-                    "or EOS tokens after truncation to maxSeqLength "
-                    f"{max_seq_length}"
+                    f"prompt-completion preprocessing record {record_index} retains no completion tokens after truncation to maxSeqLength {max_seq_length}"
                 )
             if input_ids[-1] != eos_token_id:
                 raise RuntimeError(
-                    f"prompt-completion preprocessing record {record_index} does not end with the tokenizer EOS token"
+                    f"prompt-completion preprocessing record {record_index} does not end with a supervised EOS token after truncation to maxSeqLength {max_seq_length}"
                 )
             fingerprint = extend_prompt_prefix_fingerprint(
                 fingerprint,
-                prompt_ids,
+                input_ids[:prompt_length],
                 description=f"record {record_index} prompt",
             )
 
@@ -549,7 +558,7 @@ def validate_prompt_completion_tokenization(
         prompt_completions.append(record["prompt"] + completion)
         record_count += 1
 
-        if len(prompts) == batch_size:
+        if len(prompts) == effective_batch_size:
             validate_batch()
             prompts.clear()
             prompt_completions.clear()
