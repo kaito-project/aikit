@@ -100,6 +100,57 @@ def preprocessing_tokenizer():
     return tokenizer
 
 
+class TextPreprocessingTokenizer:
+    def __init__(
+        self,
+        *,
+        auto_bos=True,
+        auto_eos=False,
+        bos_token="<bos>",
+        bos_token_id=1,
+        eos_token="<eos>",
+        eos_token_id=2,
+        chat_template="",
+    ):
+        self.auto_bos = auto_bos
+        self.auto_eos = auto_eos
+        self.bos_token = bos_token
+        self.bos_token_id = bos_token_id
+        self.eos_token = eos_token
+        self.eos_token_id = eos_token_id
+        self.chat_template = chat_template
+        self.save_pretrained = mock.Mock()
+
+    def __call__(self, text, *, add_special_tokens=True, truncation=False):
+        if truncation:
+            raise AssertionError("text preprocessing must disable truncation")
+        input_ids = []
+        offset = 0
+        special_tokens = tuple(
+            (token, token_id)
+            for token, token_id in (
+                (self.bos_token, self.bos_token_id),
+                (self.eos_token, self.eos_token_id),
+            )
+            if token is not None
+        )
+        while offset < len(text):
+            for token, token_id in special_tokens:
+                if text.startswith(token, offset):
+                    input_ids.append(token_id)
+                    offset += len(token)
+                    break
+            else:
+                input_ids.append(1000 + ord(text[offset]))
+                offset += 1
+
+        if add_special_tokens and self.auto_bos and self.bos_token_id is not None:
+            input_ids.insert(0, self.bos_token_id)
+        if add_special_tokens and self.auto_eos and self.eos_token_id is not None:
+            input_ids.append(self.eos_token_id)
+        return {"input_ids": input_ids}
+
+
 def example_train_dependencies(dataset):
     base_model = mock.Mock()
     adapter_model = mock.Mock()
@@ -334,6 +385,165 @@ Bonjour<eos>""",
             },
         )
         self.assertEqual(examples["instruction"], ["Summarize", "Translate"])
+
+
+class TextBoundaryNormalizationTest(unittest.TestCase):
+    def test_uses_tokenizer_added_bos_and_one_explicit_eos(self):
+        tokenizer = TextPreprocessingTokenizer(auto_bos=True)
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+
+        normalized = target_unsloth.normalize_text_examples(
+            {
+                "text": [
+                    "Preserve <bos> and <eos> inside the body.",
+                    "<bos><bos>Already bounded.<eos><eos>",
+                ]
+            },
+            policy=policy,
+        )
+
+        self.assertTrue(policy.add_special_tokens)
+        self.assertEqual(
+            normalized,
+            {
+                "text": [
+                    "Preserve <bos> and <eos> inside the body.<eos>",
+                    "Already bounded.<eos>",
+                ]
+            },
+        )
+        for text in normalized["text"]:
+            input_ids = tokenizer(text, add_special_tokens=True)["input_ids"]
+            self.assertEqual(
+                target_unsloth.leading_token_count(input_ids, tokenizer.bos_token_id),
+                1,
+            )
+            self.assertEqual(
+                target_unsloth.trailing_token_count(input_ids, tokenizer.eos_token_id),
+                1,
+            )
+
+    def test_uses_explicit_bos_when_tokenizer_does_not_add_one(self):
+        tokenizer = TextPreprocessingTokenizer(auto_bos=False)
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+
+        normalized = target_unsloth.normalize_text_examples(
+            {"text": ["Missing boundaries.", "<bos>Existing BOS.<eos>"]},
+            policy=policy,
+        )
+
+        self.assertFalse(policy.add_special_tokens)
+        self.assertEqual(
+            normalized,
+            {
+                "text": [
+                    "<bos>Missing boundaries.<eos>",
+                    "<bos>Existing BOS.<eos>",
+                ]
+            },
+        )
+
+    def test_uses_explicit_bos_when_chat_template_suppresses_special_tokens(self):
+        tokenizer = TextPreprocessingTokenizer(
+            auto_bos=True,
+            chat_template="{{ '<bos>' }}{{ messages }}",
+        )
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+
+        normalized = target_unsloth.normalize_text_value(
+            "Content.",
+            policy=policy,
+        )
+
+        self.assertFalse(policy.add_special_tokens)
+        self.assertEqual(normalized, "<bos>Content.<eos>")
+
+    def test_supports_tokenizer_without_bos(self):
+        tokenizer = TextPreprocessingTokenizer(
+            auto_bos=False,
+            bos_token=None,
+            bos_token_id=None,
+        )
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+
+        normalized = target_unsloth.normalize_text_value(
+            "Content.<eos>",
+            policy=policy,
+        )
+
+        self.assertIsNone(policy.bos_token)
+        self.assertEqual(normalized, "Content.<eos>")
+        self.assertEqual(
+            tokenizer(normalized, add_special_tokens=True)["input_ids"][-1],
+            tokenizer.eos_token_id,
+        )
+
+    def test_rejects_missing_or_unusable_eos(self):
+        cases = (
+            (
+                TextPreprocessingTokenizer(eos_token=None, eos_token_id=None),
+                "non-empty tokenizer EOS token",
+            ),
+            (
+                TextPreprocessingTokenizer(eos_token_id=None),
+                "integer tokenizer EOS token ID",
+            ),
+            (
+                TextPreprocessingTokenizer(
+                    auto_bos=False,
+                    bos_token=None,
+                    bos_token_id=None,
+                    auto_eos=True,
+                ),
+                "exactly one terminal tokenizer EOS token",
+            ),
+        )
+
+        for tokenizer, error_pattern in cases:
+            with self.subTest(error_pattern=error_pattern):
+                with self.assertRaisesRegex(RuntimeError, error_pattern):
+                    target_unsloth.text_boundary_policy(tokenizer)
+
+    def test_accepts_exact_token_budget_and_rejects_overflow(self):
+        tokenizer = TextPreprocessingTokenizer(auto_bos=True)
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+
+        target_unsloth.validate_text_sequence_lengths(
+            [{"text": "<bos>ABC<eos><eos>"}],
+            processing_class=tokenizer,
+            policy=policy,
+            max_seq_length=5,
+            source="organization/dataset",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "text dataset source 'organization/dataset' row 1.*5 tokens.*maxSeqLength 4",
+        ):
+            target_unsloth.validate_text_sequence_lengths(
+                [{"text": "AB"}, {"text": "<bos>ABC<eos><eos>"}],
+                processing_class=tokenizer,
+                policy=policy,
+                max_seq_length=4,
+                source="organization/dataset",
+            )
+
+    def test_validates_actual_record_boundaries(self):
+        tokenizer = TextPreprocessingTokenizer(auto_bos=True)
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+        tokenizer.auto_eos = True
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "text dataset source 'organization/dataset' row 0.*one terminal.*EOS",
+        ):
+            target_unsloth.validate_text_sequence_lengths(
+                [{"text": "Content."}],
+                processing_class=tokenizer,
+                policy=policy,
+                max_seq_length=64,
+                source="organization/dataset",
+            )
 
 
 class PromptCompletionPreprocessingContractTest(unittest.TestCase):
@@ -714,6 +924,259 @@ class PromptCompletionPreprocessingContractTest(unittest.TestCase):
             )
 
 
+class TextPreprocessingContractTest(unittest.TestCase):
+    def packed_verification_record(self, tokenizer, policy):
+        normalized_texts = [
+            target_unsloth.normalize_text_value(text, policy=policy)
+            for text in target_unsloth.text_preprocessing_verification_sources(
+                policy
+            )
+        ]
+        segments = [
+            tokenizer(
+                text,
+                add_special_tokens=policy.add_special_tokens,
+            )["input_ids"]
+            for text in normalized_texts
+        ]
+        segments.reverse()
+        return normalized_texts, segments, {
+            "input_ids": [input_id for segment in segments for input_id in segment],
+            "seq_lengths": [len(segment) for segment in segments],
+        }
+
+    def test_verifies_packed_boundaries_and_full_sequence_labels(self):
+        tokenizer = TextPreprocessingTokenizer(auto_bos=True)
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+        verification_sources = (
+            target_unsloth.text_preprocessing_verification_sources(policy)
+        )
+        self.assertTrue(verification_sources[0].startswith("<bos><bos>"))
+        self.assertTrue(verification_sources[0].endswith("<eos><eos>"))
+        normalized_texts, segments, prepared_record = (
+            self.packed_verification_record(tokenizer, policy)
+        )
+        self.assertFalse(normalized_texts[0].startswith("<bos>"))
+        self.assertFalse(normalized_texts[0].endswith("<eos><eos>"))
+        labels = list(prepared_record["input_ids"])
+        offset = 0
+        for segment in segments:
+            labels[offset] = -100
+            offset += len(segment)
+
+        trainer = mock.Mock()
+        trainer.args = SimpleNamespace(
+            packing=True,
+            max_length=1,
+            dataset_num_proc=2,
+        )
+        trainer._prepare_dataset.return_value = [prepared_record]
+        trainer.data_collator.return_value = {
+            "input_ids": [prepared_record["input_ids"]],
+            "labels": [labels],
+        }
+        dataset_from_dict = mock.Mock(return_value="verification-dataset")
+
+        target_unsloth.verify_text_preprocessing(
+            trainer,
+            dataset_from_dict=dataset_from_dict,
+            processing_class=tokenizer,
+            policy=policy,
+        )
+
+        dataset_from_dict.assert_called_once_with({"text": normalized_texts})
+        trainer._prepare_dataset.assert_called_once_with(
+            "verification-dataset",
+            tokenizer,
+            mock.ANY,
+            True,
+            None,
+            "text verification",
+        )
+        verification_args = trainer._prepare_dataset.call_args.args[2]
+        self.assertEqual(
+            verification_args.max_length,
+            sum(prepared_record["seq_lengths"]),
+        )
+        self.assertEqual(verification_args.dataset_num_proc, 1)
+        self.assertEqual(trainer.args.max_length, 1)
+        self.assertEqual(trainer.args.dataset_num_proc, 2)
+        trainer.data_collator.assert_called_once_with([prepared_record])
+
+    def non_packed_verification(self, tokenizer, policy, *, mask_starts):
+        normalized_texts = [
+            target_unsloth.normalize_text_value(text, policy=policy)
+            for text in target_unsloth.text_preprocessing_verification_sources(
+                policy
+            )
+        ]
+        prepared_records = [
+            {
+                "input_ids": tokenizer(
+                    text,
+                    add_special_tokens=policy.add_special_tokens,
+                )["input_ids"]
+            }
+            for text in normalized_texts
+        ]
+        trainer = mock.Mock()
+        trainer._prepare_dataset.return_value = prepared_records
+
+        def collate(records):
+            input_ids = records[0]["input_ids"]
+            labels = list(input_ids)
+            if mask_starts:
+                labels[0] = -100
+            return {"input_ids": [input_ids], "labels": [labels]}
+
+        trainer.data_collator.side_effect = collate
+        return trainer
+
+    def test_verifies_non_packed_full_sequence_labels(self):
+        tokenizer = TextPreprocessingTokenizer(auto_bos=True)
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+        trainer = self.non_packed_verification(
+            tokenizer,
+            policy,
+            mask_starts=False,
+        )
+        trainer.args = SimpleNamespace(
+            packing=False,
+            padding_free=False,
+            max_length=1,
+            dataset_num_proc=2,
+        )
+
+        target_unsloth.verify_text_preprocessing(
+            trainer,
+            dataset_from_dict=mock.Mock(return_value="verification-dataset"),
+            processing_class=tokenizer,
+            policy=policy,
+        )
+
+        self.assertEqual(trainer.data_collator.call_count, 2)
+
+    def test_rejects_masked_non_packed_start_label(self):
+        tokenizer = TextPreprocessingTokenizer(auto_bos=True)
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+        trainer = self.non_packed_verification(
+            tokenizer,
+            policy,
+            mask_starts=True,
+        )
+        trainer.args = SimpleNamespace(
+            packing=False,
+            padding_free=False,
+            max_length=512,
+            dataset_num_proc=2,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "full-sequence labels"):
+            target_unsloth.verify_text_preprocessing(
+                trainer,
+                dataset_from_dict=mock.Mock(return_value="verification-dataset"),
+                processing_class=tokenizer,
+                policy=policy,
+            )
+
+    def test_allows_padding_free_document_start_mask(self):
+        tokenizer = TextPreprocessingTokenizer(auto_bos=True)
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+        trainer = self.non_packed_verification(
+            tokenizer,
+            policy,
+            mask_starts=True,
+        )
+        trainer.args = SimpleNamespace(
+            packing=False,
+            padding_free=True,
+            max_length=512,
+            dataset_num_proc=2,
+        )
+
+        target_unsloth.verify_text_preprocessing(
+            trainer,
+            dataset_from_dict=mock.Mock(return_value="verification-dataset"),
+            processing_class=tokenizer,
+            policy=policy,
+        )
+
+    def test_rejects_missing_packing_boundaries(self):
+        tokenizer = TextPreprocessingTokenizer(auto_bos=True)
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+        _, _, prepared_record = self.packed_verification_record(tokenizer, policy)
+        prepared_record.pop("seq_lengths")
+        trainer = mock.Mock()
+        trainer.args = SimpleNamespace(
+            packing=True,
+            max_length=512,
+            dataset_num_proc=2,
+        )
+        trainer._prepare_dataset.return_value = [prepared_record]
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "packing did not preserve sequence lengths",
+        ):
+            target_unsloth.verify_text_preprocessing(
+                trainer,
+                dataset_from_dict=mock.Mock(return_value="verification-dataset"),
+                processing_class=tokenizer,
+                policy=policy,
+            )
+
+    def test_rejects_duplicate_effective_bos(self):
+        tokenizer = TextPreprocessingTokenizer(auto_bos=True)
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+        _, _, prepared_record = self.packed_verification_record(tokenizer, policy)
+        prepared_record["input_ids"].insert(0, tokenizer.bos_token_id)
+        prepared_record["seq_lengths"][0] += 1
+        trainer = mock.Mock()
+        trainer.args = SimpleNamespace(
+            packing=True,
+            max_length=512,
+            dataset_num_proc=2,
+        )
+        trainer._prepare_dataset.return_value = [prepared_record]
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "exactly one leading BOS per record",
+        ):
+            target_unsloth.verify_text_preprocessing(
+                trainer,
+                dataset_from_dict=mock.Mock(return_value="verification-dataset"),
+                processing_class=tokenizer,
+                policy=policy,
+            )
+
+    def test_rejects_masked_non_boundary_labels(self):
+        tokenizer = TextPreprocessingTokenizer(auto_bos=True)
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+        _, _, prepared_record = self.packed_verification_record(tokenizer, policy)
+        labels = list(prepared_record["input_ids"])
+        labels[1] = -100
+        trainer = mock.Mock()
+        trainer.args = SimpleNamespace(
+            packing=True,
+            max_length=512,
+            dataset_num_proc=2,
+        )
+        trainer._prepare_dataset.return_value = [prepared_record]
+        trainer.data_collator.return_value = {
+            "input_ids": [prepared_record["input_ids"]],
+            "labels": [labels],
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "full-sequence labels"):
+            target_unsloth.verify_text_preprocessing(
+                trainer,
+                dataset_from_dict=mock.Mock(return_value="verification-dataset"),
+                processing_class=tokenizer,
+                policy=policy,
+            )
+
+
 class TrainingPhaseTest(unittest.TestCase):
     def assert_dataset_rejected_before_model(
         self,
@@ -1077,6 +1540,136 @@ class TrainingPhaseTest(unittest.TestCase):
 
         trainer.train.assert_called_once_with()
 
+    def test_text_dataset_uses_isolated_normalization_and_full_sequence_loss(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "text"
+        rows = [
+            {
+                "text": "<bos>Preformatted sequence.",
+                "instruction": "must not use the Alpaca formatter",
+                "output": "must not use the Alpaca formatter",
+            },
+            {
+                "text": "Already terminated.<eos>",
+                "prompt": "must not use prompt-completion dispatch",
+                "completion": "must not use prompt-completion dispatch",
+            },
+        ]
+        dataset = in_memory_dataset(rows)
+        normalized_dataset = mock.Mock()
+        dataset.projected_dataset.map.return_value = normalized_dataset
+        dependencies = example_train_dependencies(dataset)
+        fast_language_model = dependencies.fast_language_model
+        base_model = fast_language_model.from_pretrained.return_value[0]
+        tokenizer = TextPreprocessingTokenizer(auto_bos=True)
+        fast_language_model.from_pretrained.return_value = (base_model, tokenizer)
+        trainer = dependencies.sft_trainer.return_value
+
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            mock.patch.object(
+                target_unsloth,
+                "verify_text_preprocessing",
+            ) as verify_text_preprocessing,
+        ):
+            target_unsloth.train_model(
+                train_config,
+                trained_model_directory=Path(temporary_directory)
+                / "trained-model",
+                dependencies=dependencies,
+            )
+
+        dataset.select_columns.assert_called_once_with(["text"])
+        dataset.map.assert_not_called()
+        dataset.projected_dataset.map.assert_called_once_with(
+            mock.ANY,
+            batched=True,
+        )
+        normalize_batch = dataset.projected_dataset.map.call_args.args[0]
+        self.assertEqual(
+            normalize_batch({"text": [row["text"] for row in rows]}),
+            {
+                "text": [
+                    "Preformatted sequence.<eos>",
+                    "Already terminated.<eos>",
+                ]
+            },
+        )
+        dependencies.sft_trainer.assert_called_once_with(
+            model=fast_language_model.get_peft_model.return_value,
+            train_dataset=normalized_dataset,
+            processing_class=tokenizer,
+            args="sft-config",
+        )
+        self.assertIs(
+            dependencies.sft_config.call_args.kwargs.get("completion_only_loss"),
+            False,
+        )
+        verify_text_preprocessing.assert_called_once_with(
+            trainer,
+            dataset_from_dict=dependencies.dataset_from_dict,
+            processing_class=tokenizer,
+            policy=mock.ANY,
+        )
+        tokenizer.save_pretrained.assert_called_once()
+
+    def test_text_dataset_requires_eos_before_lora_allocation(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "text"
+        dataset = in_memory_dataset([{"text": "Preformatted sequence."}])
+        dependencies = example_train_dependencies(dataset)
+        base_model = dependencies.fast_language_model.from_pretrained.return_value[0]
+        tokenizer = TextPreprocessingTokenizer(
+            eos_token=None,
+            eos_token_id=None,
+        )
+        dependencies.fast_language_model.from_pretrained.return_value = (
+            base_model,
+            tokenizer,
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "non-empty tokenizer EOS token",
+        ):
+            target_unsloth.train_model(
+                train_config,
+                dependencies=dependencies,
+            )
+
+        dependencies.fast_language_model.get_peft_model.assert_not_called()
+        dependencies.resolve_model_name.assert_not_called()
+        dependencies.model_info.assert_not_called()
+        dependencies.sft_trainer.assert_not_called()
+
+    def test_text_dataset_rejects_overflow_before_lora_allocation(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "text"
+        train_config["config"]["unsloth"]["maxSeqLength"] = 4
+        dataset = in_memory_dataset([{"text": "ABC"}])
+        dependencies = example_train_dependencies(dataset)
+        base_model = dependencies.fast_language_model.from_pretrained.return_value[0]
+        tokenizer = TextPreprocessingTokenizer(auto_bos=True)
+        dependencies.fast_language_model.from_pretrained.return_value = (
+            base_model,
+            tokenizer,
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "source 'organization/dataset' row 0.*5 tokens.*maxSeqLength 4",
+        ):
+            target_unsloth.train_model(
+                train_config,
+                dependencies=dependencies,
+            )
+
+        dependencies.fast_language_model.get_peft_model.assert_not_called()
+        dependencies.resolve_model_name.assert_not_called()
+        dependencies.model_info.assert_not_called()
+        dataset.projected_dataset.map.assert_not_called()
+        dependencies.sft_trainer.assert_not_called()
+
     def test_rejects_unknown_dataset_type_before_loading_or_model_allocation(self):
         train_config = example_train_config()
         train_config["datasets"][0]["type"] = "other"
@@ -1107,6 +1700,7 @@ class TrainingPhaseTest(unittest.TestCase):
             "prompt": "Question?",
             "completion": " Answer.",
         }
+        valid_text = {"text": "A complete preformatted sequence."}
         cases = (
             (
                 "empty prompt-completion dataset",
@@ -1149,6 +1743,36 @@ class TrainingPhaseTest(unittest.TestCase):
                 "prompt-completion",
                 [valid_prompt_completion, {"prompt": "Question?", "completion": ""}],
                 "completion.*non-empty string",
+            ),
+            (
+                "empty text dataset",
+                "text",
+                [],
+                "text dataset source 'organization/dataset'.*at least one",
+            ),
+            (
+                "missing text column",
+                "text",
+                [{"content": "Not a text field."}],
+                "text dataset source 'organization/dataset'.*text",
+            ),
+            (
+                "null text",
+                "text",
+                [valid_text, {"text": None}],
+                "source 'organization/dataset' row 1.*text.*string",
+            ),
+            (
+                "non-string text",
+                "text",
+                [valid_text, {"text": ["not", "a", "string"]}],
+                "source 'organization/dataset' row 1.*text.*string",
+            ),
+            (
+                "empty text value",
+                "text",
+                [valid_text, {"text": ""}],
+                "source 'organization/dataset' row 1.*text.*non-empty string",
             ),
             (
                 "missing Alpaca column",

@@ -15,6 +15,7 @@ const (
 
 	DatasetAlpaca           = "alpaca"
 	DatasetPromptCompletion = "prompt-completion"
+	DatasetText             = "text"
 
 	APIv1alpha1 = "v1alpha1"
 

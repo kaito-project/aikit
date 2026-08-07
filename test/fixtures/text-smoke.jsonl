@@ -1,0 +1,8 @@
+{"text":"Question: Name one benefit of unit tests.\nAnswer: Unit tests catch regressions early and make code changes safer."}
+{"text":"Rewrite this sentence in a friendly tone:\nSend the report today.\nRewrite: Could you please send the report today? Thank you!"}
+{"text":"Question: What is a container image?\nAnswer: An immutable package containing an application and its dependencies."}
+{"text":"Question: What color is a clear daytime sky?\nAnswer with one word: Blue."}
+{"text":"Summary task:\nBackups help restore data after accidental deletion.\nSummary: Backups enable data recovery."}
+{"text":"Question: What is a safe practice before deleting a generated directory?\nAnswer: Validate the path before running a recursive removal command."}
+{"text":"Convert the phrase to uppercase:\nfast feedback\nUppercase: FAST FEEDBACK"}
+{"text":"Complete the analogy:\nBird is to sky as fish is to water."}

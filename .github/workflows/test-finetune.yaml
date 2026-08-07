@@ -11,6 +11,7 @@ on:
         options:
           - smoke
           - prompt-completion-smoke
+          - text-smoke
           - full
 
 permissions: read-all
@@ -41,6 +42,9 @@ jobs:
               ;;
             prompt-completion-smoke)
               smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/prompt-completion-smoke.jsonl"
+              ;;
+            text-smoke)
+              smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/text-smoke.jsonl"
               ;;
             full) ;;
             *)
@@ -201,6 +205,10 @@ jobs:
             prompt-completion-smoke)
               source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-prompt-completion-smoke.yaml"
               dataset_url="${SMOKE_DATASET_URL:?prompt-completion smoke dataset URL is required}"
+              ;;
+            text-smoke)
+              source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-text-smoke.yaml"
+              dataset_url="${SMOKE_DATASET_URL:?text smoke dataset URL is required}"
               ;;
             full)
               source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth.yaml"

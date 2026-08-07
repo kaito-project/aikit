@@ -440,7 +440,7 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 		if strings.TrimSpace(dataset.Source) == "" {
 			return errors.New("dataset source is not defined")
 		}
-		if dataset.Type != utils.DatasetAlpaca && dataset.Type != utils.DatasetPromptCompletion {
+		if dataset.Type != utils.DatasetAlpaca && dataset.Type != utils.DatasetPromptCompletion && dataset.Type != utils.DatasetText {
 			return errors.Errorf("dataset type %s is not supported", dataset.Type)
 		}
 	}

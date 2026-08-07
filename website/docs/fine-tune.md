@@ -53,7 +53,7 @@ apiVersion: v1alpha1
 baseModel: "unsloth/llama-2-7b-bnb-4bit" # base model to be fine tuned. this can be any model from Huggingface. For unsloth optimized base models, see https://huggingface.co/unsloth
 datasets:
   - source: "yahma/alpaca-cleaned" # data set to be used for fine tuning. This can be a Huggingface dataset or a URL pointing to a JSON or JSON Lines file
-    type: "alpaca" # supported types are alpaca and prompt-completion
+    type: "alpaca" # supported types are alpaca, prompt-completion, and text
 config:
   unsloth:
 ```
@@ -84,6 +84,26 @@ An expected JSON Lines record is:
 {"prompt":"Question: What is a container image?\nAnswer:","completion":" An immutable package containing an application and its dependencies."}
 ```
 
+##### Text
+
+The `text` type accepts complete, preformatted training sequences in a non-empty string `text` column. AIKit preserves the sequence content while normalizing its special-token boundaries: tokenization produces exactly one effective leading BOS where applicable and every record ends with exactly one EOS. Tokenizers that add BOS automatically or do not define BOS are supported, but the tokenizer must define a usable EOS token. Records whose normalized token sequence exceeds `maxSeqLength` are rejected rather than truncated so that their terminal EOS is retained. All tokens in the normalized record are supervised, and packing retains the explicit EOS record boundaries.
+
+```yaml
+datasets:
+  - source: organization/domain-corpus
+    type: text
+```
+
+An expected JSON Lines record is:
+
+```json
+{"text":"Question: What is a container image?\nAnswer: An immutable package containing an application and its dependencies."}
+```
+
+:::caution
+The `text` type performs full-sequence supervised fine-tuning (SFT). It is not continued pretraining: AIKit retains the standard LoRA targets and optimizer configuration and does not train embedding or language-model-head parameters.
+:::
+
 :::note
 Please refer to [Unsloth documentation](https://github.com/unslothai/unsloth) for more information about Unsloth configuration.
 :::
@@ -96,6 +116,7 @@ Please make sure to change syntax to `#syntax=ghcr.io/kaito-project/aikit/aikit:
 
 - [Alpaca](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth.yaml)
 - [Prompt-completion smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-prompt-completion-smoke.yaml)
+- [Text smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-text-smoke.yaml)
 
 
 ## Build

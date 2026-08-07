@@ -305,6 +305,12 @@ func Test_validateFineTuneConfig(t *testing.T) {
 				c.Datasets[0].Type = utils.DatasetPromptCompletion
 			},
 		},
+		{
+			name: "valid text dataset type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetText
+			},
+		},
 		{name: "nil config", nilConfig: true, wantErr: "fine-tune config is not defined"},
 		{
 			name: "missing api version",
@@ -562,23 +568,30 @@ func Test_validateFineTuneConfig(t *testing.T) {
 }
 
 func Test_validateNormalizedFineTuneConfig(t *testing.T) {
-	_, fineTuneConfig, err := config.NewFromBytes([]byte(`
+	datasetTypes := []string{utils.DatasetAlpaca, utils.DatasetPromptCompletion, utils.DatasetText}
+	for _, datasetType := range datasetTypes {
+		t.Run(datasetType, func(t *testing.T) {
+			_, fineTuneConfig, err := config.NewFromBytes([]byte(`
 apiVersion: v1alpha1
 baseModel: unsloth/test-model
 datasets:
   - source: test-dataset
-    type: alpaca
-`))
-	if err != nil {
-		t.Fatalf("config.NewFromBytes() error = %v", err)
-	}
-	if fineTuneConfig == nil {
-		t.Fatal("config.NewFromBytes() returned no fine-tune config")
-	}
-	fineTuneConfig.Target = "unsloth"
+    type: ` + datasetType + "\n"))
+			if err != nil {
+				t.Fatalf("config.NewFromBytes() error = %v", err)
+			}
+			if fineTuneConfig == nil {
+				t.Fatal("config.NewFromBytes() returned no fine-tune config")
+			}
+			fineTuneConfig.Target = utils.TargetUnsloth
 
-	if err := validateFinetuneConfig(fineTuneConfig); err != nil {
-		t.Fatalf("validateFinetuneConfig() error = %v", err)
+			if got := fineTuneConfig.Datasets[0].Type; got != datasetType {
+				t.Fatalf("dataset type = %q, want %q", got, datasetType)
+			}
+			if err := validateFinetuneConfig(fineTuneConfig); err != nil {
+				t.Fatalf("validateFinetuneConfig() error = %v", err)
+			}
+		})
 	}
 }
 

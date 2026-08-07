@@ -23,12 +23,14 @@ ADAPTER_CONFIG_FILENAME = "adapter_config.json"
 HF_COMMIT_HASH_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DATASET_TYPE_ALPACA = "alpaca"
 DATASET_TYPE_PROMPT_COMPLETION = "prompt-completion"
+DATASET_TYPE_TEXT = "text"
 SUPPORTED_DATASET_TYPES = frozenset(
-    (DATASET_TYPE_ALPACA, DATASET_TYPE_PROMPT_COMPLETION)
+    (DATASET_TYPE_ALPACA, DATASET_TYPE_PROMPT_COMPLETION, DATASET_TYPE_TEXT)
 )
 DATASET_REQUIRED_FIELDS = {
     DATASET_TYPE_ALPACA: ("instruction", "input", "output"),
     DATASET_TYPE_PROMPT_COMPLETION: ("prompt", "completion"),
+    DATASET_TYPE_TEXT: ("text",),
 }
 PREPROCESSING_VERIFICATION_PROMPT = "Question: What is 2 + 2?\nAnswer:"
 PREPROCESSING_VERIFICATION_COMPLETION = " 4."
@@ -36,6 +38,10 @@ PROMPT_COMPLETION_VALIDATION_BATCH_SIZE = 128
 # Bound the estimated retained token IDs for the prompt and combined text.
 PROMPT_COMPLETION_VALIDATION_TOKEN_BUDGET = 262_144
 PROMPT_PREFIX_FINGERPRINT_MASK = (1 << 256) - 1
+TEXT_PREPROCESSING_VERIFICATION_TEXTS = (
+    "AIKit text boundary verification one.",
+    "AIKit text boundary verification two.",
+)
 
 # Keep the Alpaca prompt byte-for-byte compatible with existing fine-tuning builds.
 ALPACA_PROMPT = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -69,6 +75,14 @@ class PromptPrefixFingerprint(NamedTuple):
     sequence_count: int
     first_digest_sum: int
     second_digest_sum: int
+
+
+class TextBoundaryPolicy(NamedTuple):
+    eos_token: str
+    eos_token_id: int
+    bos_token: str | None
+    bos_token_id: int | None
+    add_special_tokens: bool
 
 
 class TrainDependencies(NamedTuple):
@@ -245,27 +259,53 @@ def training_dataset_spec(
     return TrainingDatasetSpec(source=source, dataset_type=dataset_type)
 
 
-def validate_training_dataset(dataset: Any, *, dataset_type: str) -> None:
+def dataset_error_subject(
+    dataset_type: str,
+    *,
+    source: str | None = None,
+    record_index: int | None = None,
+) -> str:
+    if source is None:
+        subject = f"{dataset_type} dataset"
+        if record_index is not None:
+            subject += f" record {record_index}"
+        return subject
+
+    subject = f"{dataset_type} dataset source {source!r}"
+    if record_index is not None:
+        subject += f" row {record_index}"
+    return subject
+
+
+def validate_training_dataset(
+    dataset: Any,
+    *,
+    dataset_type: str,
+    source: str | None = None,
+) -> None:
     required_fields = DATASET_REQUIRED_FIELDS[dataset_type]
     record_count = 0
 
     for record_index, record in enumerate(dataset):
         record_count += 1
+        subject = dataset_error_subject(
+            dataset_type,
+            source=source,
+            record_index=record_index,
+        )
         if not isinstance(record, Mapping):
-            raise ValueError(
-                f"{dataset_type} dataset record {record_index} must be a mapping"
-            )
+            raise ValueError(f"{subject} must be a mapping")
 
         for field in required_fields:
             if field not in record:
                 raise ValueError(
-                    f'{dataset_type} dataset record {record_index} is missing required field "{field}"'
+                    f'{subject} is missing required field "{field}"'
                 )
 
             value = record[field]
             if not isinstance(value, str):
                 raise ValueError(
-                    f'{dataset_type} dataset record {record_index} field "{field}" must be a string'
+                    f'{subject} field "{field}" must be a string'
                 )
 
         if (
@@ -275,20 +315,31 @@ def validate_training_dataset(dataset: Any, *, dataset_type: str) -> None:
             raise ValueError(
                 f'{dataset_type} dataset record {record_index} field "completion" must be a non-empty string'
             )
+        if dataset_type == DATASET_TYPE_TEXT and record["text"] == "":
+            raise ValueError(
+                f'{subject} field "text" must be a non-empty string'
+            )
 
     if record_count == 0:
-        raise ValueError(f"{dataset_type} dataset must contain at least one record")
+        subject = dataset_error_subject(dataset_type, source=source)
+        raise ValueError(f"{subject} must contain at least one record")
 
 
-def project_training_dataset(dataset: Any, *, dataset_type: str) -> Any:
+def project_training_dataset(
+    dataset: Any,
+    *,
+    dataset_type: str,
+    source: str | None = None,
+) -> Any:
+    subject = dataset_error_subject(dataset_type, source=source)
     if len(dataset) == 0:
-        raise ValueError(f"{dataset_type} dataset must contain at least one record")
+        raise ValueError(f"{subject} must contain at least one record")
 
     column_names = getattr(dataset, "column_names", None)
     if not isinstance(column_names, Sequence) or isinstance(
         column_names, (str, bytes)
     ):
-        raise ValueError(f"{dataset_type} dataset does not expose its columns")
+        raise ValueError(f"{subject} does not expose its columns")
 
     required_fields = DATASET_REQUIRED_FIELDS[dataset_type]
     missing_fields = [
@@ -297,10 +348,263 @@ def project_training_dataset(dataset: Any, *, dataset_type: str) -> Any:
     if missing_fields:
         quoted_fields = ", ".join(f'"{field}"' for field in missing_fields)
         raise ValueError(
-            f"{dataset_type} dataset is missing required columns: {quoted_fields}"
+            f"{subject} is missing required columns: {quoted_fields}"
         )
 
     return dataset.select_columns(list(required_fields))
+
+
+def text_token_ids(
+    processing_class: Any,
+    text: str,
+    *,
+    add_special_tokens: bool,
+    description: str,
+) -> list[Any]:
+    try:
+        tokenized = processing_class(
+            text,
+            add_special_tokens=add_special_tokens,
+            truncation=False,
+        )
+    except Exception as error:
+        raise RuntimeError(
+            f"text preprocessing could not tokenize {description}"
+        ) from error
+
+    if not isinstance(tokenized, Mapping):
+        raise RuntimeError(
+            f"text preprocessing {description} tokenization must return a mapping"
+        )
+
+    try:
+        input_ids = tokenized["input_ids"]
+    except KeyError as error:
+        raise RuntimeError(
+            f"text preprocessing {description} tokenization did not produce input_ids"
+        ) from error
+
+    to_list = getattr(input_ids, "tolist", None)
+    if callable(to_list):
+        input_ids = to_list()
+    if not isinstance(input_ids, Sequence) or isinstance(input_ids, (str, bytes)):
+        raise RuntimeError(
+            f"text preprocessing {description} token IDs must be a sequence"
+        )
+    if input_ids and isinstance(input_ids[0], Sequence):
+        raise RuntimeError(
+            f"text preprocessing {description} token IDs must be one-dimensional"
+        )
+
+    return list(input_ids)
+
+
+def leading_token_count(input_ids: Sequence[Any], token_id: int) -> int:
+    count = 0
+    for input_id in input_ids:
+        if input_id != token_id:
+            break
+        count += 1
+    return count
+
+
+def trailing_token_count(input_ids: Sequence[Any], token_id: int) -> int:
+    count = 0
+    for input_id in reversed(input_ids):
+        if input_id != token_id:
+            break
+        count += 1
+    return count
+
+
+def normalize_text_value(text: str, *, policy: TextBoundaryPolicy) -> str:
+    normalized = text
+    if policy.bos_token is not None:
+        while normalized.startswith(policy.bos_token):
+            normalized = normalized[len(policy.bos_token) :]
+
+    while normalized.endswith(policy.eos_token):
+        normalized = normalized[: -len(policy.eos_token)]
+
+    if policy.bos_token is not None and not policy.add_special_tokens:
+        normalized = policy.bos_token + normalized
+
+    return normalized + policy.eos_token
+
+
+def normalize_text_examples(
+    examples: Mapping[str, Sequence[str]],
+    *,
+    policy: TextBoundaryPolicy,
+) -> dict[str, list[str]]:
+    return {
+        "text": [
+            normalize_text_value(text, policy=policy) for text in examples["text"]
+        ]
+    }
+
+
+def text_preprocessing_verification_sources(
+    policy: TextBoundaryPolicy,
+) -> list[str]:
+    sources = list(TEXT_PREPROCESSING_VERIFICATION_TEXTS)
+    sources[0] += policy.eos_token * 2
+    if policy.bos_token is not None:
+        sources[0] = policy.bos_token * 2 + sources[0]
+    return sources
+
+
+def text_boundary_policy(processing_class: Any) -> TextBoundaryPolicy:
+    eos_token = getattr(processing_class, "eos_token", None)
+    eos_token_id = getattr(processing_class, "eos_token_id", None)
+    if not isinstance(eos_token, str) or not eos_token:
+        raise RuntimeError(
+            "text preprocessing requires a non-empty tokenizer EOS token"
+        )
+    if not isinstance(eos_token_id, int) or isinstance(eos_token_id, bool):
+        raise RuntimeError(
+            "text preprocessing requires an integer tokenizer EOS token ID"
+        )
+    if text_token_ids(
+        processing_class,
+        eos_token,
+        add_special_tokens=False,
+        description="EOS token",
+    ) != [eos_token_id]:
+        raise RuntimeError(
+            "text preprocessing tokenizer EOS token does not encode to its EOS token ID"
+        )
+
+    bos_token = getattr(processing_class, "bos_token", None)
+    bos_token_id = getattr(processing_class, "bos_token_id", None)
+    if bos_token is None and bos_token_id is None:
+        bos_token = None
+        bos_token_id = None
+        tokenizer_adds_bos = False
+    else:
+        if not isinstance(bos_token, str) or not bos_token:
+            raise RuntimeError(
+                "text preprocessing tokenizer BOS token must be a non-empty string or absent"
+            )
+        if not isinstance(bos_token_id, int) or isinstance(bos_token_id, bool):
+            raise RuntimeError(
+                "text preprocessing tokenizer BOS token ID must be an integer or absent"
+            )
+        if text_token_ids(
+            processing_class,
+            bos_token,
+            add_special_tokens=False,
+            description="BOS token",
+        ) != [bos_token_id]:
+            raise RuntimeError(
+                "text preprocessing tokenizer BOS token does not encode to its BOS token ID"
+            )
+
+        auto_bos_results = []
+        for index, probe_text in enumerate(TEXT_PREPROCESSING_VERIFICATION_TEXTS):
+            without_special_tokens = text_token_ids(
+                processing_class,
+                probe_text,
+                add_special_tokens=False,
+                description=f"BOS probe {index} without special tokens",
+            )
+            with_special_tokens = text_token_ids(
+                processing_class,
+                probe_text,
+                add_special_tokens=True,
+                description=f"BOS probe {index} with special tokens",
+            )
+            auto_bos_results.append(
+                leading_token_count(with_special_tokens, bos_token_id)
+                > leading_token_count(without_special_tokens, bos_token_id)
+            )
+        if len(set(auto_bos_results)) != 1:
+            raise RuntimeError(
+                "text preprocessing tokenizer BOS behavior is inconsistent"
+            )
+        tokenizer_adds_bos = auto_bos_results[0]
+
+    chat_template = getattr(processing_class, "chat_template", "") or ""
+    template_suppresses_special_tokens = (
+        bos_token is not None
+        and isinstance(chat_template, str)
+        and bos_token in chat_template
+    )
+    # Locked Unsloth-Zoo chooses one add_special_tokens value for the entire
+    # dataset from its first row and chat template. Use one representation for
+    # every row so that global choice cannot add or omit a BOS in mixed data.
+    add_special_tokens = bos_token is None or (
+        tokenizer_adds_bos and not template_suppresses_special_tokens
+    )
+    policy = TextBoundaryPolicy(
+        eos_token=eos_token,
+        eos_token_id=eos_token_id,
+        bos_token=bos_token,
+        bos_token_id=bos_token_id,
+        add_special_tokens=add_special_tokens,
+    )
+
+    for index, probe_text in enumerate(TEXT_PREPROCESSING_VERIFICATION_TEXTS):
+        normalized = normalize_text_value(probe_text, policy=policy)
+        input_ids = text_token_ids(
+            processing_class,
+            normalized,
+            add_special_tokens=policy.add_special_tokens,
+            description=f"normalized boundary probe {index}",
+        )
+        if trailing_token_count(input_ids, eos_token_id) != 1:
+            raise RuntimeError(
+                "text preprocessing must produce exactly one terminal tokenizer EOS token"
+            )
+        if bos_token_id is not None and leading_token_count(
+            input_ids, bos_token_id
+        ) != 1:
+            raise RuntimeError(
+                "text preprocessing must produce exactly one leading tokenizer BOS token"
+            )
+
+    return policy
+
+
+def validate_text_sequence_lengths(
+    dataset: Any,
+    *,
+    processing_class: Any,
+    policy: TextBoundaryPolicy,
+    max_seq_length: int,
+    source: str,
+) -> None:
+    for record_index, record in enumerate(dataset):
+        subject = dataset_error_subject(
+            DATASET_TYPE_TEXT,
+            source=source,
+            record_index=record_index,
+        )
+        normalized = normalize_text_value(record["text"], policy=policy)
+        input_ids = text_token_ids(
+            processing_class,
+            normalized,
+            add_special_tokens=policy.add_special_tokens,
+            description=subject,
+        )
+        if len(input_ids) > max_seq_length:
+            raise ValueError(
+                f"{subject} produces {len(input_ids)} tokens after boundary "
+                f"normalization, exceeding maxSeqLength {max_seq_length}; "
+                "truncation would remove the terminal EOS"
+            )
+        if trailing_token_count(input_ids, policy.eos_token_id) != 1:
+            raise ValueError(
+                f"{subject} must have exactly one terminal tokenizer EOS token "
+                "after normalization"
+            )
+        if policy.bos_token_id is not None and leading_token_count(
+            input_ids, policy.bos_token_id
+        ) != 1:
+            raise ValueError(
+                f"{subject} must have exactly one leading tokenizer BOS token "
+                "after normalization"
+            )
 
 
 def prepare_training_dataset(
@@ -308,6 +612,7 @@ def prepare_training_dataset(
     *,
     dataset_type: str,
     end_of_sequence: str,
+    text_policy: TextBoundaryPolicy | None = None,
 ) -> Any:
     if dataset_type == DATASET_TYPE_ALPACA:
         return dataset.map(
@@ -316,30 +621,55 @@ def prepare_training_dataset(
         )
     if dataset_type == DATASET_TYPE_PROMPT_COMPLETION:
         return dataset
+    if dataset_type == DATASET_TYPE_TEXT:
+        if text_policy is None:
+            raise RuntimeError("text preprocessing requires a boundary policy")
+        return dataset.map(
+            partial(normalize_text_examples, policy=text_policy),
+            batched=True,
+        )
 
     raise ValueError(f"unsupported dataset type {dataset_type!r}")
 
 
-def sequence_values(value: Any, *, description: str) -> list[Any]:
+def sequence_values(
+    value: Any,
+    *,
+    description: str,
+    preprocessing: str = "prompt-completion",
+) -> list[Any]:
     to_list = getattr(value, "tolist", None)
     if callable(to_list):
         value = to_list()
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         raise RuntimeError(
-            f"prompt-completion preprocessing {description} must be a sequence"
+            f"{preprocessing} preprocessing {description} must be a sequence"
         )
 
     return list(value)
 
 
-def single_batch_row(value: Any, *, description: str) -> list[Any]:
-    rows = sequence_values(value, description=description)
+def single_batch_row(
+    value: Any,
+    *,
+    description: str,
+    preprocessing: str = "prompt-completion",
+) -> list[Any]:
+    rows = sequence_values(
+        value,
+        description=description,
+        preprocessing=preprocessing,
+    )
     if len(rows) != 1:
         raise RuntimeError(
-            f"prompt-completion preprocessing {description} must contain one row"
+            f"{preprocessing} preprocessing {description} must contain one row"
         )
 
-    return sequence_values(rows[0], description=f"{description} row")
+    return sequence_values(
+        rows[0],
+        description=f"{description} row",
+        preprocessing=preprocessing,
+    )
 
 
 def tokenize_verification_text(
@@ -851,6 +1181,201 @@ def validate_prepared_prompt_completion_dataset(
         )
 
 
+def text_preprocessing_segments(
+    prepared_record: Mapping[str, Any],
+    *,
+    packing: bool,
+) -> tuple[list[Any], list[list[Any]]]:
+    try:
+        input_ids = sequence_values(
+            prepared_record["input_ids"],
+            description="input_ids",
+            preprocessing="text",
+        )
+    except KeyError as error:
+        raise RuntimeError(
+            "text preprocessing did not produce input_ids"
+        ) from error
+
+    if not packing:
+        return input_ids, [input_ids]
+
+    try:
+        sequence_lengths = sequence_values(
+            prepared_record["seq_lengths"],
+            description="seq_lengths",
+            preprocessing="text",
+        )
+    except KeyError as error:
+        raise RuntimeError(
+            "text preprocessing packing did not preserve sequence lengths"
+        ) from error
+    if (
+        not sequence_lengths
+        or any(
+            not isinstance(length, int)
+            or isinstance(length, bool)
+            or length <= 0
+            for length in sequence_lengths
+        )
+        or sum(sequence_lengths) != len(input_ids)
+    ):
+        raise RuntimeError(
+            "text preprocessing packed sequence lengths do not match input_ids"
+        )
+
+    segments = []
+    offset = 0
+    for sequence_length in sequence_lengths:
+        segments.append(input_ids[offset : offset + sequence_length])
+        offset += sequence_length
+    return input_ids, segments
+
+
+def verify_text_preprocessing(
+    trainer: Any,
+    *,
+    dataset_from_dict: Callable[..., Any],
+    processing_class: Any,
+    policy: TextBoundaryPolicy,
+) -> None:
+    """Verify the active Unsloth/TRL full-sequence text contract."""
+    normalized_texts = [
+        normalize_text_value(text, policy=policy)
+        for text in text_preprocessing_verification_sources(policy)
+    ]
+    expected_segments = [
+        text_token_ids(
+            processing_class,
+            text,
+            add_special_tokens=policy.add_special_tokens,
+            description=f"verification row {index}",
+        )
+        for index, text in enumerate(normalized_texts)
+    ]
+    if any(not input_ids for input_ids in expected_segments):
+        raise RuntimeError(
+            "text preprocessing verification text must produce tokens"
+        )
+
+    packing = bool(getattr(trainer.args, "packing", False))
+    verification_args = copy.copy(trainer.args)
+    verification_args.max_length = sum(map(len, expected_segments))
+    verification_args.dataset_num_proc = 1
+    verification_dataset = dataset_from_dict({"text": normalized_texts})
+    prepared_dataset = trainer._prepare_dataset(
+        verification_dataset,
+        processing_class,
+        verification_args,
+        packing,
+        None,
+        "text verification",
+    )
+
+    prepared_records = list(prepared_dataset)
+    if not prepared_records:
+        raise RuntimeError("text preprocessing produced no verification records")
+
+    actual_segments = []
+    record_details = []
+    for prepared_record in prepared_records:
+        if not isinstance(prepared_record, Mapping):
+            raise RuntimeError(
+                "text preprocessing must produce mapping records"
+            )
+        input_ids, segments = text_preprocessing_segments(
+            prepared_record,
+            packing=packing,
+        )
+        actual_segments.extend(segments)
+        record_details.append((prepared_record, input_ids, segments))
+
+    for segment in actual_segments:
+        if trailing_token_count(segment, policy.eos_token_id) != 1:
+            raise RuntimeError(
+                "text preprocessing must retain exactly one terminal EOS per record"
+            )
+        if policy.bos_token_id is not None and leading_token_count(
+            segment, policy.bos_token_id
+        ) != 1:
+            raise RuntimeError(
+                "text preprocessing must retain exactly one leading BOS per record"
+            )
+
+    unmatched_expected = [list(segment) for segment in expected_segments]
+    for segment in actual_segments:
+        try:
+            unmatched_expected.remove(segment)
+        except ValueError as error:
+            raise RuntimeError(
+                "text preprocessing changed a normalized token sequence"
+            ) from error
+    if unmatched_expected:
+        raise RuntimeError(
+            "text preprocessing omitted a normalized token sequence"
+        )
+
+    for prepared_record, input_ids, segments in record_details:
+        collated = trainer.data_collator([prepared_record])
+        if not isinstance(collated, Mapping):
+            raise RuntimeError(
+                "text preprocessing data collator must return a mapping"
+            )
+        try:
+            collated_input_ids = single_batch_row(
+                collated["input_ids"],
+                description="collated input_ids",
+                preprocessing="text",
+            )
+            labels = single_batch_row(
+                collated["labels"],
+                description="collated labels",
+                preprocessing="text",
+            )
+        except KeyError as error:
+            raise RuntimeError(
+                f"text preprocessing data collator did not produce {error.args[0]}"
+            ) from error
+
+        if collated_input_ids[: len(input_ids)] != input_ids:
+            raise RuntimeError(
+                "text preprocessing data collator changed the token sequence"
+            )
+        if len(labels) < len(input_ids):
+            raise RuntimeError(
+                "text preprocessing labels are shorter than input_ids"
+            )
+
+        sequence_starts = set()
+        sequence_ends = set()
+        offset = 0
+        for segment in segments:
+            sequence_starts.add(offset)
+            offset += len(segment)
+            sequence_ends.add(offset - 1)
+
+        allow_sequence_start_masking = packing or bool(
+            getattr(trainer.args, "padding_free", False)
+        )
+        for index, input_id in enumerate(input_ids):
+            if labels[index] == input_id:
+                continue
+            if (
+                allow_sequence_start_masking
+                and index in sequence_starts
+                and labels[index] == -100
+            ):
+                continue
+            raise RuntimeError(
+                "text preprocessing must use full-sequence labels"
+            )
+        for sequence_end in sequence_ends:
+            if labels[sequence_end] != policy.eos_token_id:
+                raise RuntimeError(
+                    "text preprocessing EOS tokens must be supervised"
+                )
+
+
 def format_alpaca_examples(
     examples: Mapping[str, Sequence[str]],
     *,
@@ -942,11 +1467,21 @@ def train_model(
 
     load_spec = dataset_load_spec(dataset_spec.source)
     dataset = dependencies.load_dataset(load_spec.path, **load_spec.kwargs)
+    validation_source = (
+        dataset_spec.source
+        if dataset_spec.dataset_type == DATASET_TYPE_TEXT
+        else None
+    )
     dataset = project_training_dataset(
         dataset,
         dataset_type=dataset_spec.dataset_type,
+        source=validation_source,
     )
-    validate_training_dataset(dataset, dataset_type=dataset_spec.dataset_type)
+    validate_training_dataset(
+        dataset,
+        dataset_type=dataset_spec.dataset_type,
+        source=validation_source,
+    )
 
     model, tokenizer = dependencies.fast_language_model.from_pretrained(
         model_name=train_config["baseModel"],
@@ -960,6 +1495,17 @@ def train_model(
             dataset,
             processing_class=tokenizer,
             max_seq_length=max_seq_length,
+        )
+
+    text_policy = None
+    if dataset_spec.dataset_type == DATASET_TYPE_TEXT:
+        text_policy = text_boundary_policy(tokenizer)
+        validate_text_sequence_lengths(
+            dataset,
+            processing_class=tokenizer,
+            policy=text_policy,
+            max_seq_length=max_seq_length,
+            source=dataset_spec.source,
         )
     base_model_name, base_model_revision = resolve_export_base_model(
         train_config["baseModel"],
@@ -999,6 +1545,7 @@ def train_model(
         dataset,
         dataset_type=dataset_spec.dataset_type,
         end_of_sequence=tokenizer.eos_token,
+        text_policy=text_policy,
     )
     bfloat16_supported = dependencies.is_bfloat16_supported()
 
@@ -1047,6 +1594,14 @@ def train_model(
             packing=bool(getattr(trainer.args, "packing", False)),
             packing_strategy=getattr(trainer.args, "packing_strategy", "bfd"),
             expected_prompt_prefix_fingerprint=prompt_prefix_fingerprint,
+        )
+
+    if dataset_spec.dataset_type == DATASET_TYPE_TEXT:
+        verify_text_preprocessing(
+            trainer,
+            dataset_from_dict=dependencies.dataset_from_dict,
+            processing_class=tokenizer,
+            policy=text_policy,
         )
     trainer.train()
 
