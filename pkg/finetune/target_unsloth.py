@@ -29,6 +29,9 @@ TRAINED_MODEL_DIRECTORY = Path("/aikit-trained-model")
 EXPORT_DIRECTORY = Path("/aikit-unsloth-export")
 ARTIFACT_DIRECTORY = Path("/model")
 ADAPTER_CONFIG_FILENAME = "adapter_config.json"
+ADAPTER_WEIGHTS_FILENAME = "adapter_model.safetensors"
+DEFAULT_ADAPTER_NAME = "default"
+TOKENIZER_CONFIG_FILENAME = "tokenizer_config.json"
 HF_COMMIT_HASH_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DATASET_CHECKSUM_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 DATASET_SPLIT_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$")
@@ -447,21 +450,38 @@ def require_hf_commit_hash(revision: Any, *, description: str) -> str:
     return revision
 
 
+def resolve_model_snapshot(
+    configured_model_name: str,
+    *,
+    load_in_4bit: bool,
+    description: str,
+    model_info: Callable[..., Any],
+    resolve_model_name: Callable[..., str],
+) -> tuple[str, str]:
+    resolved_model_name = resolve_model_name(
+        configured_model_name,
+        load_in_4bit=load_in_4bit,
+    )
+    revision = getattr(model_info(repo_id=resolved_model_name), "sha", None)
+
+    return resolved_model_name, require_hf_commit_hash(
+        revision,
+        description=description,
+    )
+
+
 def resolve_export_base_model(
     configured_model_name: str,
     *,
     model_info: Callable[..., Any],
     resolve_model_name: Callable[..., str],
 ) -> tuple[str, str]:
-    base_model_name = resolve_model_name(
+    return resolve_model_snapshot(
         configured_model_name,
         load_in_4bit=False,
-    )
-    revision = getattr(model_info(repo_id=base_model_name), "sha", None)
-
-    return base_model_name, require_hf_commit_hash(
-        revision,
         description="resolved export base model revision",
+        model_info=model_info,
+        resolve_model_name=resolve_model_name,
     )
 
 
@@ -478,6 +498,104 @@ def pin_peft_base_model(
     for peft_config in peft_configs.values():
         peft_config.base_model_name_or_path = base_model_name
         peft_config.revision = revision
+
+
+def validate_adapter_save_contract(model: Any) -> None:
+    peft_configs = getattr(model, "peft_config", None)
+    if not isinstance(peft_configs, Mapping) or set(peft_configs) != {
+        DEFAULT_ADAPTER_NAME
+    }:
+        raise RuntimeError(
+            "trained model must expose exactly one PEFT adapter named default"
+        )
+
+    peft_config = peft_configs[DEFAULT_ADAPTER_NAME]
+    for field in ("modules_to_save", "trainable_token_indices"):
+        if getattr(peft_config, field, None):
+            raise RuntimeError(
+                f"trained adapter uses unsupported PEFT {field} state"
+            )
+    if getattr(model, "_need_to_train_embeddings", False) is True:
+        raise RuntimeError(
+            "trained adapter unexpectedly requires embedding layers"
+        )
+
+
+def validate_portable_adapter_bundle(
+    trained_model_directory: Path | str,
+) -> None:
+    trained_model_path = Path(trained_model_directory)
+    required_files = (
+        ADAPTER_CONFIG_FILENAME,
+        ADAPTER_WEIGHTS_FILENAME,
+        TOKENIZER_CONFIG_FILENAME,
+    )
+    for filename in required_files:
+        artifact_path = trained_model_path / filename
+        if (
+            not artifact_path.is_file()
+            or artifact_path.is_symlink()
+            or artifact_path.stat().st_size == 0
+        ):
+            raise RuntimeError(
+                f"saved adapter is missing a non-empty {filename}"
+            )
+
+    for artifact_path in trained_model_path.rglob("*"):
+        if artifact_path.is_symlink():
+            raise RuntimeError(
+                f"saved adapter contains a symbolic link: {artifact_path}"
+            )
+
+        relative_path = artifact_path.relative_to(trained_model_path)
+        if artifact_path.is_dir():
+            continue
+        if not artifact_path.is_file():
+            raise RuntimeError(
+                f"saved adapter contains a special file: {relative_path}"
+            )
+        filename = artifact_path.name
+        if (
+            filename == "adapter_model.bin"
+            or filename == "config.json"
+            or filename.endswith(".gguf")
+            or filename.startswith("pytorch_model")
+            or (
+                filename.startswith("model")
+                and filename.endswith(".safetensors")
+            )
+            or (
+                filename == ADAPTER_CONFIG_FILENAME
+                and relative_path.parent != Path(".")
+            )
+        ):
+            raise RuntimeError(
+                f"saved adapter contains unsupported artifact: {relative_path}"
+            )
+
+    adapter_config = dict(
+        load_config(
+            trained_model_path / ADAPTER_CONFIG_FILENAME,
+            loader=json.loads,
+        )
+    )
+    if str(adapter_config.get("peft_type", "")).upper() != "LORA":
+        raise RuntimeError("saved adapter is not a PEFT LoRA adapter")
+
+    base_model = adapter_config.get("base_model_name_or_path")
+    if not isinstance(base_model, str) or not base_model.strip():
+        raise RuntimeError("saved adapter does not identify its base model")
+    if (
+        Path(base_model).is_absolute()
+        or base_model.startswith((".", "~"))
+        or "\\" in base_model
+    ):
+        raise RuntimeError("saved adapter base model must be a portable Hub ID")
+
+    require_hf_commit_hash(
+        adapter_config.get("revision"),
+        description="saved adapter base model revision",
+    )
 
 
 def pin_adapter_base_model_snapshot(
@@ -4460,8 +4578,15 @@ def save_trained_model(
 ) -> Path:
     trained_model_path = Path(trained_model_directory)
     trained_model_path.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(trained_model_path)
+    validate_adapter_save_contract(model)
+    model.save_pretrained(
+        trained_model_path,
+        safe_serialization=True,
+        selected_adapters=[DEFAULT_ADAPTER_NAME],
+        save_embedding_layers=False,
+    )
     tokenizer.save_pretrained(trained_model_path)
+    validate_portable_adapter_bundle(trained_model_path)
     return trained_model_path
 
 
@@ -4553,11 +4678,20 @@ def train_model(
                 )
             source_datasets.append(source_dataset)
 
+    training_model_name, training_model_revision = resolve_model_snapshot(
+        train_config["baseModel"],
+        load_in_4bit=cfg["loadIn4bit"],
+        description="resolved training model revision",
+        model_info=dependencies.model_info,
+        resolve_model_name=dependencies.resolve_model_name,
+    )
     model, tokenizer = dependencies.fast_language_model.from_pretrained(
-        model_name=train_config["baseModel"],
+        model_name=training_model_name,
         max_seq_length=max_seq_length,
         dtype=None,
         load_in_4bit=cfg["loadIn4bit"],
+        revision=training_model_revision,
+        use_exact_model_name=True,
     )
 
     dataset = None
@@ -4972,23 +5106,27 @@ def export_model(
     trained_model_path = Path(trained_model_directory)
     export_path = Path(export_directory)
 
-    pin_adapter_base_model_snapshot(
-        trained_model_path,
-        snapshot_download=dependencies.snapshot_download,
-    )
+    validate_portable_adapter_bundle(trained_model_path)
+    with tempfile.TemporaryDirectory(prefix="aikit-gguf-adapter-") as temp_dir:
+        export_adapter_path = Path(temp_dir) / "adapter"
+        shutil.copytree(trained_model_path, export_adapter_path)
+        pin_adapter_base_model_snapshot(
+            export_adapter_path,
+            snapshot_download=dependencies.snapshot_download,
+        )
 
-    model, tokenizer = dependencies.fast_language_model.from_pretrained(
-        model_name=str(trained_model_path),
-        max_seq_length=cfg["maxSeqLength"],
-        dtype=None,
-        load_in_4bit=cfg["loadIn4bit"],
-        local_files_only=True,
-    )
-    export_result = model.save_pretrained_gguf(
-        export_path,
-        tokenizer,
-        quantization_method=output_config(export_config)["quantize"],
-    )
+        model, tokenizer = dependencies.fast_language_model.from_pretrained(
+            model_name=str(export_adapter_path),
+            max_seq_length=cfg["maxSeqLength"],
+            dtype=None,
+            load_in_4bit=cfg["loadIn4bit"],
+            local_files_only=True,
+        )
+        export_result = model.save_pretrained_gguf(
+            export_path,
+            tokenizer,
+            quantization_method=output_config(export_config)["quantize"],
+        )
     gguf_file = validate_gguf_result(export_result)
     staged_file = stage_gguf_artifact(gguf_file, artifact_directory)
     cleanup_gguf_export(export_path)

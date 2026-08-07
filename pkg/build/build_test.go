@@ -18,6 +18,7 @@ const (
 	testURLFragment           = "fragment"
 	testURLToken              = "token"
 	testURLValue              = "value"
+	adapterQuantizeError      = "output.quantize cannot be configured when output.format is adapter"
 )
 
 func Test_validateConfig(t *testing.T) {
@@ -693,6 +694,27 @@ func Test_validateFineTuneConfig(t *testing.T) {
 			wantErr: "config.unsloth.seed must be zero or greater",
 		},
 		{
+			name: "missing output format",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Output.Format = ""
+			},
+			wantErr: "output.format is not defined",
+		},
+		{
+			name: "whitespace output format",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Output.Format = " \t"
+			},
+			wantErr: "output.format is not defined",
+		},
+		{
+			name: "unsupported output format",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Output.Format = "safetensors"
+			},
+			wantErr: `output.format "safetensors" is not supported`,
+		},
+		{
 			name: "missing quantization",
 			mutate: func(c *config.FineTuneConfig) {
 				c.Output.Quantize = ""
@@ -749,11 +771,18 @@ func Test_validateFineTuneConfig(t *testing.T) {
 			wantErr: invalidOutputNameError,
 		},
 		{
-			name: "valid explicit zero values and uppercase quantization",
+			name: "valid adapter output",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Output.Format = config.FineTuneOutputFormatAdapter
+			},
+		},
+		{
+			name: "valid explicit zero values and uppercase output settings",
 			mutate: func(c *config.FineTuneConfig) {
 				c.Config.Unsloth.WarmupSteps = 0
 				c.Config.Unsloth.WeightDecay = 0
 				c.Config.Unsloth.Seed = 0
+				c.Output.Format = "GGUF"
 				c.Output.Quantize = "Q4_K_M"
 				c.Output.Name = "model.v1-test_2"
 			},
@@ -1082,6 +1111,7 @@ config:
 
 func Test_validateFineTuneConfigNormalizesQuantization(t *testing.T) {
 	config := validFineTuneConfig()
+	config.Output.Format = "GGUF"
 	config.Output.Quantize = "Q4_K_M"
 
 	if err := validateFinetuneConfig(config); err != nil {
@@ -1089,6 +1119,54 @@ func Test_validateFineTuneConfigNormalizesQuantization(t *testing.T) {
 	}
 	if config.Output.Quantize != "q4_k_m" {
 		t.Fatalf("normalized quantization = %q, want q4_k_m", config.Output.Quantize)
+	}
+	if config.Output.Format != "gguf" {
+		t.Fatalf("normalized output format = %q, want gguf", config.Output.Format)
+	}
+}
+
+func Test_validateFineTuneAdapterRejectsExplicitQuantize(t *testing.T) {
+	tests := []struct {
+		name     string
+		quantize string
+		wantErr  string
+	}{
+		{name: "omitted"},
+		{name: "value", quantize: "  quantize: q4_k_m\n", wantErr: adapterQuantizeError},
+		{name: "empty", quantize: "  quantize: \"\"\n", wantErr: adapterQuantizeError},
+		{name: "null", quantize: "  quantize: null\n", wantErr: adapterQuantizeError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := "apiVersion: v1alpha1\n" +
+				"baseModel: test-model\n" +
+				"datasets:\n" +
+				"  - source: test-dataset\n" +
+				"    type: alpaca\n" +
+				"output:\n" +
+				"  format: ADAPTER\n" +
+				tt.quantize
+			_, fineTuneConfig, err := config.NewFromBytes([]byte(input))
+			if err != nil {
+				t.Fatalf("config.NewFromBytes() error = %v", err)
+			}
+			fineTuneConfig.Target = utils.TargetUnsloth
+
+			err = validateFinetuneConfig(fineTuneConfig)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateFinetuneConfig() error = %v", err)
+				}
+				if fineTuneConfig.Output.Format != config.FineTuneOutputFormatAdapter {
+					t.Fatalf("normalized output format = %q, want adapter", fineTuneConfig.Output.Format)
+				}
+				return
+			}
+			if err == nil || err.Error() != tt.wantErr {
+				t.Fatalf("validateFinetuneConfig() error = %v, want %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -1193,6 +1271,7 @@ func validFineTuneConfig() *config.FineTuneConfig {
 			},
 		},
 		Output: config.FineTuneOutputSpec{
+			Format:   config.FineTuneOutputFormatGGUF,
 			Quantize: "q4_k_m",
 			Name:     "aikit-model",
 		},

@@ -161,6 +161,49 @@ func TestAikit2LLBSeparatesTrainingAndExportPhases(t *testing.T) {
 	}
 }
 
+func TestAikit2LLBAdapterOutputCopiesTrainedBundleWithoutExport(t *testing.T) {
+	cfg := fineTuneTestConfig()
+	cfg.Output.Format = config.FineTuneOutputFormatAdapter
+	cfg.Output.Name = "trained-adapter"
+
+	ops := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, cfg))
+	findFineTuneExec(t, ops, "target_unsloth.py train")
+	adapterCopy := findFineTuneAdapterCopy(t, ops)
+	if got := strings.Trim(adapterCopy.Src, "/"); got != "aikit-trained-model" {
+		t.Errorf("adapter copy source = %q, want aikit-trained-model", got)
+	}
+	if got := strings.Trim(adapterCopy.Dest, "/"); got != cfg.Output.Name {
+		t.Errorf("adapter copy destination = %q, want %q", got, cfg.Output.Name)
+	}
+	if !adapterCopy.DirCopyContents || !adapterCopy.CreateDestPath {
+		t.Errorf("adapter copy = dir contents %t create destination %t, want both true", adapterCopy.DirCopyContents, adapterCopy.CreateDestPath)
+	}
+
+	for _, graphOp := range ops {
+		if execOp := graphOp.op.GetExec(); execOp != nil {
+			command := strings.Join(execOp.Meta.Args, "\x00")
+			if strings.Contains(command, "target_unsloth.py export") {
+				t.Fatalf("adapter output contains export operation: %q", command)
+			}
+			for _, mount := range execOp.Mounts {
+				if mount.CacheOpt != nil && mount.CacheOpt.ID == llamaCacheID {
+					t.Fatalf("adapter output contains llama export cache mount on %q", mount.Dest)
+				}
+			}
+		}
+		if fileOp := graphOp.op.GetFile(); fileOp != nil {
+			for _, action := range fileOp.Actions {
+				if mkfile := action.GetMkfile(); mkfile != nil && mkfile.Path == "/export-config.yaml" {
+					t.Fatal("adapter output contains export configuration")
+				}
+				if copyAction := action.GetCopy(); copyAction != nil && strings.HasSuffix(copyAction.Src, "*.gguf") {
+					t.Fatalf("adapter output contains GGUF copy from %q", copyAction.Src)
+				}
+			}
+		}
+	}
+}
+
 func TestAikit2LLBPropagatesDatasetType(t *testing.T) {
 	datasetTypes := []string{utils.DatasetMessages, utils.DatasetPromptCompletion, utils.DatasetShareGPT, utils.DatasetText}
 	for _, datasetType := range datasetTypes {
@@ -309,6 +352,31 @@ func TestAikit2LLBCacheBoundaries(t *testing.T) {
 	}
 	if got := findFineTuneExec(t, trainingOps, "target_unsloth.py export").digest; got == baseExport.digest {
 		t.Fatalf("training config change did not invalidate export: %s", got)
+	}
+}
+
+func TestAikit2LLBAdapterOutputDoesNotInvalidateTraining(t *testing.T) {
+	gguf := fineTuneTestConfig()
+	gguf.Output.Format = config.FineTuneOutputFormatGGUF
+	ggufOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, gguf))
+	ggufTraining := findFineTuneExec(t, ggufOps, "target_unsloth.py train")
+
+	adapter := *gguf
+	adapter.Output.Format = config.FineTuneOutputFormatAdapter
+	adapterOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, &adapter))
+	adapterTraining := findFineTuneExec(t, adapterOps, "target_unsloth.py train")
+	if adapterTraining.digest != ggufTraining.digest {
+		t.Fatalf("output format change invalidated training: got %s, want %s", adapterTraining.digest, ggufTraining.digest)
+	}
+
+	renamed := adapter
+	renamed.Output.Name = "renamed-adapter"
+	renamedOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, &renamed))
+	if got := findFineTuneExec(t, renamedOps, "target_unsloth.py train").digest; got != adapterTraining.digest {
+		t.Fatalf("adapter output name change invalidated training: got %s, want %s", got, adapterTraining.digest)
+	}
+	if got := strings.Trim(findFineTuneAdapterCopy(t, renamedOps).Dest, "/"); got != renamed.Output.Name {
+		t.Fatalf("renamed adapter destination = %q, want %q", got, renamed.Output.Name)
 	}
 }
 
@@ -676,6 +744,22 @@ func findFineTuneGGUFCopy(t *testing.T, ops []fineTuneDefinitionOp) *pb.FileActi
 		}
 	}
 	t.Fatal("GGUF copy action not found")
+	return nil
+}
+
+func findFineTuneAdapterCopy(t *testing.T, ops []fineTuneDefinitionOp) *pb.FileActionCopy {
+	t.Helper()
+
+	for _, graphOp := range ops {
+		if fileOp := graphOp.op.GetFile(); fileOp != nil {
+			for _, action := range fileOp.Actions {
+				if copyAction := action.GetCopy(); copyAction != nil && strings.Trim(copyAction.Src, "/") == "aikit-trained-model" {
+					return copyAction
+				}
+			}
+		}
+	}
+	t.Fatal("adapter copy action not found")
 	return nil
 }
 
