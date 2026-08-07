@@ -117,6 +117,8 @@ AIKit loads entries sequentially in YAML order, validates and normalizes every s
 
 The locked Unsloth SFT path derives one rendered-text `add_special_tokens` value from the first canonical record. Before concatenation, AIKit compares every full-sequence record's token IDs under that dataset-wide value with its token IDs under the source-specific value. A mix in which one source already renders BOS and another relies on tokenizer-added BOS is rejected with the failing `datasets[n]` index when the values change the effective tokens; otherwise dataset order could duplicate BOS on one source or omit it from another. No-op setting differences remain valid, and reordering cannot bypass a real boundary mismatch.
 
+For multiple `prompt-completion` entries, AIKit also compares each source's effective token IDs and completion mask under its source-specific `add_special_tokens` value with the dataset-wide value selected from the first source. A mismatch that changes retained tokens or the prompt/completion boundary is rejected before concatenation; no-op value differences remain valid.
+
 The following SFT configuration combines two full-sequence schemas with independent pinned loaders:
 
 ```yaml

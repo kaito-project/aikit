@@ -137,6 +137,8 @@ AIKit loads sources sequentially in YAML order, validates every source as nonemp
 
 The locked Unsloth trainer selects one rendered-text `add_special_tokens` setting from the first canonical record. AIKit verifies that every record in a combined full-sequence job produces the same token IDs under that dataset-wide setting as it would under its source-specific setting. If, for example, rendered chat records already contain BOS while Alpaca records rely on the tokenizer to add BOS, AIKit rejects the mix with the failing `datasets[n]` index instead of allowing dataset order to duplicate or omit BOS tokens. A setting difference that does not change token IDs remains valid; reordering sources cannot bypass a real boundary mismatch.
 
+Multiple `prompt-completion` sources receive the same protection. AIKit compares the effective token IDs and completion-mask boundary under each source's own special-token policy with the dataset-wide policy selected from the first source. It rejects only differences that change trained tokens or which tokens are treated as the prompt; no-op policy differences remain valid.
+
 This example combines pinned Alpaca and preformatted-text sources in the full-sequence group while using different loaders:
 
 ```yaml

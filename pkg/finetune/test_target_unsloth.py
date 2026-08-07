@@ -5737,6 +5737,47 @@ class MultipleTrainingDatasetsTest(unittest.TestCase):
             [False, True],
         )
 
+    def test_rejects_prompt_completion_special_token_boundary_changes(self):
+        plain_row = {"prompt": "A", "completion": " C"}
+        explicit_bos_row = {"prompt": "<bos>B", "completion": " C"}
+        cases = (
+            (
+                [FunctionalDataset([plain_row]), FunctionalDataset([explicit_bos_row])],
+                r"datasets\[1\] prompt-completion preprocessing record 0.*"
+                r"source add_special_tokens=False.*"
+                r"combined dataset add_special_tokens=True",
+            ),
+            (
+                [FunctionalDataset([explicit_bos_row]), FunctionalDataset([plain_row])],
+                r"datasets\[1\] prompt-completion preprocessing record 0.*"
+                r"source add_special_tokens=True.*"
+                r"combined dataset add_special_tokens=False",
+            ),
+        )
+
+        for datasets, error_pattern in cases:
+            with self.subTest(first_prompt=datasets[0][0]["prompt"]):
+                dependencies = self.dependencies_for(datasets)
+                base_model = (
+                    dependencies.fast_language_model.from_pretrained.return_value[0]
+                )
+                dependencies.fast_language_model.from_pretrained.return_value = (
+                    base_model,
+                    TextPreprocessingTokenizer(auto_bos=True),
+                )
+
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.train_model(
+                        self.config_for(
+                            ["prompt-completion", "prompt-completion"]
+                        ),
+                        dependencies=dependencies,
+                    )
+
+                dependencies.fast_language_model.get_peft_model.assert_not_called()
+                dependencies.concatenate_datasets.assert_not_called()
+                dependencies.sft_trainer.assert_not_called()
+
     def test_multiple_prompt_completion_sources_preserve_duplicates_through_bfd(self):
         config = self.config_for(
             ["prompt-completion", "prompt-completion"],
@@ -5805,11 +5846,12 @@ class MultipleTrainingDatasetsTest(unittest.TestCase):
             and "<bos>Duplicate" in call.args[0]
         ]
         self.assertTrue(second_source_tokenization_calls)
-        self.assertTrue(
-            all(
-                call.kwargs["add_special_tokens"] is True
+        self.assertEqual(
+            {
+                call.kwargs["add_special_tokens"]
                 for call in second_source_tokenization_calls
-            )
+            },
+            {False, True},
         )
         trainer.train.assert_called_once_with()
 

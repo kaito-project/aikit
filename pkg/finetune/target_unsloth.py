@@ -3089,10 +3089,15 @@ def validate_prompt_completion_tokenization(
     prompts: list[str] = []
     prompt_completions: list[str] = []
     effective_add_special_tokens = add_special_tokens
+    source_add_special_tokens = None
     fingerprint = empty_prompt_prefix_fingerprint()
 
     def validate_batch() -> None:
         nonlocal fingerprint
+        if source_add_special_tokens is None:
+            raise RuntimeError(
+                "prompt-completion validation did not derive a source tokenization policy"
+            )
         token_rows = tokenize_verification_texts(
             processing_class,
             prompts + prompt_completions,
@@ -3104,12 +3109,60 @@ def validate_prompt_completion_tokenization(
         )
         prompt_token_rows = token_rows[: len(prompts)]
         prompt_completion_token_rows = token_rows[len(prompts) :]
-        for batch_index, (prompt_ids, input_ids) in enumerate(
-            zip(prompt_token_rows, prompt_completion_token_rows)
+        source_prompt_token_rows = prompt_token_rows
+        source_prompt_completion_token_rows = prompt_completion_token_rows
+        if source_add_special_tokens != effective_add_special_tokens:
+            source_token_rows = tokenize_verification_texts(
+                processing_class,
+                prompts + prompt_completions,
+                add_special_tokens=source_add_special_tokens,
+                description=(
+                    f"source-policy records {batch_start}-"
+                    f"{batch_start + len(prompts) - 1} prompts and prompt-completions"
+                ),
+            )
+            source_prompt_token_rows = source_token_rows[: len(prompts)]
+            source_prompt_completion_token_rows = source_token_rows[len(prompts) :]
+        for batch_index, (
+            prompt_ids,
+            input_ids,
+            source_prompt_ids,
+            source_input_ids,
+        ) in enumerate(
+            zip(
+                prompt_token_rows,
+                prompt_completion_token_rows,
+                source_prompt_token_rows,
+                source_prompt_completion_token_rows,
+            )
         ):
             record_index = batch_start + batch_index
             input_ids = input_ids[:max_seq_length]
             prompt_length = min(len(prompt_ids), len(input_ids))
+            source_input_ids = source_input_ids[:max_seq_length]
+            source_prompt_length = min(
+                len(source_prompt_ids),
+                len(source_input_ids),
+            )
+            completion_mask = [0] * prompt_length + [1] * (
+                len(input_ids) - prompt_length
+            )
+            source_completion_mask = [0] * source_prompt_length + [1] * (
+                len(source_input_ids) - source_prompt_length
+            )
+            if (
+                input_ids != source_input_ids
+                or completion_mask != source_completion_mask
+            ):
+                raise ValueError(
+                    f"prompt-completion preprocessing record {record_index} "
+                    "tokenizes differently with its source "
+                    f"add_special_tokens={source_add_special_tokens} policy and "
+                    "the combined dataset "
+                    f"add_special_tokens={effective_add_special_tokens} policy; "
+                    "combining these records would change token or completion-mask "
+                    "boundaries"
+                )
             if len(input_ids) <= prompt_length:
                 raise RuntimeError(
                     f"prompt-completion preprocessing record {record_index} retains no completion tokens after truncation to maxSeqLength {max_seq_length}"
@@ -3125,11 +3178,13 @@ def validate_prompt_completion_tokenization(
             )
 
     for record in dataset:
-        if effective_add_special_tokens is None:
-            effective_add_special_tokens = prompt_completion_add_special_tokens(
+        if source_add_special_tokens is None:
+            source_add_special_tokens = prompt_completion_add_special_tokens(
                 processing_class,
                 record["prompt"],
             )
+        if effective_add_special_tokens is None:
+            effective_add_special_tokens = source_add_special_tokens
 
         completion = record["completion"]
         if not completion.endswith(eos_token):
