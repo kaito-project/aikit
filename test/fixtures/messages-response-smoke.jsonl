@@ -1,0 +1,2 @@
+{"messages":[{"role":"system","content":"You are a concise and helpful assistant."},{"role":"user","content":"Name one benefit of unit tests."},{"role":"assistant","content":"Unit tests catch regressions early."}]}
+{"messages":[{"role":"user","content":"What is a container image?"},{"role":"assistant","content":"An immutable package containing an application and its dependencies."},{"role":"user","content":"Why is immutability useful?"},{"role":"assistant","content":"It makes deployments repeatable and easier to verify."}]}

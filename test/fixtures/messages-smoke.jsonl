@@ -1,0 +1,8 @@
+{"messages":[{"role":"system","content":"You are a concise and helpful assistant."},{"role":"user","content":"Name one benefit of unit tests."},{"role":"assistant","content":"Unit tests catch regressions early and make code changes safer."}]}
+{"messages":[{"role":"user","content":"Rewrite this sentence in a friendly tone: Send the report today."},{"role":"assistant","content":"Could you please send the report today? Thank you!"}]}
+{"messages":[{"role":"user","content":"What is a container image?"},{"role":"assistant","content":"An immutable package containing an application and its dependencies."},{"role":"user","content":"Why is immutability useful?"},{"role":"assistant","content":"It makes deployments repeatable and easier to verify."}]}
+{"messages":[{"role":"user","content":"Rewrite this sentence in a friendly tone: Send the report today."},{"role":"assistant","content":"Could you please send the report today? Thank you!"}]}
+{"messages":[{"role":"system","content":"Answer with one word."},{"role":"user","content":"What color is a clear daytime sky?"},{"role":"assistant","content":"Blue."}]}
+{"messages":[{"role":"user","content":"Summarize in five words or fewer: Backups help restore data after accidental deletion."},{"role":"assistant","content":"Backups enable data recovery."}]}
+{"messages":[{"role":"user","content":"What is a safe practice before deleting a generated directory?"},{"role":"assistant","content":"Validate the path before running a recursive removal command."}]}
+{"messages":[{"role":"user","content":"Convert the phrase 'fast feedback' to uppercase."},{"role":"assistant","content":"FAST FEEDBACK"}]}

@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	unslothVersion  = "2026.8.1"
+	unslothVersion  = "2026.8.3"
 	torchVersion    = "2.10.0"
 	uvVersion       = "0.12.1"
 	pythonVenv      = "/opt/aikit-venv"
@@ -36,9 +36,10 @@ const (
 var immutableNVIDIACDIDevicePattern = regexp.MustCompile(`^nvidia\.com/gpu=(?:GPU|MIG)-[A-Fa-f0-9]{8}-(?:[A-Fa-f0-9]{4}-){3}[A-Fa-f0-9]{12}$`)
 
 type unslothTrainingConfig struct {
-	BaseModel string                    `yaml:"baseModel"`
-	Datasets  []config.Dataset          `yaml:"datasets"`
-	Config    config.FineTuneConfigSpec `yaml:"config"`
+	BaseModel string                        `yaml:"baseModel"`
+	Objective *config.FineTuneObjectiveSpec `yaml:"objective,omitempty"`
+	Datasets  []config.Dataset              `yaml:"datasets"`
+	Config    config.FineTuneConfigSpec     `yaml:"config"`
 }
 
 type unslothExportConfig struct {
@@ -114,6 +115,7 @@ func Aikit2LLB(c *config.FineTuneConfig, opts Options) (llb.State, error) {
 	scriptState := llb.Scratch().File(llb.Mkfile("/target_unsloth.py", 0o755, finetunescript.TargetUnsloth))
 	trainingConfig := unslothTrainingConfig{
 		BaseModel: c.BaseModel,
+		Objective: trainingObjective(c.Objective),
 		Datasets:  c.Datasets,
 		Config:    c.Config,
 	}
@@ -132,6 +134,13 @@ func Aikit2LLB(c *config.FineTuneConfig, opts Options) (llb.State, error) {
 	copyOpts := []llb.CopyOption{&llb.CopyInfo{AllowWildcard: true}}
 	outputFile := fmt.Sprintf("%s-%s.gguf", c.Output.Name, c.Output.Quantize)
 	return llb.Scratch().File(llb.Copy(state, inputFile, outputFile, copyOpts...)), nil
+}
+
+func trainingObjective(objective config.FineTuneObjectiveSpec) *config.FineTuneObjectiveSpec {
+	if objective.Type != utils.ObjectiveDPO {
+		return nil
+	}
+	return &objective
 }
 
 func gpuCacheKey(opts Options) string {
