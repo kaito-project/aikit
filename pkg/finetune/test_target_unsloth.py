@@ -87,7 +87,7 @@ def preprocessing_tokenizer():
             + tokenizer.eos_token
         ):
             return {"input_ids": [11, 12, 13, tokenizer.eos_token_id]}
-        raise AssertionError(f"unexpected verification text {text!r}")
+        return {"input_ids": [11, 12]}
 
     tokenizer.side_effect = tokenize
     return tokenizer
@@ -447,6 +447,71 @@ class PromptCompletionPreprocessingContractTest(unittest.TestCase):
                         processing_class=preprocessing_tokenizer(),
                     )
 
+    def test_disables_special_tokens_when_bos_is_in_chat_template(self):
+        prepared_record = {
+            "input_ids": [11, 12, 13, 2],
+            "completion_mask": [0, 0, 1, 1],
+        }
+        trainer = mock.Mock()
+        trainer.args = SimpleNamespace(
+            packing=False,
+            max_length=512,
+            dataset_num_proc=2,
+        )
+        trainer._prepare_dataset.return_value = [prepared_record]
+        trainer.data_collator.return_value = {
+            "input_ids": [prepared_record["input_ids"]],
+            "labels": [[-100, -100, 13, 2]],
+        }
+        processing_class = preprocessing_tokenizer()
+        processing_class.chat_template = "<bos>{{ messages }}"
+
+        target_unsloth.verify_prompt_completion_preprocessing(
+            trainer,
+            dataset_from_dict=mock.Mock(return_value="verification-dataset"),
+            processing_class=processing_class,
+        )
+
+        self.assertEqual(
+            processing_class.call_args_list,
+            [
+                mock.call(
+                    target_unsloth.PREPROCESSING_VERIFICATION_PROMPT,
+                    add_special_tokens=False,
+                ),
+                mock.call(
+                    target_unsloth.PREPROCESSING_VERIFICATION_PROMPT
+                    + target_unsloth.PREPROCESSING_VERIFICATION_COMPLETION
+                    + processing_class.eos_token,
+                    add_special_tokens=False,
+                ),
+            ],
+        )
+
+    def test_validates_multiple_bfd_packed_segments(self):
+        target_unsloth.validate_prepared_prompt_completion_dataset(
+            [
+                {
+                    "input_ids": [11, 13, 2, 21, 23, 2],
+                    "completion_mask": [0, 1, 1, 0, 1, 1],
+                    "seq_lengths": [3, 3],
+                }
+            ],
+            eos_token_id=2,
+            max_seq_length=6,
+            packing=True,
+        )
+
+    def test_rejects_wrapped_packing_validation(self):
+        with self.assertRaisesRegex(RuntimeError, "requires the bfd packing strategy"):
+            target_unsloth.validate_prepared_prompt_completion_dataset(
+                [],
+                eos_token_id=2,
+                max_seq_length=6,
+                packing=True,
+                packing_strategy="wrapped",
+            )
+
 
 class TrainingPhaseTest(unittest.TestCase):
     def assert_dataset_rejected_before_model(
@@ -588,6 +653,7 @@ class TrainingPhaseTest(unittest.TestCase):
     def test_prompt_completion_dataset_is_passed_through_with_completion_loss(self):
         train_config = example_train_config()
         train_config["datasets"][0]["type"] = "prompt-completion"
+        train_config["config"]["unsloth"]["packing"] = True
         rows = [
             {
                 "prompt": "Question: What is a container image?\nAnswer:",
@@ -608,6 +674,7 @@ class TrainingPhaseTest(unittest.TestCase):
         }
         trainer = dependencies.sft_trainer.return_value
         trainer._prepare_dataset.return_value = [verification_record]
+        trainer.train_dataset = [verification_record, verification_record]
         trainer.data_collator.return_value = {
             "input_ids": [verification_record["input_ids"]],
             "labels": [[-100, -100, 13, 2]],
@@ -642,6 +709,10 @@ class TrainingPhaseTest(unittest.TestCase):
             dependencies.sft_config.call_args.kwargs.get("completion_only_loss"),
             True,
         )
+        self.assertIs(
+            dependencies.sft_config.call_args.kwargs.get("packing"),
+            True,
+        )
         dependencies.dataset_from_dict.assert_called_once_with(
             {
                 "prompt": [target_unsloth.PREPROCESSING_VERIFICATION_PROMPT],
@@ -651,6 +722,128 @@ class TrainingPhaseTest(unittest.TestCase):
             }
         )
         trainer.data_collator.assert_called_once_with([verification_record])
+
+    def test_rejects_real_record_truncated_before_completion(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "prompt-completion"
+        train_config["config"]["unsloth"]["maxSeqLength"] = 3
+        dataset = in_memory_dataset(
+            [{"prompt": "A prompt that fills the window", "completion": " Answer."}]
+        )
+        dependencies = example_train_dependencies(dataset)
+        trainer = dependencies.sft_trainer.return_value
+        verification_record = {
+            "input_ids": [11, 12, 13, 2],
+            "completion_mask": [0, 0, 1, 1],
+        }
+        trainer._prepare_dataset.return_value = [verification_record]
+        trainer.data_collator.return_value = {
+            "input_ids": [verification_record["input_ids"]],
+            "labels": [[-100, -100, 13, 2]],
+        }
+        trainer.train_dataset = [
+            {
+                "input_ids": [11, 12, 13],
+                "completion_mask": [0, 0, 0],
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"record 0.*no completion.*maxSeqLength 3",
+            ):
+                target_unsloth.train_model(
+                    train_config,
+                    trained_model_directory=Path(temporary_directory)
+                    / "trained-model",
+                    dependencies=dependencies,
+                )
+
+        trainer.train.assert_not_called()
+
+    def test_rejects_packed_segment_truncated_before_eos(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "prompt-completion"
+        train_config["config"]["unsloth"]["packing"] = True
+        train_config["config"]["unsloth"]["maxSeqLength"] = 8
+        dataset = in_memory_dataset(
+            [
+                {"prompt": "Question one?", "completion": " Answer one."},
+                {"prompt": "Question two?", "completion": " Answer two."},
+            ]
+        )
+        dependencies = example_train_dependencies(dataset)
+        trainer = dependencies.sft_trainer.return_value
+        trainer.args.packing = True
+        verification_record = {
+            "input_ids": [11, 12, 13, 2],
+            "completion_mask": [0, 0, 1, 1],
+        }
+        trainer._prepare_dataset.return_value = [verification_record]
+        trainer.data_collator.return_value = {
+            "input_ids": [verification_record["input_ids"]],
+            "labels": [[-100, -100, 13, 2]],
+        }
+        trainer.train_dataset = [
+            {
+                "input_ids": [11, 12, 13, 2, 11, 12, 21, 22],
+                "completion_mask": [0, 0, 1, 1, 0, 0, 1, 1],
+                "seq_lengths": [4, 4],
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"record 0 packed segment 1.*supervised EOS.*maxSeqLength 8",
+            ):
+                target_unsloth.train_model(
+                    train_config,
+                    trained_model_directory=Path(temporary_directory)
+                    / "trained-model",
+                    dependencies=dependencies,
+                )
+
+        trainer.train.assert_not_called()
+
+    def test_rejects_real_record_with_mismatched_tokenized_prompt_boundary(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "prompt-completion"
+        dataset = in_memory_dataset(
+            [{"prompt": "Boundary-sensitive prompt", "completion": " Answer."}]
+        )
+        dependencies = example_train_dependencies(dataset)
+        trainer = dependencies.sft_trainer.return_value
+        verification_record = {
+            "input_ids": [11, 12, 13, 2],
+            "completion_mask": [0, 0, 1, 1],
+        }
+        trainer._prepare_dataset.return_value = [verification_record]
+        trainer.data_collator.return_value = {
+            "input_ids": [verification_record["input_ids"]],
+            "labels": [[-100, -100, 13, 2]],
+        }
+        trainer.train_dataset = [
+            {
+                "input_ids": [11, 99, 13, 2],
+                "completion_mask": [0, 0, 1, 1],
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"record 0.*tokenized prompt boundary",
+            ):
+                target_unsloth.train_model(
+                    train_config,
+                    trained_model_directory=Path(temporary_directory)
+                    / "trained-model",
+                    dependencies=dependencies,
+                )
+
+        trainer.train.assert_not_called()
 
     def test_rejects_unknown_dataset_type_before_loading_or_model_allocation(self):
         train_config = example_train_config()

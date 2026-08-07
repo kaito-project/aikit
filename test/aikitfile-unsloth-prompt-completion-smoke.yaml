@@ -6,7 +6,7 @@ datasets:
     type: prompt-completion
 config:
   unsloth:
-    packing: false
+    packing: true
     maxSeqLength: 512
     loadIn4bit: true
     batchSize: 1
