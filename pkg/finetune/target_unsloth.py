@@ -2,10 +2,11 @@
 
 import argparse
 import copy
+import hashlib
 import json
+import operator
 import re
 import shutil
-from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
 from functools import partial
@@ -31,6 +32,8 @@ DATASET_REQUIRED_FIELDS = {
 }
 PREPROCESSING_VERIFICATION_PROMPT = "Question: What is 2 + 2?\nAnswer:"
 PREPROCESSING_VERIFICATION_COMPLETION = " 4."
+PROMPT_COMPLETION_VALIDATION_BATCH_SIZE = 128
+PROMPT_PREFIX_FINGERPRINT_MASK = (1 << 256) - 1
 
 # Keep the Alpaca prompt byte-for-byte compatible with existing fine-tuning builds.
 ALPACA_PROMPT = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -58,6 +61,12 @@ class DatasetLoadSpec(NamedTuple):
 class TrainingDatasetSpec(NamedTuple):
     source: str
     dataset_type: str
+
+
+class PromptPrefixFingerprint(NamedTuple):
+    sequence_count: int
+    first_digest_sum: int
+    second_digest_sum: int
 
 
 class TrainDependencies(NamedTuple):
@@ -371,27 +380,188 @@ def prompt_completion_add_special_tokens(
     )
 
 
-def expected_prompt_prefix_counts(
+def tokenize_verification_texts(
+    processing_class: Any,
+    texts: Sequence[str],
+    *,
+    add_special_tokens: bool,
+    description: str,
+) -> list[list[Any]]:
+    tokenized = processing_class(
+        list(texts),
+        add_special_tokens=add_special_tokens,
+    )
+    if not isinstance(tokenized, Mapping):
+        raise RuntimeError(
+            f"prompt-completion preprocessing {description} tokenization must return a mapping"
+        )
+
+    try:
+        token_rows = sequence_values(
+            tokenized["input_ids"],
+            description=f"{description} token ID rows",
+        )
+    except KeyError as error:
+        raise RuntimeError(
+            f"prompt-completion preprocessing {description} tokenization did not produce input_ids"
+        ) from error
+
+    if len(token_rows) != len(texts):
+        raise RuntimeError(
+            f"prompt-completion preprocessing {description} tokenization returned an unexpected number of rows"
+        )
+
+    return [
+        sequence_values(
+            token_row,
+            description=f"{description} token IDs row {row_index}",
+        )
+        for row_index, token_row in enumerate(token_rows)
+    ]
+
+
+def empty_prompt_prefix_fingerprint() -> PromptPrefixFingerprint:
+    return PromptPrefixFingerprint(0, 0, 0)
+
+
+def extend_prompt_prefix_fingerprint(
+    fingerprint: PromptPrefixFingerprint,
+    token_ids: Sequence[Any],
+    *,
+    description: str,
+) -> PromptPrefixFingerprint:
+    encoded_token_ids = bytearray()
+    for token_index, raw_token_id in enumerate(token_ids):
+        try:
+            token_id = operator.index(raw_token_id)
+        except TypeError as error:
+            raise RuntimeError(
+                f"prompt-completion preprocessing {description} token ID {token_index} must be an integer"
+            ) from error
+        if isinstance(raw_token_id, bool) or not 0 <= token_id < 1 << 64:
+            raise RuntimeError(
+                f"prompt-completion preprocessing {description} token ID {token_index} must be an unsigned 64-bit integer"
+            )
+        encoded_token_ids.extend(token_id.to_bytes(8, byteorder="big"))
+
+    first_hasher = hashlib.sha256(b"aikit-prompt-prefix-1\x00")
+    first_hasher.update(encoded_token_ids)
+    second_hasher = hashlib.sha256(b"aikit-prompt-prefix-2\x00")
+    second_hasher.update(encoded_token_ids)
+    first_digest = int.from_bytes(first_hasher.digest(), byteorder="big")
+    second_digest = int.from_bytes(second_hasher.digest(), byteorder="big")
+
+    return PromptPrefixFingerprint(
+        fingerprint.sequence_count + 1,
+        (fingerprint.first_digest_sum + first_digest)
+        & PROMPT_PREFIX_FINGERPRINT_MASK,
+        (fingerprint.second_digest_sum + second_digest)
+        & PROMPT_PREFIX_FINGERPRINT_MASK,
+    )
+
+
+def validate_prompt_completion_tokenization(
     dataset: Any,
     *,
     processing_class: Any,
-) -> Counter[tuple[Any, ...]]:
-    """Tokenize source prompts for prepared completion-boundary validation."""
-    first_record = next(iter(dataset))
-    add_special_tokens = prompt_completion_add_special_tokens(
-        processing_class,
-        first_record["prompt"],
-    )
-    counts: Counter[tuple[Any, ...]] = Counter()
-    for record_index, record in enumerate(dataset):
-        prompt_ids = tokenize_verification_text(
-            processing_class,
-            record["prompt"],
-            add_special_tokens=add_special_tokens,
-            description=f"record {record_index} prompt",
+    max_seq_length: int,
+    batch_size: int = PROMPT_COMPLETION_VALIDATION_BATCH_SIZE,
+) -> PromptPrefixFingerprint:
+    """Validate source token boundaries in bounded tokenizer batches."""
+    if (
+        isinstance(batch_size, bool)
+        or not isinstance(batch_size, int)
+        or batch_size <= 0
+    ):
+        raise ValueError("prompt-completion validation batch size must be positive")
+
+    eos_token = getattr(processing_class, "eos_token", None)
+    eos_token_id = getattr(processing_class, "eos_token_id", None)
+    if not isinstance(eos_token, str) or not eos_token:
+        raise RuntimeError(
+            "prompt-completion preprocessing requires a non-empty tokenizer EOS token"
         )
-        counts[tuple(prompt_ids)] += 1
-    return counts
+    if not isinstance(eos_token_id, int):
+        raise RuntimeError(
+            "prompt-completion preprocessing requires an integer tokenizer EOS token ID"
+        )
+
+    record_count = 0
+    batch_start = 0
+    prompts: list[str] = []
+    prompt_completions: list[str] = []
+    add_special_tokens: bool | None = None
+    fingerprint = empty_prompt_prefix_fingerprint()
+
+    def validate_batch() -> None:
+        nonlocal fingerprint
+        token_rows = tokenize_verification_texts(
+            processing_class,
+            prompts + prompt_completions,
+            add_special_tokens=add_special_tokens,
+            description=(
+                f"records {batch_start}-{batch_start + len(prompts) - 1} "
+                "prompts and prompt-completions"
+            ),
+        )
+        prompt_token_rows = token_rows[: len(prompts)]
+        prompt_completion_token_rows = token_rows[len(prompts) :]
+        for batch_index, (prompt_ids, input_ids) in enumerate(
+            zip(prompt_token_rows, prompt_completion_token_rows)
+        ):
+            record_index = batch_start + batch_index
+            if input_ids[: len(prompt_ids)] != prompt_ids:
+                raise RuntimeError(
+                    f"prompt-completion preprocessing record {record_index} tokenized prompt is not a prefix of the prompt-completion tokens"
+                )
+            if len(input_ids) <= len(prompt_ids):
+                raise RuntimeError(
+                    f"prompt-completion preprocessing record {record_index} produces no completion tokens"
+                )
+            if len(input_ids) > max_seq_length:
+                raise RuntimeError(
+                    f"prompt-completion preprocessing record {record_index} has "
+                    f"{len(input_ids)} tokens and would lose supervised completion "
+                    "or EOS tokens after truncation to maxSeqLength "
+                    f"{max_seq_length}"
+                )
+            if input_ids[-1] != eos_token_id:
+                raise RuntimeError(
+                    f"prompt-completion preprocessing record {record_index} does not end with the tokenizer EOS token"
+                )
+            fingerprint = extend_prompt_prefix_fingerprint(
+                fingerprint,
+                prompt_ids,
+                description=f"record {record_index} prompt",
+            )
+
+    for record in dataset:
+        if add_special_tokens is None:
+            add_special_tokens = prompt_completion_add_special_tokens(
+                processing_class,
+                record["prompt"],
+            )
+
+        completion = record["completion"]
+        if not completion.endswith(eos_token):
+            completion += eos_token
+        prompts.append(record["prompt"])
+        prompt_completions.append(record["prompt"] + completion)
+        record_count += 1
+
+        if len(prompts) == batch_size:
+            validate_batch()
+            prompts.clear()
+            prompt_completions.clear()
+            batch_start = record_count
+
+    if prompts:
+        validate_batch()
+    if record_count == 0:
+        raise RuntimeError(
+            "prompt-completion preprocessing produced an empty source dataset"
+        )
+    return fingerprint
 
 
 def verify_prompt_completion_preprocessing(
@@ -549,7 +719,7 @@ def validate_prepared_prompt_completion_dataset(
     max_seq_length: int,
     packing: bool,
     packing_strategy: str = "bfd",
-    prompt_prefix_counts: Mapping[tuple[Any, ...], int] | None = None,
+    expected_prompt_prefix_fingerprint: PromptPrefixFingerprint | None = None,
 ) -> None:
     """Validate completion supervision after real-record preprocessing."""
     if packing and packing_strategy != "bfd":
@@ -557,10 +727,8 @@ def validate_prepared_prompt_completion_dataset(
             "prompt-completion preprocessing validation requires the bfd packing strategy"
         )
 
-    remaining_prompt_prefixes = (
-        Counter(prompt_prefix_counts) if prompt_prefix_counts is not None else None
-    )
     record_count = 0
+    prompt_prefix_fingerprint = empty_prompt_prefix_fingerprint()
     for record_index, record in enumerate(dataset):
         record_count += 1
         if not isinstance(record, Mapping):
@@ -647,13 +815,11 @@ def validate_prepared_prompt_completion_dataset(
                 raise RuntimeError(
                     f"prompt-completion preprocessing {location} must mask a prompt prefix and completion suffix"
                 )
-            if remaining_prompt_prefixes is not None:
-                prompt_prefix = tuple(sequence_input_ids[:first_completion])
-                if remaining_prompt_prefixes[prompt_prefix] <= 0:
-                    raise RuntimeError(
-                        f"prompt-completion preprocessing {location} tokenized prompt boundary does not match a source prompt"
-                    )
-                remaining_prompt_prefixes[prompt_prefix] -= 1
+            prompt_prefix_fingerprint = extend_prompt_prefix_fingerprint(
+                prompt_prefix_fingerprint,
+                sequence_input_ids[:first_completion],
+                description=f"{location} prompt",
+            )
             if (
                 sequence_input_ids[-1] != eos_token_id
                 or sequence_completion_mask[-1] != 1
@@ -667,11 +833,12 @@ def validate_prepared_prompt_completion_dataset(
         raise RuntimeError(
             "prompt-completion preprocessing produced an empty training dataset"
         )
-    if remaining_prompt_prefixes is not None and any(
-        count != 0 for count in remaining_prompt_prefixes.values()
+    if (
+        expected_prompt_prefix_fingerprint is not None
+        and prompt_prefix_fingerprint != expected_prompt_prefix_fingerprint
     ):
         raise RuntimeError(
-            "prompt-completion preprocessing prepared dataset does not contain every source prompt"
+            "prompt-completion preprocessing prepared prompt prefixes do not match the source prompts"
         )
 
 
@@ -778,6 +945,13 @@ def train_model(
         dtype=None,
         load_in_4bit=cfg["loadIn4bit"],
     )
+    prompt_prefix_fingerprint = None
+    if dataset_spec.dataset_type == DATASET_TYPE_PROMPT_COMPLETION:
+        prompt_prefix_fingerprint = validate_prompt_completion_tokenization(
+            dataset,
+            processing_class=tokenizer,
+            max_seq_length=max_seq_length,
+        )
     base_model_name, base_model_revision = resolve_export_base_model(
         train_config["baseModel"],
         model_info=dependencies.model_info,
@@ -863,10 +1037,7 @@ def train_model(
             max_seq_length=max_seq_length,
             packing=bool(getattr(trainer.args, "packing", False)),
             packing_strategy=getattr(trainer.args, "packing_strategy", "bfd"),
-            prompt_prefix_counts=expected_prompt_prefix_counts(
-                dataset,
-                processing_class=tokenizer,
-            ),
+            expected_prompt_prefix_fingerprint=prompt_prefix_fingerprint,
         )
     trainer.train()
 

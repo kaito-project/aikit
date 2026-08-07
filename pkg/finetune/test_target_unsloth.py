@@ -78,16 +78,23 @@ def preprocessing_tokenizer():
         chat_template="",
     )
 
-    def tokenize(text, *, add_special_tokens):
+    def token_ids(text):
         if text == target_unsloth.PREPROCESSING_VERIFICATION_PROMPT:
-            return {"input_ids": [11, 12]}
+            return [11, 12]
         if text == (
             target_unsloth.PREPROCESSING_VERIFICATION_PROMPT
             + target_unsloth.PREPROCESSING_VERIFICATION_COMPLETION
             + tokenizer.eos_token
         ):
-            return {"input_ids": [11, 12, 13, tokenizer.eos_token_id]}
-        return {"input_ids": [11, 12]}
+            return [11, 12, 13, tokenizer.eos_token_id]
+        if text.endswith(tokenizer.eos_token):
+            return [11, 12, 13, tokenizer.eos_token_id]
+        return [11, 12]
+
+    def tokenize(text, *, add_special_tokens):
+        if isinstance(text, list):
+            return {"input_ids": [token_ids(item) for item in text]}
+        return {"input_ids": token_ids(text)}
 
     tokenizer.side_effect = tokenize
     return tokenizer
@@ -330,6 +337,46 @@ Bonjour<eos>""",
 
 
 class PromptCompletionPreprocessingContractTest(unittest.TestCase):
+    def test_validates_source_boundaries_in_bounded_tokenizer_batches(self):
+        rows = [
+            {"prompt": f"prompt-{index}", "completion": f" completion-{index}"}
+            for index in range(5)
+        ]
+        tokenizer = mock.Mock(
+            eos_token="<eos>",
+            eos_token_id=2,
+            bos_token="<bos>",
+            chat_template="",
+        )
+
+        def tokenize(texts, *, add_special_tokens):
+            self.assertIsInstance(texts, list)
+            self.assertLessEqual(len(texts), 4)
+            token_rows = []
+            for text in texts:
+                record_index = int(text.split("-", 1)[1].split(" ", 1)[0])
+                token_rows.append(
+                    [record_index, record_index + 10, tokenizer.eos_token_id]
+                    if text.endswith(tokenizer.eos_token)
+                    else [record_index]
+                )
+            return {"input_ids": token_rows}
+
+        tokenizer.side_effect = tokenize
+
+        fingerprint = target_unsloth.validate_prompt_completion_tokenization(
+            rows,
+            processing_class=tokenizer,
+            max_seq_length=3,
+            batch_size=2,
+        )
+
+        self.assertEqual(
+            [len(call.args[0]) for call in tokenizer.call_args_list],
+            [4, 4, 2],
+        )
+        self.assertEqual(fingerprint.sequence_count, len(rows))
+
     def test_verifies_prompt_mask_completion_labels_and_eos(self):
         prepared_record = {
             "input_ids": [11, 12, 13, 2],
@@ -501,6 +548,70 @@ class PromptCompletionPreprocessingContractTest(unittest.TestCase):
             max_seq_length=6,
             packing=True,
         )
+
+    def test_matches_reordered_duplicate_bfd_prompt_prefixes(self):
+        expected_fingerprint = target_unsloth.empty_prompt_prefix_fingerprint()
+        for index, prompt_ids in enumerate(([11], [21], [11])):
+            expected_fingerprint = (
+                target_unsloth.extend_prompt_prefix_fingerprint(
+                    expected_fingerprint,
+                    prompt_ids,
+                    description=f"source prompt {index}",
+                )
+            )
+
+        target_unsloth.validate_prepared_prompt_completion_dataset(
+            [
+                {
+                    "input_ids": [21, 23, 2, 11, 13, 2, 11, 14, 2],
+                    "completion_mask": [0, 1, 1, 0, 1, 1, 0, 1, 1],
+                    "seq_lengths": [3, 3, 3],
+                }
+            ],
+            eos_token_id=2,
+            max_seq_length=9,
+            packing=True,
+            expected_prompt_prefix_fingerprint=expected_fingerprint,
+        )
+
+    def test_rejects_mutated_or_missing_prepared_prompt_prefixes(self):
+        cases = (
+            ("mutated", ([11],), [99]),
+            ("missing", ([11], [21]), [11]),
+        )
+
+        for name, source_prompt_rows, prepared_prompt_ids in cases:
+            with self.subTest(name=name):
+                expected_fingerprint = (
+                    target_unsloth.empty_prompt_prefix_fingerprint()
+                )
+                for index, prompt_ids in enumerate(source_prompt_rows):
+                    expected_fingerprint = (
+                        target_unsloth.extend_prompt_prefix_fingerprint(
+                            expected_fingerprint,
+                            prompt_ids,
+                            description=f"source prompt {index}",
+                        )
+                    )
+
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "prompt prefixes do not match",
+                ):
+                    target_unsloth.validate_prepared_prompt_completion_dataset(
+                        [
+                            {
+                                "input_ids": prepared_prompt_ids + [13, 2],
+                                "completion_mask": [0]
+                                * len(prepared_prompt_ids)
+                                + [1, 1],
+                            }
+                        ],
+                        eos_token_id=2,
+                        max_seq_length=4,
+                        packing=False,
+                        expected_prompt_prefix_fingerprint=expected_fingerprint,
+                    )
 
     def test_rejects_wrapped_packing_validation(self):
         with self.assertRaisesRegex(RuntimeError, "requires the bfd packing strategy"):
@@ -723,6 +834,42 @@ class TrainingPhaseTest(unittest.TestCase):
         )
         trainer.data_collator.assert_called_once_with([verification_record])
 
+    def test_uses_effective_packing_when_unsloth_disables_packing(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "prompt-completion"
+        train_config["config"]["unsloth"]["packing"] = True
+        dataset = in_memory_dataset(
+            [{"prompt": "Question?", "completion": " Answer."}]
+        )
+        dependencies = example_train_dependencies(dataset)
+        trainer = dependencies.sft_trainer.return_value
+        trainer.args.packing = False
+        unpacked_record = {
+            "input_ids": [11, 12, 13, 2],
+            "completion_mask": [0, 0, 1, 1],
+        }
+        trainer._prepare_dataset.return_value = [unpacked_record]
+        trainer.train_dataset = [unpacked_record]
+        trainer.data_collator.return_value = {
+            "input_ids": [unpacked_record["input_ids"]],
+            "labels": [[-100, -100, 13, 2]],
+        }
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            target_unsloth.train_model(
+                train_config,
+                trained_model_directory=Path(temporary_directory)
+                / "trained-model",
+                dependencies=dependencies,
+            )
+
+        self.assertIs(
+            dependencies.sft_config.call_args.kwargs.get("packing"),
+            True,
+        )
+        self.assertNotIn("seq_lengths", unpacked_record)
+        trainer.train.assert_called_once_with()
+
     def test_rejects_real_record_truncated_before_completion(self):
         train_config = example_train_config()
         train_config["datasets"][0]["type"] = "prompt-completion"
@@ -731,27 +878,11 @@ class TrainingPhaseTest(unittest.TestCase):
             [{"prompt": "A prompt that fills the window", "completion": " Answer."}]
         )
         dependencies = example_train_dependencies(dataset)
-        trainer = dependencies.sft_trainer.return_value
-        verification_record = {
-            "input_ids": [11, 12, 13, 2],
-            "completion_mask": [0, 0, 1, 1],
-        }
-        trainer._prepare_dataset.return_value = [verification_record]
-        trainer.data_collator.return_value = {
-            "input_ids": [verification_record["input_ids"]],
-            "labels": [[-100, -100, 13, 2]],
-        }
-        trainer.train_dataset = [
-            {
-                "input_ids": [11, 12, 13],
-                "completion_mask": [0, 0, 0],
-            }
-        ]
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             with self.assertRaisesRegex(
                 RuntimeError,
-                r"record 0.*no completion.*maxSeqLength 3",
+                r"record 0.*lose supervised completion or EOS.*maxSeqLength 3",
             ):
                 target_unsloth.train_model(
                     train_config,
@@ -760,7 +891,7 @@ class TrainingPhaseTest(unittest.TestCase):
                     dependencies=dependencies,
                 )
 
-        trainer.train.assert_not_called()
+        dependencies.sft_trainer.assert_not_called()
 
     def test_rejects_packed_segment_truncated_before_eos(self):
         train_config = example_train_config()
@@ -814,27 +945,26 @@ class TrainingPhaseTest(unittest.TestCase):
             [{"prompt": "Boundary-sensitive prompt", "completion": " Answer."}]
         )
         dependencies = example_train_dependencies(dataset)
-        trainer = dependencies.sft_trainer.return_value
-        verification_record = {
-            "input_ids": [11, 12, 13, 2],
-            "completion_mask": [0, 0, 1, 1],
-        }
-        trainer._prepare_dataset.return_value = [verification_record]
-        trainer.data_collator.return_value = {
-            "input_ids": [verification_record["input_ids"]],
-            "labels": [[-100, -100, 13, 2]],
-        }
-        trainer.train_dataset = [
-            {
-                "input_ids": [11, 99, 13, 2],
-                "completion_mask": [0, 0, 1, 1],
-            }
-        ]
+        tokenizer = dependencies.fast_language_model.from_pretrained.return_value[1]
+        default_tokenize = tokenizer.side_effect
+
+        def tokenize(text, *, add_special_tokens):
+            if text == [
+                "Boundary-sensitive prompt",
+                "Boundary-sensitive prompt Answer.<eos>",
+            ]:
+                return {"input_ids": [[11, 12], [11, 99, 13, 2]]}
+            return default_tokenize(
+                text,
+                add_special_tokens=add_special_tokens,
+            )
+
+        tokenizer.side_effect = tokenize
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             with self.assertRaisesRegex(
                 RuntimeError,
-                r"record 0.*tokenized prompt boundary",
+                r"record 0.*tokenized prompt.*not a prefix",
             ):
                 target_unsloth.train_model(
                     train_config,
@@ -843,7 +973,7 @@ class TrainingPhaseTest(unittest.TestCase):
                     dependencies=dependencies,
                 )
 
-        trainer.train.assert_not_called()
+        dependencies.sft_trainer.assert_not_called()
 
     def test_rejects_unknown_dataset_type_before_loading_or_model_allocation(self):
         train_config = example_train_config()
