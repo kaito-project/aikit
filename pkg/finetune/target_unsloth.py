@@ -41,6 +41,40 @@ DATASET_REQUIRED_FIELDS = {
 }
 MESSAGE_FIELDS = frozenset(("role", "content"))
 SUPPORTED_MESSAGE_ROLES = frozenset(("system", "user", "assistant"))
+UNSUPPORTED_MESSAGES_TOP_LEVEL_FIELDS = frozenset(
+    (
+        "add_generation_prompt",
+        "audio",
+        "audio_path",
+        "audio_paths",
+        "audio_url",
+        "audio_urls",
+        "audios",
+        "chat_template",
+        "chat_template_kwargs",
+        "continue_final_message",
+        "documents",
+        "function_call",
+        "functions",
+        "image",
+        "image_path",
+        "image_paths",
+        "image_url",
+        "image_urls",
+        "images",
+        "tool",
+        "tool_calls",
+        "tool_choice",
+        "tools",
+        "tokenizer_kwargs",
+        "video",
+        "video_path",
+        "video_paths",
+        "video_url",
+        "video_urls",
+        "videos",
+    )
+)
 PREPROCESSING_VERIFICATION_PROMPT = "Question: What is 2 + 2?\nAnswer:"
 PREPROCESSING_VERIFICATION_COMPLETION = " 4."
 PROMPT_COMPLETION_VALIDATION_BATCH_SIZE = 128
@@ -54,7 +88,7 @@ TEXT_PREPROCESSING_VERIFICATION_TEXTS = (
     "AIKit text boundary verification one.",
     "AIKit text boundary verification two!",
 )
-MESSAGES_RENDER_BATCH_SIZE = 128
+MESSAGES_VALIDATION_BATCH_SIZE = 128
 # Bound canonical and rendered-path token IDs retained for one validation batch.
 MESSAGES_VALIDATION_TOKEN_BUDGET = 262_144
 MESSAGES_TOKEN_FINGERPRINT_MASK = (1 << 256) - 1
@@ -369,6 +403,25 @@ def validate_messages_value(
         raise ValueError(f"{subject} final message must have role 'assistant'")
 
 
+def validate_messages_top_level_fields(
+    fields: Sequence[Any] | Mapping[Any, Any],
+    *,
+    subject: str,
+) -> None:
+    unsupported_fields = [
+        field
+        for field in fields
+        if field in UNSUPPORTED_MESSAGES_TOP_LEVEL_FIELDS
+    ]
+    if unsupported_fields:
+        quoted_fields = ", ".join(
+            sorted(repr(field) for field in unsupported_fields)
+        )
+        raise ValueError(
+            f"{subject} contains unsupported top-level fields: {quoted_fields}"
+        )
+
+
 def validate_training_dataset(
     dataset: Any,
     *,
@@ -389,16 +442,7 @@ def validate_training_dataset(
             raise ValueError(f"{subject} must be a mapping")
 
         if dataset_type == DATASET_TYPE_MESSAGES:
-            unsupported_fields = [
-                field for field in record if field != "messages"
-            ]
-            if unsupported_fields:
-                quoted_fields = ", ".join(
-                    sorted(repr(field) for field in unsupported_fields)
-                )
-                raise ValueError(
-                    f"{subject} contains unsupported record fields: {quoted_fields}"
-                )
+            validate_messages_top_level_fields(record, subject=subject)
 
         for field in required_fields:
             if field not in record:
@@ -459,7 +503,25 @@ def project_training_dataset(
             f"{subject} is missing required columns: {quoted_fields}"
         )
 
+    if dataset_type == DATASET_TYPE_MESSAGES:
+        validate_messages_top_level_fields(column_names, subject=subject)
+
     return dataset.select_columns(list(required_fields))
+
+
+def effective_messages_chat_template(processing_class: Any) -> str | None:
+    chat_template = getattr(processing_class, "chat_template", None)
+    inner_tokenizer = getattr(processing_class, "tokenizer", processing_class)
+    if not chat_template and inner_tokenizer is not processing_class:
+        chat_template = getattr(inner_tokenizer, "chat_template", None)
+
+    if isinstance(chat_template, str):
+        return chat_template if chat_template.strip() else None
+    if isinstance(chat_template, Mapping):
+        default_template = chat_template.get("default")
+        if isinstance(default_template, str) and default_template.strip():
+            return default_template
+    return None
 
 
 def require_messages_chat_template(processing_class: Any) -> None:
@@ -468,70 +530,54 @@ def require_messages_chat_template(processing_class: Any) -> None:
             "messages preprocessing requires a tokenizer with apply_chat_template"
         )
 
-    chat_template = getattr(processing_class, "chat_template", None)
-    inner_tokenizer = getattr(processing_class, "tokenizer", processing_class)
-    if not chat_template and inner_tokenizer is not processing_class:
-        chat_template = getattr(inner_tokenizer, "chat_template", None)
-    if isinstance(chat_template, str):
-        usable = bool(chat_template.strip())
-    elif isinstance(chat_template, Mapping):
-        default_template = chat_template.get("default")
-        usable = isinstance(default_template, str) and bool(
-            default_template.strip()
-        )
-    else:
-        usable = False
-
-    if not usable:
+    chat_template = effective_messages_chat_template(processing_class)
+    if chat_template is None:
         raise RuntimeError(
             "messages preprocessing requires a usable tokenizer chat template; "
             "use an instruct/chat model that defines tokenizer.chat_template"
         )
+    if "strftime_now" in chat_template:
+        raise RuntimeError(
+            "messages preprocessing does not support wall-clock-dependent "
+            "tokenizer chat templates containing strftime_now until "
+            "deterministic template values are configured and included in "
+            "cache keys"
+        )
 
 
-def render_messages_examples(
-    examples: Mapping[str, Sequence[Any]],
-    indices: Sequence[Any],
+def render_messages_example(
+    example: Mapping[str, Any],
+    raw_index: Any,
     *,
     processing_class: Any,
     source_description: str,
-) -> dict[str, list[str]]:
-    messages_rows = examples["messages"]
-    if len(messages_rows) != len(indices):
+) -> dict[str, str]:
+    try:
+        record_index = operator.index(raw_index)
+    except TypeError as error:
         raise MessagesRenderError(
-            "messages preprocessing received mismatched records and row indices"
+            "messages preprocessing row index must be an integer"
+        ) from error
+    subject = (
+        f"{DATASET_TYPE_MESSAGES} dataset {source_description} "
+        f"row {record_index}"
+    )
+    try:
+        text = processing_class.apply_chat_template(
+            example["messages"],
+            tokenize=False,
+            add_generation_prompt=False,
         )
-
-    texts = []
-    for messages, raw_index in zip(messages_rows, indices):
-        try:
-            record_index = operator.index(raw_index)
-        except TypeError as error:
-            raise MessagesRenderError(
-                "messages preprocessing row index must be an integer"
-            ) from error
-        subject = (
-            f"{DATASET_TYPE_MESSAGES} dataset {source_description} "
-            f"row {record_index}"
+    except Exception:
+        # Do not propagate template errors that may echo sensitive source data.
+        raise MessagesRenderError(
+            f"{subject} could not be rendered with the tokenizer chat template"
+        ) from None
+    if not isinstance(text, str) or not text:
+        raise MessagesRenderError(
+            f"{subject} tokenizer chat template must render a non-empty string"
         )
-        try:
-            text = processing_class.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=False,
-            )
-        except Exception:
-            # Do not propagate template errors that may echo sensitive source data.
-            raise MessagesRenderError(
-                f"{subject} could not be rendered with the tokenizer chat template"
-            ) from None
-        if not isinstance(text, str) or not text:
-            raise MessagesRenderError(
-                f"{subject} tokenizer chat template must render a non-empty string"
-            )
-        texts.append(text)
-
-    return {"text": texts}
+    return {"text": text}
 
 
 def render_messages_dataset(
@@ -544,14 +590,14 @@ def render_messages_dataset(
     try:
         return dataset.map(
             partial(
-                render_messages_examples,
+                render_messages_example,
                 processing_class=processing_class,
                 source_description=source_description,
             ),
-            batched=True,
-            batch_size=MESSAGES_RENDER_BATCH_SIZE,
+            batched=False,
             with_indices=True,
             remove_columns=list(dataset.column_names),
+            writer_batch_size=1,
         )
     except MessagesRenderError:
         raise
@@ -568,11 +614,7 @@ def messages_unsloth_add_special_tokens(
 ) -> bool:
     """Match the locked Unsloth rendered-text special-token decision."""
     tokenizer = getattr(processing_class, "tokenizer", processing_class)
-    chat_template = getattr(processing_class, "chat_template", "")
-    if chat_template == "" and tokenizer is not processing_class:
-        chat_template = getattr(tokenizer, "chat_template", "")
-    if chat_template is None:
-        chat_template = ""
+    chat_template = effective_messages_chat_template(processing_class) or ""
     bos_token = getattr(processing_class, "bos_token", None) or getattr(
         tokenizer,
         "bos_token",
@@ -724,7 +766,7 @@ def validate_messages_tokenization(
     processing_class: Any,
     max_seq_length: int,
     source: str,
-    batch_size: int = MESSAGES_RENDER_BATCH_SIZE,
+    batch_size: int = MESSAGES_VALIDATION_BATCH_SIZE,
 ) -> MessagesTokenFingerprint:
     if (
         isinstance(batch_size, bool)
@@ -2322,23 +2364,16 @@ def train_model(
         in {DATASET_TYPE_MESSAGES, DATASET_TYPE_TEXT}
         else None
     )
-    if dataset_spec.dataset_type == DATASET_TYPE_MESSAGES:
-        validate_training_dataset(
-            dataset,
-            dataset_type=dataset_spec.dataset_type,
-            source=validation_source,
-        )
     dataset = project_training_dataset(
         dataset,
         dataset_type=dataset_spec.dataset_type,
         source=validation_source,
     )
-    if dataset_spec.dataset_type != DATASET_TYPE_MESSAGES:
-        validate_training_dataset(
-            dataset,
-            dataset_type=dataset_spec.dataset_type,
-            source=validation_source,
-        )
+    validate_training_dataset(
+        dataset,
+        dataset_type=dataset_spec.dataset_type,
+        source=validation_source,
+    )
 
     model, tokenizer = dependencies.fast_language_model.from_pretrained(
         model_name=train_config["baseModel"],

@@ -89,7 +89,7 @@ class FunctionalDataset:
         return self.rows[index]
 
     def _select_columns(self, column_names):
-        return FunctionalDataset(
+        projected_dataset = FunctionalDataset(
             {
                 column_name: row[column_name]
                 for column_name in column_names
@@ -97,6 +97,8 @@ class FunctionalDataset:
             }
             for row in self.rows
         )
+        self.projected_dataset = projected_dataset
+        return projected_dataset
 
     def _map(
         self,
@@ -106,13 +108,25 @@ class FunctionalDataset:
         batch_size=None,
         with_indices=False,
         remove_columns=None,
+        writer_batch_size=None,
     ):
-        if not batched:
-            raise AssertionError("FunctionalDataset only supports batched maps")
-        if batch_size is None:
-            batch_size = len(self.rows) or 1
         removed = set(remove_columns or ())
         mapped_rows = []
+        if not batched:
+            for row_index, row in enumerate(self.rows):
+                if with_indices:
+                    output = function(dict(row), row_index)
+                else:
+                    output = function(dict(row))
+                mapped_row = {
+                    key: value for key, value in row.items() if key not in removed
+                }
+                mapped_row.update(output)
+                mapped_rows.append(mapped_row)
+            return FunctionalDataset(mapped_rows)
+
+        if batch_size is None:
+            batch_size = len(self.rows) or 1
         for batch_start in range(0, len(self.rows), batch_size):
             rows = self.rows[batch_start : batch_start + batch_size]
             examples = {
@@ -671,6 +685,18 @@ class MessagesSchemaTest(unittest.TestCase):
                 "message 0.*unsupported fields.*name",
             ),
             (
+                "nested id field",
+                [
+                    {
+                        "role": "user",
+                        "content": "Question?",
+                        "id": "message-id",
+                    },
+                    valid_assistant,
+                ],
+                "message 0.*unsupported fields.*id",
+            ),
+            (
                 "tool call field",
                 [
                     valid_user,
@@ -729,26 +755,99 @@ class MessagesSchemaTest(unittest.TestCase):
                         source="organization/chat-data",
                     )
 
-    def test_rejects_record_level_metadata_and_tools(self):
+    def test_accepts_benign_top_level_metadata_and_projects_to_messages(self):
+        messages = [
+            {"role": "user", "content": "Question?"},
+            {"role": "assistant", "content": "Answer."},
+        ]
+        rows = [
+            {
+                "messages": messages,
+                "id": "record-id",
+                "source": "curated",
+                "source_label": "support",
+                "image_id": "benign-metadata-id",
+                "quality_score": 0.98,
+                "metadata": {"split": "train"},
+            }
+        ]
+
+        target_unsloth.validate_training_dataset(
+            rows,
+            dataset_type=target_unsloth.DATASET_TYPE_MESSAGES,
+            source="organization/chat-data",
+        )
+        dataset = FunctionalDataset(rows)
+        projected_dataset = target_unsloth.project_training_dataset(
+            dataset,
+            dataset_type=target_unsloth.DATASET_TYPE_MESSAGES,
+            source="organization/chat-data",
+        )
+
+        dataset.select_columns.assert_called_once_with(["messages"])
+        self.assertEqual(projected_dataset.column_names, ["messages"])
+        self.assertEqual(list(projected_dataset), [{"messages": messages}])
+
+    def test_rejects_semantic_top_level_fields(self):
         messages = [
             {"role": "user", "content": "Question?"},
             {"role": "assistant", "content": "Answer."},
         ]
         for field, value in (
-            ("id", "record-id"),
+            ("add_generation_prompt", False),
+            ("continue_final_message", False),
             ("tools", []),
+            ("tool_choice", "auto"),
+            ("function_call", {}),
+            ("functions", []),
+            ("documents", []),
+            ("chat_template", "{{ messages }}"),
             ("chat_template_kwargs", {}),
+            ("tokenizer_kwargs", {}),
+            ("image", object()),
+            ("images", []),
+            ("image_path", "/dataset/image.png"),
+            ("image_url", "https://example.test/image.png"),
+            ("audio", object()),
+            ("audios", []),
+            ("audio_path", "/dataset/audio.wav"),
+            ("audio_url", "https://example.test/audio.wav"),
+            ("video", object()),
+            ("videos", []),
+            ("video_path", "/dataset/video.mp4"),
+            ("video_url", "https://example.test/video.mp4"),
         ):
             with self.subTest(field=field):
                 with self.assertRaisesRegex(
                     ValueError,
-                    rf"unsupported record fields.*{field}",
+                    rf"unsupported top-level fields.*{field}",
                 ):
                     target_unsloth.validate_training_dataset(
                         [{"messages": messages, field: value}],
                         dataset_type=target_unsloth.DATASET_TYPE_MESSAGES,
                         source="organization/chat-data",
                     )
+
+    def test_rejects_semantic_columns_before_projection(self):
+        messages = [
+            {"role": "user", "content": "Question?"},
+            {"role": "assistant", "content": "Answer."},
+        ]
+        dataset = in_memory_dataset(
+            [{"messages": messages, "id": "record-id", "tools": []}]
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"unsupported top-level fields.*tools",
+        ):
+            target_unsloth.project_training_dataset(
+                dataset,
+                dataset_type=target_unsloth.DATASET_TYPE_MESSAGES,
+                source="organization/chat-data",
+            )
+
+        dataset.select_columns.assert_not_called()
 
     def test_redacts_signed_url_in_schema_errors(self):
         source = (
@@ -830,7 +929,32 @@ class MessagesRenderingTest(unittest.TestCase):
             )
         )
 
-    def test_renders_only_canonical_text_with_required_flags(self):
+    def test_rejects_wall_clock_dependent_chat_templates(self):
+        wall_clock_template = "{{ strftime_now('%Y-%m-%d') }}{{ messages }}"
+        inner_tokenizer = MessagesTokenizer(chat_template=wall_clock_template)
+        cases = (
+            MessagesTokenizer(chat_template=wall_clock_template),
+            MessagesTokenizer(
+                chat_template={"default": wall_clock_template},
+                bos_token=None,
+                bos_token_id=None,
+            ),
+            SimpleNamespace(
+                tokenizer=inner_tokenizer,
+                chat_template="",
+                apply_chat_template=inner_tokenizer.apply_chat_template,
+            ),
+        )
+
+        for tokenizer in cases:
+            with self.subTest(tokenizer=tokenizer):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    r"wall-clock-dependent.*strftime_now.*cache keys",
+                ):
+                    target_unsloth.require_messages_chat_template(tokenizer)
+
+    def test_renders_one_conversation_at_a_time_with_bounded_writer_buffer(self):
         tokenizer = MessagesTokenizer()
         rows = self.messages_rows()
         source_dataset, rendered_dataset = self.render_dataset(rows, tokenizer)
@@ -842,10 +966,10 @@ class MessagesRenderingTest(unittest.TestCase):
         )
         source_dataset.map.assert_called_once_with(
             mock.ANY,
-            batched=True,
-            batch_size=target_unsloth.MESSAGES_RENDER_BATCH_SIZE,
+            batched=False,
             with_indices=True,
             remove_columns=["messages"],
+            writer_batch_size=1,
         )
         self.assertEqual(len(tokenizer.apply_calls), len(rows))
         for call in tokenizer.apply_calls:
@@ -861,9 +985,9 @@ class MessagesRenderingTest(unittest.TestCase):
         tokenizer.render_error = RuntimeError(source)
 
         with self.assertRaises(RuntimeError) as raised:
-            target_unsloth.render_messages_examples(
-                {"messages": [self.messages_rows()[0]["messages"]]},
-                [7],
+            target_unsloth.render_messages_example(
+                {"messages": self.messages_rows()[0]["messages"]},
+                7,
                 processing_class=tokenizer,
                 source_description=target_unsloth.dataset_source_description(
                     source
@@ -2372,13 +2496,23 @@ class TrainingPhaseTest(unittest.TestCase):
         ]
         rows = [
             {
+                "id": "conversation-0",
+                "source_label": "curated",
                 "messages": [
                     {"role": "system", "content": "Be concise."},
                     *duplicate,
                 ],
             },
-            {"messages": duplicate},
-            {"messages": duplicate},
+            {
+                "id": "conversation-1",
+                "source_label": "synthetic",
+                "messages": duplicate,
+            },
+            {
+                "id": "conversation-2",
+                "source_label": "synthetic",
+                "messages": duplicate,
+            },
         ]
         dataset = FunctionalDataset(rows)
         dependencies = example_train_dependencies(dataset)
@@ -2463,6 +2597,46 @@ class TrainingPhaseTest(unittest.TestCase):
         self.assertEqual(trainer.data_collator.call_count, 1)
         trainer.train.assert_called_once_with()
         tokenizer.save_pretrained.assert_called_once()
+
+    def test_wall_clock_template_check_precedes_rendering_and_lora(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "messages"
+        dataset = FunctionalDataset(
+            [
+                {
+                    "messages": [
+                        {"role": "user", "content": "Question?"},
+                        {"role": "assistant", "content": "Answer."},
+                    ]
+                }
+            ]
+        )
+        dependencies = example_train_dependencies(dataset)
+        base_model = (
+            dependencies.fast_language_model.from_pretrained.return_value[0]
+        )
+        tokenizer = MessagesTokenizer(
+            chat_template="{{ strftime_now('%Y-%m-%d') }}{{ messages }}"
+        )
+        dependencies.fast_language_model.from_pretrained.return_value = (
+            base_model,
+            tokenizer,
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"wall-clock-dependent.*strftime_now",
+        ):
+            target_unsloth.train_model(
+                train_config,
+                dependencies=dependencies,
+            )
+
+        dataset.projected_dataset.map.assert_not_called()
+        dependencies.fast_language_model.get_peft_model.assert_not_called()
+        dependencies.resolve_model_name.assert_not_called()
+        dependencies.model_info.assert_not_called()
+        dependencies.sft_trainer.assert_not_called()
 
     def test_messages_template_render_and_token_checks_precede_lora(self):
         valid_row = {
@@ -2973,7 +3147,8 @@ class TrainingPhaseTest(unittest.TestCase):
                 "missing messages column",
                 "messages",
                 [{"content": "Not a conversation."}],
-                "messages dataset source 'organization/dataset' row 0.*unsupported record fields|missing.*messages",
+                "messages dataset source 'organization/dataset'.*"
+                "missing required columns.*messages",
             ),
             (
                 "invalid messages value",
@@ -2985,7 +3160,7 @@ class TrainingPhaseTest(unittest.TestCase):
                 "messages metadata",
                 "messages",
                 [{**valid_messages, "tools": []}],
-                "unsupported record fields.*tools",
+                "unsupported top-level fields.*tools",
             ),
             (
                 "empty prompt-completion dataset",

@@ -86,7 +86,7 @@ An expected JSON Lines record is:
 
 ##### Messages
 
-The `messages` type accepts canonical text-only chat conversations and applies the base model tokenizer's existing chat template. Each record must contain a non-empty `messages` list. Every turn must be a mapping with exactly the string fields `role` and `content`; supported roles are `system`, `user`, and `assistant`. A conversation must contain at least one assistant turn and end with an assistant turn. Extra metadata, tool calls, unsupported roles, and structured or multimodal content are rejected instead of being passed to the tokenizer.
+The `messages` type accepts canonical text-only chat conversations and applies the base model tokenizer's existing chat template. Each record must contain a non-empty `messages` list. Benign top-level metadata columns, such as IDs and source labels, are ignored when the dataset is projected to `messages`; top-level tool, template-control, document, image, audio, and video fields are rejected. Every turn must be a mapping with exactly the string fields `role` and `content`; supported roles are `system`, `user`, and `assistant`. A conversation must contain at least one assistant turn and end with an assistant turn. Extra fields within turns, tool calls, unsupported roles, and structured or multimodal content are rejected instead of being passed to the tokenizer.
 
 ```yaml
 datasets:
@@ -100,7 +100,7 @@ An expected JSON Lines record is:
 {"messages":[{"role":"system","content":"You are concise."},{"role":"user","content":"What is a container image?"},{"role":"assistant","content":"An immutable application package."}]}
 ```
 
-AIKit requires the tokenizer to provide a usable chat template. Before allocating LoRA adapters, it renders each conversation to the canonical `text` field with `tokenize=False` and `add_generation_prompt=False`. It does not add special tokens around the rendered text. AIKit verifies that the locked Unsloth text path produces the same token IDs as direct chat-template tokenization and rejects mismatches or sequences longer than `maxSeqLength` instead of truncating them. Validation errors include source and row context while redacting URL credentials and query values.
+AIKit requires the tokenizer to provide a usable, deterministic chat template. Wall-clock-dependent templates containing `strftime_now` are rejected until deterministic template values can be configured and included in cache keys. Before allocating LoRA adapters, AIKit renders each conversation to the canonical `text` field with `tokenize=False` and `add_generation_prompt=False`. It does not add special tokens around the rendered text. AIKit verifies that the locked Unsloth text path produces the same token IDs as direct chat-template tokenization and rejects mismatches or sequences longer than `maxSeqLength` instead of truncating them. Validation errors include source and row context while redacting URL credentials and query values.
 
 The `messages` type uses full-sequence SFT: system, user, assistant, and template tokens are all supervised. AIKit does not enable completion-only loss or assistant masks. Prepared labels and packed record boundaries are verified before training. ShareGPT conversion, tools, custom chat templates, and multimodal messages are not supported.
 
