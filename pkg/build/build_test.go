@@ -751,6 +751,13 @@ func Test_validateDPOFineTuneConfig(t *testing.T) {
 	}{
 		{name: "valid defaults"},
 		{
+			name: "DPO rejects multiple preference datasets",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets = append(c.Datasets, c.Datasets[0])
+			},
+			wantErr: "objective type dpo requires exactly one dataset",
+		},
+		{
 			name: "valid pinned Hugging Face loader",
 			mutate: func(c *config.FineTuneConfig) {
 				c.Datasets[0].Loader = &config.DatasetLoaderSpec{
