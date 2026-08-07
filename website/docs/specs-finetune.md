@@ -38,9 +38,30 @@ output:
   name: # optional. defaults to "aikit-model"
 ```
 
+### Dataset Format Model
+
+Multiple-dataset composition in this configuration applies to supervised fine-tuning (SFT) only. It does not define a preference record schema, objective selection, or DPO training.
+
+Each `datasets` entry has two independent format dimensions:
+
+- `type` selects the record schema, required fields, and SFT supervision behavior.
+- `loader.type` selects source transport and parsing.
+
+A loader does not select or infer the record schema. The loaded columns must satisfy the configured record `type`.
+
+| Record `type` | Required record shape | SFT supervision | Composition group |
+| --- | --- | --- | --- |
+| `alpaca` | String `instruction`, `input`, and `output` fields | Renders the Alpaca prompt, appends EOS, and supervises the full sequence | Full-sequence |
+| `messages` | Non-empty `messages` list containing text-only `role` and `content` mappings | `loss: all` supervises the rendered sequence; `loss: response` supervises assistant responses | Full-sequence or response-only chat, according to global `loss` |
+| `sharegpt` | Non-empty `conversations` list containing string `from` and `value` mappings | Normalizes fixed ShareGPT roles to messages and applies the same chat loss behavior | Full-sequence or response-only chat, according to global `loss` |
+| `prompt-completion` | String `prompt` and non-empty string `completion` fields | Masks prompt tokens and supervises completion and EOS tokens | Completion-only |
+| `text` | Non-empty string `text` field | Normalizes BOS/EOS boundaries and supervises the full sequence | Full-sequence |
+
+`config.unsloth.loss` is global to the training job. It cannot vary by dataset entry.
+
 ### Dataset Loaders
 
-The record `type` and `loader.type` are independent. The record type defines required columns and SFT loss behavior; the loader defines source transport and parsing. Every dataset entry and its loader options are included in the serialized training configuration, so changing or reordering any entry, or changing its `type`, `subset`, `split`, `revision`, or `checksum`, invalidates training and downstream export without invalidating dependency installation.
+The record `type` and `loader.type` are independent. Every dataset entry and its loader options are included in the serialized training configuration, so changing or reordering any entry, or changing its `type`, `subset`, `split`, `revision`, or `checksum`, invalidates training and downstream export without invalidating dependency installation.
 
 | Loader | Source | Loader-specific fields | Reproducibility |
 | --- | --- | --- | --- |
@@ -57,7 +78,7 @@ A Hugging Face `revision`, when present, must be a lowercase 40-character immuta
 
 Unknown fields, non-mapping values, nulls, and non-string values inside `loader` fail during parsing. Unknown fields elsewhere retain the existing permissive behavior. URL credentials, queries, and fragments are redacted from AIKit-generated warning logs and errors and are not written into cache filenames or cache metadata. The configured URL remains part of the serialized training configuration and BuildKit definition. This redaction therefore does not turn signed URLs into a supported secret channel; private dataset secret mounts are not supported.
 
-The `text` file loader yields one `text` record per line. JSON, CSV, and Parquet files may contain any supported record schema. For example:
+The `text` file loader yields one record with a `text` field per line and is normally paired with record `type: text`. JSON, CSV, and Parquet files may contain any supported record schema whose required fields are present. For example:
 
 ```yaml
 datasets:
@@ -80,40 +101,40 @@ datasets:
       checksum: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ```
 
-### Dataset Types
+### Multiple Dataset Composition
 
-One or more datasets are supported. AIKit loads entries sequentially in YAML order, validates and normalizes every source independently, then concatenates their canonical records in configured order while preserving row order within each source. This ordering is the input to trainer preprocessing; packing and trainer-level sampling may reorder records afterward. A single entry bypasses concatenation and retains the established single-source path.
-
-Dataset composition is unweighted: AIKit does not interleave, shuffle, deduplicate, oversample, or infer per-source weights before trainer construction. Repeating an entry intentionally repeats its rows. Every source must contain at least one record. The global `config.unsloth.loss` and every dataset type must resolve to one compatibility group:
+One or more datasets are supported for SFT. The global `config.unsloth.loss` and every dataset type must resolve to one compatibility group:
 
 | Compatibility group | Supported entries | Training behavior |
 | --- | --- | --- |
-| Full-sequence text | `alpaca`, `text`, `messages` with `loss: all`, `sharegpt` with `loss: all` | Normalizes to a canonical string `text` column and supervises the full sequence. |
-| Completion-only | `prompt-completion` | Preserves canonical string `prompt` and `completion` columns and supervises only completion and EOS tokens. |
-| Response-only chat | `messages` with `loss: response`, `sharegpt` with `loss: response` | Normalizes to canonical rendered `text` and masks non-assistant tokens. Packing remains unsupported. |
+| Full-sequence | Any mix of `alpaca`, `text`, `messages`, and `sharegpt` with `loss: all` | Normalizes to a canonical string `text` column and supervises the full sequence |
+| Completion-only | One or more `prompt-completion` entries | Preserves canonical string `prompt` and `completion` columns and supervises completion and EOS tokens |
+| Response-only chat | Any mix of `messages` and `sharegpt` with `loss: response` | Normalizes to canonical rendered `text`, masks non-assistant tokens, and requires `packing: false` |
 
-Entries from different groups cannot be combined. `loss` is global rather than per dataset. For example, compatible full-sequence sources can be composed as:
+Entries from different groups cannot be combined. In particular, prompt-completion data cannot be mixed with full-sequence data, and response-only chat cannot be mixed with `alpaca`, `prompt-completion`, or `text`. Per-dataset loss, source weights, random interleaving, deduplication, and automatic over- or undersampling are not supported.
+
+AIKit loads entries sequentially in YAML order, validates and normalizes every source independently, then concatenates their canonical records in configured order while preserving row order within each source. This ordering is the input to trainer preprocessing; packing and trainer-level sampling may reorder records afterward. A single entry bypasses concatenation and retains the established single-source path. Repeating an entry intentionally repeats its rows, and every source must contain at least one record.
+
+The following SFT configuration combines two full-sequence schemas with independent pinned loaders:
 
 ```yaml
 datasets:
   - source: organization/instruction-data
     type: alpaca
-  - source: organization/domain-corpus
+    loader:
+      type: huggingface
+      split: train
+      revision: 0123456789abcdef0123456789abcdef01234567
+  - source: https://datasets.example.com/domain-text.jsonl
     type: text
-  - source: organization/chat-data
-    type: messages
+    loader:
+      type: json
+      split: train
+      checksum: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 config:
   unsloth:
     loss: all
 ```
-
-| Type | Required record shape | Loss behavior |
-| --- | --- | --- |
-| `alpaca` | `instruction`, `input`, `output` | Renders the existing Alpaca prompt, appends EOS, and supervises the full sequence. |
-| `messages` | Non-empty `messages` list containing text-only `role` and `content` mappings | Applies the tokenizer's chat template. `loss: all` supervises the full rendered sequence; `loss: response` supervises assistant responses. |
-| `sharegpt` | Non-empty `conversations` list containing string `from` and `value` mappings | Converts fixed ShareGPT roles to canonical messages, then uses the same rendering and loss pipeline as `messages`. |
-| `prompt-completion` | `prompt`, non-empty `completion` | Keeps both columns separate, masks prompt tokens, and supervises completion and EOS tokens. |
-| `text` | non-empty `text` | Preserves the preformatted sequence, normalizes BOS/EOS boundaries, and supervises the full sequence. |
 
 Empty sources, missing or null fields, values of the wrong type, incompatible semantic groups, and unknown dataset types are rejected with the failing `datasets[n]` index. Existing single-source `alpaca` and other supported configurations retain their current rendering and loss behavior. URL details remain redacted in indexed errors.
 

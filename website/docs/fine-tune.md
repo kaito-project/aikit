@@ -60,9 +60,33 @@ config:
 
 For full configuration, please refer to [Fine Tune API Specifications](./specs-finetune.md).
 
-#### Dataset Loading
+#### Choose a Dataset Format
 
-`datasets[].type` describes the records and training loss behavior. The optional `datasets[].loader.type` independently describes how AIKit obtains and parses those records. For example, a Parquet file can contain `prompt-completion` records, while a Hugging Face dataset can contain `messages` records.
+Multiple-dataset composition currently applies to supervised fine-tuning (SFT). Each `datasets` entry makes two independent choices:
+
+1. `datasets[].type` selects the **record schema** and determines which tokens contribute to SFT loss.
+2. `datasets[].loader.type` selects the **loader** used to obtain and parse the source.
+
+A loader does not imply a record schema. For example, a Parquet file can contain `prompt-completion` records, and a Hugging Face dataset can contain `messages` records.
+
+| Record schema (`datasets[].type`) | Expected records | SFT behavior |
+| --- | --- | --- |
+| `alpaca` | `instruction`, `input`, and `output` strings | Full-sequence |
+| `messages` | Canonical `role`/`content` conversations | Full-sequence with `loss: all`; assistant-response-only with `loss: response` |
+| `sharegpt` | ShareGPT `from`/`value` conversations | Full-sequence with `loss: all`; assistant-response-only with `loss: response` |
+| `prompt-completion` | Separate `prompt` and non-empty `completion` strings | Completion-only; prompt tokens are masked |
+| `text` | A complete preformatted sequence in `text` | Full-sequence |
+
+| Loader (`datasets[].loader.type`) | Source and parsing behavior |
+| --- | --- |
+| omitted | Legacy behavior: HTTP(S) uses JSON; other sources are passed to Hugging Face Datasets |
+| `huggingface` | A Hugging Face dataset identifier, with optional subset, split, and pinned revision |
+| `json`, `csv`, or `parquet` | An HTTP(S) file parsed with the corresponding builder |
+| `text` | An HTTP(S) text file; each line becomes one record with a `text` field |
+
+The `text` record schema and the `text` loader are separate settings. A line-oriented text file normally uses both `type: text` and `loader.type: text`.
+
+#### Dataset Loading and Reproducibility
 
 When `loader` is omitted, AIKit preserves the original behavior: HTTP(S) sources use the JSON builder with the `train` split, and every other source is passed to Hugging Face Datasets with the `train` split. These mutable sources remain supported, but AIKit emits a reproducibility warning because their bytes are not pinned.
 
@@ -97,34 +121,44 @@ Remote files are downloaded into an AIKit-owned content-addressed cache under th
 
 The loader `split` defaults to `train` and must contain letters, numbers, or underscores in one or more dot-separated segments. It selects the training split only; it does not configure evaluation data or metrics. The `text` loader turns each input line into a `text` record. JSON, CSV, and Parquet loaders can provide any supported record schema whose required columns and values are present. Unknown fields inside `loader` fail instead of being silently ignored.
 
-#### Dataset Types
+#### Combining Multiple Datasets
 
-AIKit supports one or more datasets per fine-tuning configuration. The configured `type` selects each source's record schema and training loss behavior; unknown types fail instead of falling back to another formatter.
+AIKit supports one or more datasets in an SFT configuration. All entries must resolve to the same SFT mode:
 
-AIKit loads sources sequentially in YAML order, validates every source as nonempty, normalizes each one independently to canonical columns and string features, and concatenates records in configured order while preserving row order within each source. This deterministic order exists before SFT trainer packing, shuffling, or sampling. A one-source configuration uses the existing path without a concatenation call. Datasets are not weighted, randomly interleaved, deduplicated, over- or undersampled; duplicate entries intentionally duplicate their rows.
-
-All entries must share one semantic group:
-
-| Group | Compatible dataset types |
+| SFT mode | Compatible dataset combination |
 | --- | --- |
-| Full-sequence | `alpaca`, `text`, `messages` with `loss: all`, and `sharegpt` with `loss: all` |
+| Full-sequence | Any mix of `alpaca`, `text`, `messages`, and `sharegpt` with global `loss: all` |
 | Completion-only | One or more `prompt-completion` datasets |
-| Response-only chat | `messages` and `sharegpt` with global `loss: response` and `packing: false` |
+| Response-only chat | Any mix of `messages` and `sharegpt` with global `loss: response` and `packing: false` |
 
-Mixing groups fails with the relevant `datasets[n]` indexes instead of coercing records or silently ignoring later entries. `config.unsloth.loss` is global; per-dataset loss and weighted sampling are not supported. Each entry retains its own loader, split, subset, revision, and checksum identity. Changing or reordering any later entry invalidates training and export while leaving dependency installation cacheable.
+Mixing modes is unsupported. For example, `alpaca` cannot be combined with `prompt-completion`, and response-only chat cannot be combined with `text`. `config.unsloth.loss` applies to the whole job; per-dataset loss, weighted sampling, and random interleaving are not supported.
+
+AIKit loads sources sequentially in YAML order, validates every source as nonempty, normalizes each source independently, and concatenates records in configured order while preserving row order within each source. This deterministic order is the input to the SFT trainer; packing, shuffling, or sampling may reorder records afterward. Datasets are not deduplicated, over- or undersampled, so repeating an entry intentionally repeats its rows. A one-source configuration retains the existing single-source path.
+
+This example combines pinned Alpaca and preformatted-text sources in the full-sequence group while using different loaders:
 
 ```yaml
 datasets:
   - source: organization/instruction-data
     type: alpaca
-  - source: organization/domain-text
+    loader:
+      type: huggingface
+      split: train
+      revision: 0123456789abcdef0123456789abcdef01234567
+  - source: https://datasets.example.com/domain-text.jsonl
     type: text
-  - source: organization/chat-data
-    type: messages
+    loader:
+      type: json
+      split: train
+      checksum: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 config:
   unsloth:
     loss: all
 ```
+
+Each entry retains its own loader, split, subset, revision, and checksum identity. Changing or reordering any entry invalidates training and export while leaving dependency installation cacheable. Incompatible entries fail with the relevant `datasets[n]` indexes instead of being coerced or ignored.
+
+#### Record Schema Details
 
 For the chat dataset types `messages` and `sharegpt`, `config.unsloth.loss` controls which tokens are supervised:
 
