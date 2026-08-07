@@ -63,7 +63,8 @@ jobs:
 
       - name: Install Python dataset test dependencies
         run: |
-          uv pip install --system \
+          uv venv --python python3 .venv
+          uv pip install --python .venv/bin/python \
             --exclude-newer 2026-08-05T00:00:00Z \
             "datasets==4.3.0" \
             "fsspec==2025.9.0" \
@@ -73,7 +74,7 @@ jobs:
             "pyarrow==25.0.0"
 
       - name: Python unit tests
-        run: make test-python
+        run: PATH="$GITHUB_WORKSPACE/.venv/bin:$PATH" make test-python
 
       - name: Test image size checker
         run: scripts/ci/check-image-size_test.sh
