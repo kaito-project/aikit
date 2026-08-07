@@ -67,7 +67,7 @@ datasets:
 {"text":"Question: What is a container image?\nAnswer: An immutable package containing an application and its dependencies."}
 ```
 
-AIKit preserves the source content except for tokenizer-aware special-token boundary normalization. A normalized record has exactly one effective leading BOS where applicable and exactly one terminal EOS. Tokenizers that insert BOS automatically or define no BOS are supported; a tokenizer without a usable EOS token fails. Records whose normalized token sequence exceeds `maxSeqLength` are rejected instead of truncated so the terminal EOS remains intact. Full-sequence labels supervise the entire normalized record, and packing uses its explicit EOS boundary.
+AIKit preserves the source content except for tokenizer-aware special-token boundary normalization. Tokenizing a normalized record yields exactly one effective leading BOS where applicable and exactly one terminal EOS. Tokenizers that insert BOS or EOS automatically, as well as tokenizers that define no BOS, are supported; a tokenizer without a usable EOS token fails. Records whose normalized token sequence exceeds `maxSeqLength` are rejected instead of truncated so the terminal EOS remains intact. Full-sequence labels supervise the entire normalized record, and packing uses its tokenized EOS boundary.
 
 This is full-sequence SFT, not continued pretraining. The `text` type does not change the standard LoRA targets or optimizer configuration, train embedding or language-model-head parameters, or add an embedding-specific learning rate.
 

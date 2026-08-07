@@ -120,10 +120,54 @@ class TextPreprocessingTokenizer:
         self.eos_token_id = eos_token_id
         self.chat_template = chat_template
         self.save_pretrained = mock.Mock()
+        self.calls = []
 
-    def __call__(self, text, *, add_special_tokens=True, truncation=False):
-        if truncation:
-            raise AssertionError("text preprocessing must disable truncation")
+    def __call__(
+        self,
+        text,
+        *,
+        add_special_tokens=True,
+        truncation=False,
+        max_length=None,
+    ):
+        self.calls.append(
+            {
+                "text": text,
+                "add_special_tokens": add_special_tokens,
+                "truncation": truncation,
+                "max_length": max_length,
+            }
+        )
+        if isinstance(text, list):
+            return {
+                "input_ids": [
+                    self.token_ids(
+                        item,
+                        add_special_tokens=add_special_tokens,
+                        truncation=truncation,
+                        max_length=max_length,
+                    )
+                    for item in text
+                ]
+            }
+
+        return {
+            "input_ids": self.token_ids(
+                text,
+                add_special_tokens=add_special_tokens,
+                truncation=truncation,
+                max_length=max_length,
+            )
+        }
+
+    def token_ids(
+        self,
+        text,
+        *,
+        add_special_tokens,
+        truncation,
+        max_length,
+    ):
         input_ids = []
         offset = 0
         special_tokens = tuple(
@@ -148,7 +192,12 @@ class TextPreprocessingTokenizer:
             input_ids.insert(0, self.bos_token_id)
         if add_special_tokens and self.auto_eos and self.eos_token_id is not None:
             input_ids.append(self.eos_token_id)
-        return {"input_ids": input_ids}
+        if truncation:
+            if max_length is None:
+                raise AssertionError("truncated tokenization requires max_length")
+            input_ids = input_ids[:max_length]
+
+        return input_ids
 
 
 def example_train_dependencies(dataset):
@@ -334,6 +383,32 @@ class DatasetSourceTest(unittest.TestCase):
             ),
         )
 
+    def test_describes_remote_json_source_without_credentials(self):
+        source = (
+            "https://alice:password@example.test/private/train.json?"
+            "X-Amz-Credential=credential-marker&X-Amz-Signature=signature-marker"
+            "#fragment-marker"
+        )
+
+        subject = target_unsloth.dataset_error_subject(
+            target_unsloth.DATASET_TYPE_TEXT,
+            source=source,
+            record_index=7,
+        )
+
+        self.assertEqual(subject, "text dataset remote JSON URL row 7")
+        for secret in (
+            source,
+            "alice",
+            "password",
+            "X-Amz-Credential",
+            "credential-marker",
+            "X-Amz-Signature",
+            "signature-marker",
+            "fragment-marker",
+        ):
+            self.assertNotIn(secret, subject)
+
     def test_builds_hub_dataset_load_spec(self):
         self.assertEqual(
             target_unsloth.dataset_load_spec("organization/dataset"),
@@ -472,10 +547,40 @@ class TextBoundaryNormalizationTest(unittest.TestCase):
         )
 
         self.assertIsNone(policy.bos_token)
+        self.assertTrue(policy.append_eos_token)
         self.assertEqual(normalized, "Content.<eos>")
         self.assertEqual(
             tokenizer(normalized, add_special_tokens=True)["input_ids"][-1],
             tokenizer.eos_token_id,
+        )
+
+    def test_uses_automatic_eos_for_tokenizer_without_bos(self):
+        tokenizer = TextPreprocessingTokenizer(
+            auto_bos=False,
+            auto_eos=True,
+            bos_token=None,
+            bos_token_id=None,
+        )
+
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+        normalized = target_unsloth.normalize_text_value(
+            "Content.<eos><eos>",
+            policy=policy,
+        )
+        input_ids = tokenizer(
+            normalized,
+            add_special_tokens=policy.add_special_tokens,
+        )["input_ids"]
+
+        self.assertTrue(policy.add_special_tokens)
+        self.assertFalse(policy.append_eos_token)
+        self.assertEqual(normalized, "Content.")
+        self.assertEqual(
+            target_unsloth.trailing_token_count(
+                input_ids,
+                tokenizer.eos_token_id,
+            ),
+            1,
         )
 
     def test_rejects_missing_or_unusable_eos(self):
@@ -487,15 +592,6 @@ class TextBoundaryNormalizationTest(unittest.TestCase):
             (
                 TextPreprocessingTokenizer(eos_token_id=None),
                 "integer tokenizer EOS token ID",
-            ),
-            (
-                TextPreprocessingTokenizer(
-                    auto_bos=False,
-                    bos_token=None,
-                    bos_token_id=None,
-                    auto_eos=True,
-                ),
-                "exactly one terminal tokenizer EOS token",
             ),
         )
 
@@ -518,7 +614,7 @@ class TextBoundaryNormalizationTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError,
-            "text dataset source 'organization/dataset' row 1.*5 tokens.*maxSeqLength 4",
+            "text dataset source 'organization/dataset' row 1.*at least 5 tokens.*maxSeqLength 4",
         ):
             target_unsloth.validate_text_sequence_lengths(
                 [{"text": "AB"}, {"text": "<bos>ABC<eos><eos>"}],
@@ -527,6 +623,91 @@ class TextBoundaryNormalizationTest(unittest.TestCase):
                 max_seq_length=4,
                 source="organization/dataset",
             )
+
+    def test_validates_in_bounded_truncated_batches(self):
+        tokenizer = TextPreprocessingTokenizer(auto_bos=True)
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+        tokenizer.calls.clear()
+        rows = [
+            {"text": "A"},
+            {"text": "B"},
+            {"text": "C"},
+            {"text": "D"},
+            {"text": "overflow"},
+        ]
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"row 4.*at least 5 tokens.*maxSeqLength 4",
+        ):
+            target_unsloth.validate_text_sequence_lengths(
+                rows,
+                processing_class=tokenizer,
+                policy=policy,
+                max_seq_length=4,
+                source="organization/dataset",
+                batch_size=2,
+            )
+
+        self.assertEqual(
+            [len(call["text"]) for call in tokenizer.calls],
+            [2, 2, 1],
+        )
+        for call in tokenizer.calls:
+            self.assertIsInstance(call["text"], list)
+            self.assertTrue(call["truncation"])
+            self.assertEqual(call["max_length"], 5)
+
+    def test_limits_batches_to_bounded_token_budget(self):
+        tokenizer = TextPreprocessingTokenizer(auto_bos=True)
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+        tokenizer.calls.clear()
+
+        target_unsloth.validate_text_sequence_lengths(
+            [{"text": f"row-{index}"} for index in range(65)],
+            processing_class=tokenizer,
+            policy=policy,
+            max_seq_length=4095,
+            source="organization/dataset",
+        )
+
+        self.assertEqual(
+            [len(call["text"]) for call in tokenizer.calls],
+            [64, 1],
+        )
+
+    def test_redacts_signed_url_in_text_validation_error(self):
+        tokenizer = TextPreprocessingTokenizer(auto_bos=True)
+        policy = target_unsloth.text_boundary_policy(tokenizer)
+        source = (
+            "https://alice:password@example.test/private/train.json?"
+            "X-Amz-Credential=credential-marker&X-Amz-Signature=signature-marker"
+            "#fragment-marker"
+        )
+
+        with self.assertRaises(ValueError) as raised:
+            target_unsloth.validate_text_sequence_lengths(
+                [{"text": "A"}, {"text": "overflow"}],
+                processing_class=tokenizer,
+                policy=policy,
+                max_seq_length=4,
+                source=source,
+            )
+
+        message = str(raised.exception)
+        self.assertIn("text dataset remote JSON URL row 1", message)
+        self.assertIn("maxSeqLength 4", message)
+        for secret in (
+            source,
+            "alice",
+            "password",
+            "X-Amz-Credential",
+            "credential-marker",
+            "X-Amz-Signature",
+            "signature-marker",
+            "fragment-marker",
+        ):
+            self.assertNotIn(secret, message)
 
     def test_validates_actual_record_boundaries(self):
         tokenizer = TextPreprocessingTokenizer(auto_bos=True)
@@ -1657,7 +1838,7 @@ class TrainingPhaseTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError,
-            "source 'organization/dataset' row 0.*5 tokens.*maxSeqLength 4",
+            "source 'organization/dataset' row 0.*at least 5 tokens.*maxSeqLength 4",
         ):
             target_unsloth.train_model(
                 train_config,

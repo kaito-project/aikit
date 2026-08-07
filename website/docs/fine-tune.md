@@ -86,7 +86,7 @@ An expected JSON Lines record is:
 
 ##### Text
 
-The `text` type accepts complete, preformatted training sequences in a non-empty string `text` column. AIKit preserves the sequence content while normalizing its special-token boundaries: tokenization produces exactly one effective leading BOS where applicable and every record ends with exactly one EOS. Tokenizers that add BOS automatically or do not define BOS are supported, but the tokenizer must define a usable EOS token. Records whose normalized token sequence exceeds `maxSeqLength` are rejected rather than truncated so that their terminal EOS is retained. All tokens in the normalized record are supervised, and packing retains the explicit EOS record boundaries.
+The `text` type accepts complete, preformatted training sequences in a non-empty string `text` column. AIKit preserves the sequence content while normalizing its special-token boundaries: tokenization produces exactly one effective leading BOS where applicable and every record ends with exactly one EOS. Tokenizers that add BOS or EOS automatically, as well as tokenizers that do not define BOS, are supported, but the tokenizer must define a usable EOS token. Records whose normalized token sequence exceeds `maxSeqLength` are rejected rather than truncated so that their terminal EOS is retained. All tokens in the normalized record are supervised, and packing retains the tokenized EOS record boundaries.
 
 ```yaml
 datasets:

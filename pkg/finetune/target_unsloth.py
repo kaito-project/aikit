@@ -38,9 +38,12 @@ PROMPT_COMPLETION_VALIDATION_BATCH_SIZE = 128
 # Bound the estimated retained token IDs for the prompt and combined text.
 PROMPT_COMPLETION_VALIDATION_TOKEN_BUDGET = 262_144
 PROMPT_PREFIX_FINGERPRINT_MASK = (1 << 256) - 1
+TEXT_VALIDATION_BATCH_SIZE = 128
+# Bound the retained token IDs across each text validation batch.
+TEXT_VALIDATION_TOKEN_BUDGET = 262_144
 TEXT_PREPROCESSING_VERIFICATION_TEXTS = (
     "AIKit text boundary verification one.",
-    "AIKit text boundary verification two.",
+    "AIKit text boundary verification two!",
 )
 
 # Keep the Alpaca prompt byte-for-byte compatible with existing fine-tuning builds.
@@ -83,6 +86,7 @@ class TextBoundaryPolicy(NamedTuple):
     bos_token: str | None
     bos_token_id: int | None
     add_special_tokens: bool
+    append_eos_token: bool
 
 
 class TrainDependencies(NamedTuple):
@@ -230,6 +234,13 @@ def dataset_load_spec(source: str) -> DatasetLoadSpec:
     return DatasetLoadSpec(path=source, kwargs={"split": "train"})
 
 
+def dataset_source_description(source: str) -> str:
+    if classify_dataset_source(source) is DatasetSourceKind.JSON_URL:
+        return "remote JSON URL"
+
+    return f"source {source!r}"
+
+
 def training_dataset_spec(
     train_config: Mapping[str, Any],
 ) -> TrainingDatasetSpec:
@@ -271,7 +282,7 @@ def dataset_error_subject(
             subject += f" record {record_index}"
         return subject
 
-    subject = f"{dataset_type} dataset source {source!r}"
+    subject = f"{dataset_type} dataset {dataset_source_description(source)}"
     if record_index is not None:
         subject += f" row {record_index}"
     return subject
@@ -399,6 +410,73 @@ def text_token_ids(
     return list(input_ids)
 
 
+def text_token_id_rows(
+    processing_class: Any,
+    texts: Sequence[str],
+    *,
+    add_special_tokens: bool,
+    max_length: int,
+    description: str,
+) -> list[list[Any]]:
+    try:
+        tokenized = processing_class(
+            list(texts),
+            add_special_tokens=add_special_tokens,
+            truncation=True,
+            max_length=max_length,
+        )
+    except Exception as error:
+        raise RuntimeError(
+            f"text preprocessing could not tokenize {description}"
+        ) from error
+
+    if not isinstance(tokenized, Mapping):
+        raise RuntimeError(
+            f"text preprocessing {description} tokenization must return a mapping"
+        )
+
+    try:
+        token_rows = tokenized["input_ids"]
+    except KeyError as error:
+        raise RuntimeError(
+            f"text preprocessing {description} tokenization did not produce input_ids"
+        ) from error
+
+    to_list = getattr(token_rows, "tolist", None)
+    if callable(to_list):
+        token_rows = to_list()
+    if not isinstance(token_rows, Sequence) or isinstance(
+        token_rows, (str, bytes)
+    ):
+        raise RuntimeError(
+            f"text preprocessing {description} token ID rows must be a sequence"
+        )
+    if len(token_rows) != len(texts):
+        raise RuntimeError(
+            f"text preprocessing {description} tokenization returned an unexpected number of rows"
+        )
+
+    input_id_rows = []
+    for row_index, input_ids in enumerate(token_rows):
+        to_list = getattr(input_ids, "tolist", None)
+        if callable(to_list):
+            input_ids = to_list()
+        if not isinstance(input_ids, Sequence) or isinstance(
+            input_ids, (str, bytes)
+        ):
+            raise RuntimeError(
+                f"text preprocessing {description} token IDs row {row_index} must be a sequence"
+            )
+        input_ids = list(input_ids)
+        if len(input_ids) > max_length:
+            raise RuntimeError(
+                f"text preprocessing {description} tokenization did not honor its truncation limit"
+            )
+        input_id_rows.append(input_ids)
+
+    return input_id_rows
+
+
 def leading_token_count(input_ids: Sequence[Any], token_id: int) -> int:
     count = 0
     for input_id in input_ids:
@@ -429,7 +507,10 @@ def normalize_text_value(text: str, *, policy: TextBoundaryPolicy) -> str:
     if policy.bos_token is not None and not policy.add_special_tokens:
         normalized = policy.bos_token + normalized
 
-    return normalized + policy.eos_token
+    if policy.append_eos_token:
+        normalized += policy.eos_token
+
+    return normalized
 
 
 def normalize_text_examples(
@@ -536,12 +617,35 @@ def text_boundary_policy(processing_class: Any) -> TextBoundaryPolicy:
     add_special_tokens = bos_token is None or (
         tokenizer_adds_bos and not template_suppresses_special_tokens
     )
+    automatic_eos_counts = [
+        trailing_token_count(
+            text_token_ids(
+                processing_class,
+                probe_text,
+                add_special_tokens=add_special_tokens,
+                description=f"EOS behavior probe {index}",
+            ),
+            eos_token_id,
+        )
+        for index, probe_text in enumerate(TEXT_PREPROCESSING_VERIFICATION_TEXTS)
+    ]
+    if len(set(automatic_eos_counts)) != 1:
+        raise RuntimeError(
+            "text preprocessing tokenizer automatic EOS behavior is inconsistent"
+        )
+    automatic_eos_count = automatic_eos_counts[0]
+    if automatic_eos_count not in {0, 1}:
+        raise RuntimeError(
+            "text preprocessing tokenizer must add at most one automatic terminal EOS token"
+        )
+
     policy = TextBoundaryPolicy(
         eos_token=eos_token,
         eos_token_id=eos_token_id,
         bos_token=bos_token,
         bos_token_id=bos_token_id,
         add_special_tokens=add_special_tokens,
+        append_eos_token=automatic_eos_count == 0,
     )
 
     for index, probe_text in enumerate(TEXT_PREPROCESSING_VERIFICATION_TEXTS):
@@ -573,38 +677,78 @@ def validate_text_sequence_lengths(
     policy: TextBoundaryPolicy,
     max_seq_length: int,
     source: str,
+    batch_size: int = TEXT_VALIDATION_BATCH_SIZE,
 ) -> None:
-    for record_index, record in enumerate(dataset):
-        subject = dataset_error_subject(
-            DATASET_TYPE_TEXT,
-            source=source,
-            record_index=record_index,
-        )
-        normalized = normalize_text_value(record["text"], policy=policy)
-        input_ids = text_token_ids(
+    if (
+        isinstance(batch_size, bool)
+        or not isinstance(batch_size, int)
+        or batch_size <= 0
+    ):
+        raise ValueError("text validation batch size must be positive")
+    if (
+        isinstance(max_seq_length, bool)
+        or not isinstance(max_seq_length, int)
+        or max_seq_length <= 0
+    ):
+        raise ValueError("text max sequence length must be positive")
+
+    token_limit = max_seq_length + 1
+    effective_batch_size = min(
+        batch_size,
+        max(1, TEXT_VALIDATION_TOKEN_BUDGET // token_limit),
+    )
+    record_count = 0
+    batch_start = 0
+    normalized_texts: list[str] = []
+
+    def validate_batch() -> None:
+        input_id_rows = text_token_id_rows(
             processing_class,
-            normalized,
+            normalized_texts,
             add_special_tokens=policy.add_special_tokens,
-            description=subject,
+            max_length=token_limit,
+            description=(
+                f"records {batch_start}-{batch_start + len(normalized_texts) - 1}"
+            ),
         )
-        if len(input_ids) > max_seq_length:
-            raise ValueError(
-                f"{subject} produces {len(input_ids)} tokens after boundary "
-                f"normalization, exceeding maxSeqLength {max_seq_length}; "
-                "truncation would remove the terminal EOS"
+        for batch_index, input_ids in enumerate(input_id_rows):
+            record_index = batch_start + batch_index
+            subject = dataset_error_subject(
+                DATASET_TYPE_TEXT,
+                source=source,
+                record_index=record_index,
             )
-        if trailing_token_count(input_ids, policy.eos_token_id) != 1:
-            raise ValueError(
-                f"{subject} must have exactly one terminal tokenizer EOS token "
-                "after normalization"
-            )
-        if policy.bos_token_id is not None and leading_token_count(
-            input_ids, policy.bos_token_id
-        ) != 1:
-            raise ValueError(
-                f"{subject} must have exactly one leading tokenizer BOS token "
-                "after normalization"
-            )
+            if len(input_ids) > max_seq_length:
+                raise ValueError(
+                    f"{subject} produces at least {len(input_ids)} tokens after "
+                    f"boundary normalization, exceeding maxSeqLength {max_seq_length}; "
+                    "training truncation would discard part of the normalized record"
+                )
+            if trailing_token_count(input_ids, policy.eos_token_id) != 1:
+                raise ValueError(
+                    f"{subject} must have exactly one terminal tokenizer EOS token "
+                    "after normalization"
+                )
+            if policy.bos_token_id is not None and leading_token_count(
+                input_ids, policy.bos_token_id
+            ) != 1:
+                raise ValueError(
+                    f"{subject} must have exactly one leading tokenizer BOS token "
+                    "after normalization"
+                )
+
+    for record in dataset:
+        normalized_texts.append(
+            normalize_text_value(record["text"], policy=policy)
+        )
+        record_count += 1
+        if len(normalized_texts) == effective_batch_size:
+            validate_batch()
+            normalized_texts.clear()
+            batch_start = record_count
+
+    if normalized_texts:
+        validate_batch()
 
 
 def prepare_training_dataset(
