@@ -2,6 +2,8 @@ package build
 
 import (
 	"math"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
@@ -9,7 +11,14 @@ import (
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-const loadToMemoryTestModelName = "model"
+const (
+	loadToMemoryTestModelName = "model"
+	testHTTPSPrefix           = "https://"
+	testMutableHubWarning     = "datasets[0] Hugging Face dataset has no revision; its content is not reproducibly pinned"
+	testURLFragment           = "fragment"
+	testURLToken              = "token"
+	testURLValue              = "value"
+)
 
 func Test_validateConfig(t *testing.T) {
 	type args struct {
@@ -341,7 +350,11 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 }
 
 func Test_validateFineTuneConfig(t *testing.T) {
-	const invalidOutputNameError = "output name must be a safe filename containing only letters, numbers, dots, hyphens, or underscores"
+	const (
+		invalidOutputNameError = "output name must be a safe filename containing only letters, numbers, dots, hyphens, or underscores"
+		testMessagesSource     = "messages"
+		testTextSource         = "text"
+	)
 
 	tests := []struct {
 		name      string
@@ -349,7 +362,45 @@ func Test_validateFineTuneConfig(t *testing.T) {
 		nilConfig bool
 		wantErr   string
 	}{
-		{name: "valid"},
+		{name: "valid alpaca dataset type"},
+		{
+			name: "valid messages dataset type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetMessages
+			},
+		},
+		{
+			name: "valid sharegpt dataset type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetShareGPT
+			},
+		},
+		{
+			name: "valid messages response loss",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetMessages
+				c.Config.Unsloth.Loss = utils.SFTLossResponse
+			},
+		},
+		{
+			name: "valid sharegpt response loss",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetShareGPT
+				c.Config.Unsloth.Loss = utils.SFTLossResponse
+			},
+		},
+		{
+			name: "valid prompt-completion dataset type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetPromptCompletion
+			},
+		},
+		{
+			name: "valid text dataset type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetText
+			},
+		},
 		{name: "nil config", nilConfig: true, wantErr: "fine-tune config is not defined"},
 		{
 			name: "missing api version",
@@ -387,25 +438,154 @@ func Test_validateFineTuneConfig(t *testing.T) {
 			wantErr: "no datasets defined",
 		},
 		{
-			name: "multiple datasets",
+			name: "valid multiple full-sequence datasets",
 			mutate: func(c *config.FineTuneConfig) {
-				c.Datasets = append(c.Datasets, config.Dataset{Source: "other", Type: "alpaca"})
+				c.Datasets = []config.Dataset{
+					{Source: "alpaca", Type: utils.DatasetAlpaca},
+					{Source: testTextSource, Type: utils.DatasetText},
+					{Source: testMessagesSource, Type: utils.DatasetMessages},
+					{Source: "sharegpt", Type: utils.DatasetShareGPT},
+				}
 			},
-			wantErr: "only one dataset is supported at this time",
+		},
+		{
+			name: "valid multiple prompt-completion datasets",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets = []config.Dataset{
+					{Source: "first", Type: utils.DatasetPromptCompletion},
+					{Source: "second", Type: utils.DatasetPromptCompletion},
+				}
+			},
+		},
+		{
+			name: "valid multiple response-only chat datasets",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets = []config.Dataset{
+					{Source: testMessagesSource, Type: utils.DatasetMessages},
+					{Source: "sharegpt", Type: utils.DatasetShareGPT},
+				}
+				c.Config.Unsloth.Loss = utils.SFTLossResponse
+			},
+		},
+		{
+			name: "incompatible later prompt-completion dataset",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets = append(c.Datasets, config.Dataset{Source: "other", Type: utils.DatasetPromptCompletion})
+			},
+			wantErr: "datasets[1] type prompt-completion is incompatible with datasets[0] type alpaca: completion-only and full-sequence datasets cannot be combined",
+		},
+		{
+			name: "incompatible later full-sequence dataset",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets = []config.Dataset{
+					{Source: "first", Type: utils.DatasetPromptCompletion},
+					{Source: "second", Type: utils.DatasetText},
+				}
+			},
+			wantErr: "datasets[1] type text is incompatible with datasets[0] type prompt-completion: full-sequence and completion-only datasets cannot be combined",
 		},
 		{
 			name: "missing dataset source",
 			mutate: func(c *config.FineTuneConfig) {
 				c.Datasets[0].Source = "\t"
 			},
-			wantErr: "dataset source is not defined",
+			wantErr: "datasets[0].source is not defined",
+		},
+		{
+			name: "missing later dataset source",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets = append(c.Datasets, config.Dataset{Source: " ", Type: utils.DatasetText})
+			},
+			wantErr: "datasets[1].source is not defined",
 		},
 		{
 			name: "unsupported dataset type",
 			mutate: func(c *config.FineTuneConfig) {
 				c.Datasets[0].Type = "other"
 			},
-			wantErr: "dataset type other is not supported",
+			wantErr: "datasets[0].type other is not supported",
+		},
+		{
+			name: "unsupported later dataset type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets = append(c.Datasets, config.Dataset{Source: "other", Type: "preference"})
+			},
+			wantErr: "datasets[1].type preference is not supported",
+		},
+		{
+			name: "invalid later dataset loader",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets = append(c.Datasets, config.Dataset{
+					Source: "organization/text",
+					Type:   utils.DatasetText,
+					Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace},
+				})
+			},
+			wantErr: "datasets[1].loader.split is not defined",
+		},
+		{
+			name: "missing loss",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Config.Unsloth.Loss = ""
+			},
+			wantErr: "config.unsloth.loss is not defined",
+		},
+		{
+			name: "whitespace loss",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Config.Unsloth.Loss = " \t"
+			},
+			wantErr: "config.unsloth.loss is not defined",
+		},
+		{
+			name: "unsupported loss",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Config.Unsloth.Loss = "assistant"
+			},
+			wantErr: "config.unsloth.loss assistant is not supported",
+		},
+		{
+			name: "response loss with alpaca dataset",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Config.Unsloth.Loss = utils.SFTLossResponse
+			},
+			wantErr: "datasets[0] type alpaca: config.unsloth.loss response is supported only for messages and sharegpt datasets",
+		},
+		{
+			name: "response loss with prompt-completion dataset",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetPromptCompletion
+				c.Config.Unsloth.Loss = utils.SFTLossResponse
+			},
+			wantErr: "datasets[0] type prompt-completion: config.unsloth.loss response is supported only for messages and sharegpt datasets",
+		},
+		{
+			name: "response loss with text dataset",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetText
+				c.Config.Unsloth.Loss = utils.SFTLossResponse
+			},
+			wantErr: "datasets[0] type text: config.unsloth.loss response is supported only for messages and sharegpt datasets",
+		},
+		{
+			name: "response loss with later non-chat dataset",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets = []config.Dataset{
+					{Source: testMessagesSource, Type: utils.DatasetMessages},
+					{Source: testTextSource, Type: utils.DatasetText},
+				}
+				c.Config.Unsloth.Loss = utils.SFTLossResponse
+			},
+			wantErr: "datasets[1] type text: config.unsloth.loss response is supported only for messages and sharegpt datasets",
+		},
+		{
+			name: "response loss with packing",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetMessages
+				c.Config.Unsloth.Loss = utils.SFTLossResponse
+				c.Config.Unsloth.Packing = true
+			},
+			wantErr: "config.unsloth.loss response does not support packing because response masks must not cross conversation boundaries",
 		},
 		{
 			name: "non-positive max sequence length",
@@ -606,13 +786,275 @@ func Test_validateFineTuneConfig(t *testing.T) {
 	}
 }
 
+func Test_validateDPOFineTuneConfig(t *testing.T) {
+	const (
+		revision       = "0123456789abcdef0123456789abcdef01234567"
+		checksum       = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		dpoLoaderSplit = "train"
+		betaError      = "objective.beta must be a finite value greater than zero"
+	)
+
+	tests := []struct {
+		name    string
+		mutate  func(*config.FineTuneConfig)
+		wantErr string
+	}{
+		{name: "valid defaults"},
+		{
+			name: "DPO rejects multiple preference datasets",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets = append(c.Datasets, c.Datasets[0])
+			},
+			wantErr: "objective type dpo requires exactly one dataset",
+		},
+		{
+			name: "valid pinned Hugging Face loader",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Loader = &config.DatasetLoaderSpec{
+					Type: utils.DatasetLoaderHuggingFace, Split: dpoLoaderSplit, Revision: revision,
+				}
+			},
+		},
+		{
+			name: "valid checksummed JSON loader",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Source = "https://example.test/preferences.jsonl"
+				c.Datasets[0].Loader = &config.DatasetLoaderSpec{
+					Type: utils.DatasetLoaderJSON, Split: dpoLoaderSplit, Checksum: checksum,
+				}
+			},
+		},
+		{
+			name: "missing objective type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Type = ""
+			},
+			wantErr: "objective.type is not defined",
+		},
+		{
+			name: "whitespace objective type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Type = " \t"
+			},
+			wantErr: "objective.type is not defined",
+		},
+		{
+			name: "unsupported objective type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Type = "orpo"
+			},
+			wantErr: "objective.type orpo is not supported",
+		},
+		{
+			name: "SFT rejects preference",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective = config.FineTuneObjectiveSpec{Type: utils.ObjectiveSFT}
+			},
+			wantErr: "dataset type preference is supported only for objective type dpo",
+		},
+		{
+			name: "SFT rejects DPO settings",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective = config.FineTuneObjectiveSpec{Type: utils.ObjectiveSFT, Beta: 0.1}
+				c.Datasets[0].Type = utils.DatasetAlpaca
+			},
+			wantErr: "objective beta, lossType, and maxPromptLength are supported only for objective type dpo",
+		},
+		{
+			name: "DPO rejects Alpaca",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetAlpaca
+			},
+			wantErr: "objective type dpo requires dataset type preference, got alpaca",
+		},
+		{
+			name: "DPO rejects messages",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetMessages
+			},
+			wantErr: "objective type dpo requires dataset type preference, got messages",
+		},
+		{
+			name: "DPO rejects ShareGPT",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetShareGPT
+			},
+			wantErr: "objective type dpo requires dataset type preference, got sharegpt",
+		},
+		{
+			name: "DPO rejects prompt-completion",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetPromptCompletion
+			},
+			wantErr: "objective type dpo requires dataset type preference, got prompt-completion",
+		},
+		{
+			name: "DPO rejects text",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetText
+			},
+			wantErr: "objective type dpo requires dataset type preference, got text",
+		},
+		{
+			name: "DPO rejects text loader",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Source = "https://example.test/preferences.txt"
+				c.Datasets[0].Loader = &config.DatasetLoaderSpec{Type: utils.DatasetLoaderText, Split: "train"}
+			},
+			wantErr: "dataset type preference does not support loader type text",
+		},
+		{
+			name: "DPO rejects response loss",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Config.Unsloth.Loss = utils.SFTLossResponse
+			},
+			wantErr: "config.unsloth.loss response is an SFT-only setting and is not supported for objective type dpo",
+		},
+		{
+			name: "DPO rejects packing",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Config.Unsloth.Packing = true
+			},
+			wantErr: "objective type dpo does not support config.unsloth.packing",
+		},
+		{
+			name: "zero beta",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Beta = 0
+			},
+			wantErr: betaError,
+		},
+		{
+			name: "negative beta",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Beta = -0.1
+			},
+			wantErr: betaError,
+		},
+		{
+			name: "NaN beta",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Beta = math.NaN()
+			},
+			wantErr: betaError,
+		},
+		{
+			name: "positive infinity beta",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Beta = math.Inf(1)
+			},
+			wantErr: betaError,
+		},
+		{
+			name: "negative infinity beta",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Beta = math.Inf(-1)
+			},
+			wantErr: betaError,
+		},
+		{
+			name: "missing loss type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.LossType = ""
+			},
+			wantErr: "objective.lossType is not defined",
+		},
+		{
+			name: "unsupported loss type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.LossType = "hinge"
+			},
+			wantErr: "objective.lossType hinge is not supported",
+		},
+		{
+			name: "zero max prompt length",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.MaxPromptLength = 0
+			},
+			wantErr: "objective.maxPromptLength must be greater than zero",
+		},
+		{
+			name: "negative max prompt length",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.MaxPromptLength = -1
+			},
+			wantErr: "objective.maxPromptLength must be greater than zero",
+		},
+		{
+			name: "max prompt length exceeds sequence length",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.MaxPromptLength = c.Config.Unsloth.MaxSeqLength + 1
+			},
+			wantErr: "objective.maxPromptLength must not exceed config.unsloth.maxSeqLength",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fineTuneConfig := validDPOFineTuneConfig()
+			if tt.mutate != nil {
+				tt.mutate(fineTuneConfig)
+			}
+			err := validateFinetuneConfig(fineTuneConfig)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateFinetuneConfig() error = %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateFinetuneConfig() error = nil, want %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("validateFinetuneConfig() error = %q, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func Test_validateNormalizedFineTuneConfig(t *testing.T) {
-	_, fineTuneConfig, err := config.NewFromBytes([]byte(`
+	datasetTypes := []string{utils.DatasetAlpaca, utils.DatasetMessages, utils.DatasetPromptCompletion, utils.DatasetShareGPT, utils.DatasetText}
+	for _, datasetType := range datasetTypes {
+		t.Run(datasetType, func(t *testing.T) {
+			_, fineTuneConfig, err := config.NewFromBytes([]byte(`
 apiVersion: v1alpha1
 baseModel: unsloth/test-model
 datasets:
   - source: test-dataset
-    type: alpaca
+    type: ` + datasetType + "\n"))
+			if err != nil {
+				t.Fatalf("config.NewFromBytes() error = %v", err)
+			}
+			if fineTuneConfig == nil {
+				t.Fatal("config.NewFromBytes() returned no fine-tune config")
+			}
+			fineTuneConfig.Target = utils.TargetUnsloth
+
+			if got := fineTuneConfig.Datasets[0].Type; got != datasetType {
+				t.Fatalf("dataset type = %q, want %q", got, datasetType)
+			}
+			if got := fineTuneConfig.Config.Unsloth.Loss; got != utils.SFTLossAll {
+				t.Fatalf("loss = %q, want default %q", got, utils.SFTLossAll)
+			}
+			if err := validateFinetuneConfig(fineTuneConfig); err != nil {
+				t.Fatalf("validateFinetuneConfig() error = %v", err)
+			}
+		})
+	}
+}
+
+func Test_validateNormalizedDPOFineTuneConfig(t *testing.T) {
+	_, fineTuneConfig, err := config.NewFromBytes([]byte(`
+apiVersion: v1alpha1
+baseModel: unsloth/test-model
+objective:
+  type: dpo
+datasets:
+  - source: organization/preferences
+    type: preference
+config:
+  unsloth:
+    packing: false
 `))
 	if err != nil {
 		t.Fatalf("config.NewFromBytes() error = %v", err)
@@ -620,8 +1062,19 @@ datasets:
 	if fineTuneConfig == nil {
 		t.Fatal("config.NewFromBytes() returned no fine-tune config")
 	}
-	fineTuneConfig.Target = "unsloth"
+	fineTuneConfig.Target = utils.TargetUnsloth
 
+	if got := fineTuneConfig.Objective; got != (config.FineTuneObjectiveSpec{
+		Type:            utils.ObjectiveDPO,
+		Beta:            0.1,
+		LossType:        utils.DPOLossSigmoid,
+		MaxPromptLength: 512,
+	}) {
+		t.Fatalf("objective = %#v, want normalized DPO defaults", got)
+	}
+	if got := fineTuneConfig.Config.Unsloth.LearningRate; got != 0.000001 {
+		t.Fatalf("learning rate = %g, want DPO default 0.000001", got)
+	}
 	if err := validateFinetuneConfig(fineTuneConfig); err != nil {
 		t.Fatalf("validateFinetuneConfig() error = %v", err)
 	}
@@ -718,6 +1171,7 @@ func validFineTuneConfig() *config.FineTuneConfig {
 		APIVersion: "v1alpha1",
 		Target:     "unsloth",
 		BaseModel:  "unsloth/test-model",
+		Objective:  config.FineTuneObjectiveSpec{Type: utils.ObjectiveSFT},
 		Datasets: []config.Dataset{
 			{Source: "test-dataset", Type: "alpaca"},
 		},
@@ -725,6 +1179,7 @@ func validFineTuneConfig() *config.FineTuneConfig {
 			Unsloth: config.FineTuneConfigUnslothSpec{
 				MaxSeqLength:              2048,
 				LoadIn4bit:                true,
+				Loss:                      utils.SFTLossAll,
 				BatchSize:                 2,
 				GradientAccumulationSteps: 4,
 				WarmupSteps:               10,
@@ -742,6 +1197,19 @@ func validFineTuneConfig() *config.FineTuneConfig {
 			Name:     "aikit-model",
 		},
 	}
+}
+
+func validDPOFineTuneConfig() *config.FineTuneConfig {
+	c := validFineTuneConfig()
+	c.Objective = config.FineTuneObjectiveSpec{
+		Type:            utils.ObjectiveDPO,
+		Beta:            0.1,
+		LossType:        utils.DPOLossSigmoid,
+		MaxPromptLength: 512,
+	}
+	c.Datasets[0].Type = utils.DatasetPreference
+	c.Config.Unsloth.LearningRate = 0.000001
+	return c
 }
 
 func Test_parseFineTuneBuildOptions(t *testing.T) {
@@ -784,5 +1252,252 @@ func Test_parseFineTuneBuildOptions(t *testing.T) {
 				t.Fatalf("CDI device = %q, want %q", options.CDIDevice, tt.wantDevice)
 			}
 		})
+	}
+}
+
+func Test_validateDatasetLoader(t *testing.T) {
+	const (
+		testHubDatasetSource = "organization/dataset"
+		testRemoteJSONSource = "https://example.test/train.json"
+		testLoaderSplit      = "train"
+		revision             = "0123456789abcdef0123456789abcdef01234567"
+		checksum             = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		revisionError        = "revision must be a lowercase 40-character commit hash"
+		checksumError        = "checksum must use lowercase sha256:<64 hex> format"
+	)
+
+	tests := []struct {
+		name    string
+		source  string
+		loader  *config.DatasetLoaderSpec
+		wantErr string
+	}{
+		{name: "omitted loader", source: testHubDatasetSource},
+		{
+			name:   "pinned huggingface",
+			source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Subset: "default", Split: "train_sft", Revision: revision},
+		},
+		{
+			name:   "mutable huggingface",
+			source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit},
+		},
+		{
+			name:   "json",
+			source: testRemoteJSONSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: "validation", Checksum: checksum},
+		},
+		{
+			name:   "csv",
+			source: "http://example.test/train.csv",
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderCSV, Split: testLoaderSplit, Checksum: checksum},
+		},
+		{
+			name:   "parquet",
+			source: "HTTPS://example.test/train.parquet",
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderParquet, Split: testLoaderSplit, Checksum: checksum},
+		},
+		{
+			name:   "text",
+			source: "https://example.test/train.txt",
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderText, Split: testLoaderSplit, Checksum: checksum},
+		},
+		{
+			name: "missing type", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Split: testLoaderSplit}, wantErr: "datasets[0].loader.type is not defined",
+		},
+		{
+			name: "unknown type", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: "arrow", Split: testLoaderSplit}, wantErr: "datasets[0].loader.type arrow is not supported",
+		},
+		{
+			name: "missing split", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace}, wantErr: "datasets[0].loader.split is not defined",
+		},
+		{
+			name: "split expression", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: "train[:10%]"}, wantErr: "datasets[0].loader.split must be a named split",
+		},
+		{
+			name: "hyphenated split", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: "train-sft"}, wantErr: "datasets[0].loader.split must be a named split",
+		},
+		{
+			name: "empty subset", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit, Subset: " \t"}, wantErr: "datasets[0].loader.subset must not be empty",
+		},
+		{
+			name: "huggingface URL", source: strings.Join([]string{testHTTPSPrefix, "user-one", ":", "credential-one", "@example.test/data?token=", testURLValue, "#" + testURLFragment}, ""),
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit}, wantErr: "type huggingface does not support an HTTP(S) source",
+		},
+		{
+			name: "huggingface checksum", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit, Checksum: checksum}, wantErr: "checksum is not supported for type huggingface",
+		},
+		{
+			name: "branch revision", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit, Revision: "main"}, wantErr: revisionError,
+		},
+		{
+			name: "short revision", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit, Revision: "01234567"}, wantErr: revisionError,
+		},
+		{
+			name: "uppercase revision", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit, Revision: strings.ToUpper(revision)}, wantErr: revisionError,
+		},
+		{
+			name: "remote loader non-URL", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: testLoaderSplit}, wantErr: "type json requires an absolute HTTP(S) source",
+		},
+		{
+			name: "remote loader relative URL", source: "/train.json",
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: testLoaderSplit}, wantErr: "type json requires an absolute HTTP(S) source",
+		},
+		{
+			name: "remote subset", source: testRemoteJSONSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: testLoaderSplit, Subset: "default"}, wantErr: "subset is supported only for type huggingface",
+		},
+		{
+			name: "remote revision", source: testRemoteJSONSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: testLoaderSplit, Revision: revision}, wantErr: "revision is supported only for type huggingface",
+		},
+		{
+			name: "checksum algorithm", source: testRemoteJSONSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: testLoaderSplit, Checksum: "md5:0123"}, wantErr: checksumError,
+		},
+		{
+			name: "checksum length", source: testRemoteJSONSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: testLoaderSplit, Checksum: "sha256:0123"}, wantErr: checksumError,
+		},
+		{
+			name: "uppercase checksum", source: testRemoteJSONSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: testLoaderSplit, Checksum: strings.ToUpper(checksum)}, wantErr: checksumError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fineTuneConfig := validFineTuneConfig()
+			fineTuneConfig.Datasets[0].Source = tt.source
+			fineTuneConfig.Datasets[0].Loader = tt.loader
+			err := validateFinetuneConfig(fineTuneConfig)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateFinetuneConfig() error = %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateFinetuneConfig() error = nil, want %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("validateFinetuneConfig() error = %q, want substring %q", err, tt.wantErr)
+			}
+			for _, secret := range []string{"user-one", "credential-one", testURLToken, testURLValue, testURLFragment} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("validation error leaked URL detail %q: %q", secret, err)
+				}
+			}
+		})
+	}
+}
+
+func Test_datasetReproducibilityWarnings(t *testing.T) {
+	const (
+		privateDatasetSource = "organization/private-dataset"
+		testLoaderSplit      = "train"
+		revision             = "0123456789abcdef0123456789abcdef01234567"
+		checksum             = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	)
+	secretURL := strings.Join([]string{testHTTPSPrefix, "user-two", ":", "credential-two", "@example.test/train.parquet?token=", "private-value", "#" + testURLFragment}, "")
+
+	tests := []struct {
+		name         string
+		dataset      config.Dataset
+		wantWarnings []string
+	}{
+		{
+			name:         "legacy hub",
+			dataset:      config.Dataset{Source: privateDatasetSource, Type: utils.DatasetAlpaca},
+			wantWarnings: []string{testMutableHubWarning},
+		},
+		{
+			name:         "legacy URL",
+			dataset:      config.Dataset{Source: secretURL, Type: utils.DatasetPromptCompletion},
+			wantWarnings: []string{"datasets[0] remote JSON dataset has no checksum; its content is not reproducibly pinned"},
+		},
+		{
+			name:         "mutable hub loader",
+			dataset:      config.Dataset{Source: privateDatasetSource, Type: utils.DatasetMessages, Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit}},
+			wantWarnings: []string{testMutableHubWarning},
+		},
+		{
+			name:         "mutable remote loader",
+			dataset:      config.Dataset{Source: secretURL, Type: utils.DatasetPromptCompletion, Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderParquet, Split: testLoaderSplit}},
+			wantWarnings: []string{"datasets[0] remote parquet dataset has no checksum; its content is not reproducibly pinned"},
+		},
+		{
+			name:         "pinned hub",
+			dataset:      config.Dataset{Source: privateDatasetSource, Type: utils.DatasetMessages, Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit, Revision: revision}},
+			wantWarnings: []string{},
+		},
+		{
+			name:         "checksummed remote",
+			dataset:      config.Dataset{Source: secretURL, Type: utils.DatasetPromptCompletion, Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderParquet, Split: testLoaderSplit, Checksum: checksum}},
+			wantWarnings: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fineTuneConfig := validFineTuneConfig()
+			fineTuneConfig.Datasets = []config.Dataset{tt.dataset}
+			warnings := datasetReproducibilityWarnings(fineTuneConfig)
+			if !reflect.DeepEqual(warnings, tt.wantWarnings) {
+				t.Fatalf("warnings = %#v, want %#v", warnings, tt.wantWarnings)
+			}
+			for _, warning := range warnings {
+				for _, secret := range []string{privateDatasetSource, "example.test", "user-two", "credential-two", testURLToken, "private-value", testURLFragment} {
+					if strings.Contains(warning, secret) {
+						t.Fatalf("warning leaked source detail %q: %q", secret, warning)
+					}
+				}
+			}
+		})
+	}
+}
+
+func Test_datasetReproducibilityWarningsCoverEveryDataset(t *testing.T) {
+	secretURL := strings.Join([]string{testHTTPSPrefix, "user", ":", "credential", "@example.test/second.json?token=", testURLValue, "#" + testURLFragment}, "")
+	fineTuneConfig := validFineTuneConfig()
+	fineTuneConfig.Datasets = []config.Dataset{
+		{
+			Source: "organization/first",
+			Type:   utils.DatasetText,
+			Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: "train"},
+		},
+		{
+			Source: secretURL,
+			Type:   utils.DatasetText,
+			Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: "train"},
+		},
+	}
+
+	want := []string{
+		testMutableHubWarning,
+		"datasets[1] remote json dataset has no checksum; its content is not reproducibly pinned",
+	}
+	warnings := datasetReproducibilityWarnings(fineTuneConfig)
+	if !reflect.DeepEqual(warnings, want) {
+		t.Fatalf("warnings = %#v, want %#v", warnings, want)
+	}
+	for _, warning := range warnings {
+		for _, secret := range []string{"organization/first", "example.test", "user", "credential", testURLToken, testURLValue, testURLFragment} {
+			if strings.Contains(warning, secret) {
+				t.Fatalf("warning leaked source detail %q: %q", secret, warning)
+			}
+		}
 	}
 }
