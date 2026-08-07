@@ -5,7 +5,7 @@ import json
 import tempfile
 import threading
 import unittest
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -818,22 +818,32 @@ class DatasetLoaderTest(unittest.TestCase):
                     ]
                 }
             )
-            load_dataset = mock.Mock(return_value="dataset")
+            observed = {}
+
+            def load_dataset(_loader_type, *, data_files, split):
+                local_path = Path(data_files[split])
+                observed["path"] = local_path
+                observed["bytes"] = local_path.read_bytes()
+                return "dataset"
+
+            load_dataset = mock.Mock(side_effect=load_dataset)
             with tempfile.TemporaryDirectory() as cache_directory:
                 result = target_unsloth.load_training_dataset(
                     spec,
                     load_dataset=load_dataset,
                     cache_directory=cache_directory,
                 )
-                local_path = Path(
-                    load_dataset.call_args.kwargs["data_files"]["train"]
+                self.assertNotEqual(
+                    observed["path"].parent,
+                    Path(cache_directory),
                 )
-                self.assertEqual(local_path.read_bytes(), body)
 
         self.assertEqual(result, "dataset")
+        self.assertEqual(observed["bytes"], body)
+        self.assertFalse(observed["path"].exists())
         load_dataset.assert_called_once_with(
             "json",
-            data_files={"train": str(local_path)},
+            data_files={"train": str(observed["path"])},
             split="train",
         )
 
@@ -971,28 +981,45 @@ class DatasetLoaderTest(unittest.TestCase):
                             "checksum": checksum,
                         },
                     )
-                    load_dataset = mock.Mock(return_value="dataset")
+                    observed = {}
+
+                    def parse_dataset(
+                        _loader_type,
+                        *,
+                        data_files,
+                        split,
+                    ):
+                        local_path = Path(data_files[split])
+                        observed["path"] = local_path
+                        observed["bytes"] = local_path.read_bytes()
+                        observed["mode"] = local_path.stat().st_mode
+                        return "dataset"
+
+                    load_dataset = mock.Mock(side_effect=parse_dataset)
                     with tempfile.TemporaryDirectory() as cache_directory:
                         result = target_unsloth.load_training_dataset(
                             spec,
                             load_dataset=load_dataset,
                             cache_directory=cache_directory,
                         )
-                        local_path = Path(
-                            load_dataset.call_args.kwargs["data_files"][
-                                "validation"
-                            ]
-                        )
-                        self.assertEqual(local_path.read_bytes(), body)
-                        self.assertEqual(local_path.suffix, suffix)
-                        self.assertEqual(
-                            local_path.parent,
+                        self.assertNotEqual(
+                            observed["path"].parent,
                             Path(cache_directory),
                         )
-                        self.assertNotIn("token", str(local_path))
-                        self.assertNotIn("fragment-marker", str(local_path))
+                        cached_path = (
+                            Path(cache_directory)
+                            / f"{checksum.removeprefix('sha256:')}{suffix}"
+                        )
+                        self.assertEqual(cached_path.read_bytes(), body)
 
+                local_path = observed["path"]
                 self.assertEqual(result, "dataset")
+                self.assertEqual(observed["bytes"], body)
+                self.assertEqual(observed["mode"] & 0o777, 0o400)
+                self.assertEqual(local_path.suffix, suffix)
+                self.assertFalse(local_path.exists())
+                self.assertNotIn("token", str(local_path))
+                self.assertNotIn("fragment-marker", str(local_path))
                 load_dataset.assert_called_once_with(
                     loader_type,
                     data_files={"validation": str(local_path)},
@@ -1025,7 +1052,14 @@ class DatasetLoaderTest(unittest.TestCase):
                         load_dataset=load_dataset,
                         cache_directory=cache_directory,
                     )
-                self.assertEqual(list(Path(cache_directory).iterdir()), [])
+                cached_path = Path(cache_directory) / ("0" * 64 + ".json")
+                self.assertFalse(cached_path.exists())
+                self.assertTrue(
+                    all(
+                        path.name.startswith(".")
+                        for path in Path(cache_directory).iterdir()
+                    )
+                )
 
         load_dataset.assert_not_called()
 
@@ -1039,15 +1073,25 @@ class DatasetLoaderTest(unittest.TestCase):
                 dataset_type="prompt-completion",
                 loader={"type": "csv", "checksum": checksum},
             )
-            load_dataset = mock.Mock(return_value="dataset")
+            observed_bytes = []
+            observed_paths = []
+
+            def parse_dataset(_loader_type, *, data_files, split):
+                local_path = Path(data_files[split])
+                observed_paths.append(local_path)
+                observed_bytes.append(local_path.read_bytes())
+                return "dataset"
+
+            load_dataset = mock.Mock(side_effect=parse_dataset)
             with tempfile.TemporaryDirectory() as cache_directory:
+                cached_path = (
+                    Path(cache_directory)
+                    / f"{checksum.removeprefix('sha256:')}.csv"
+                )
                 first = target_unsloth.load_training_dataset(
                     spec,
                     load_dataset=load_dataset,
                     cache_directory=cache_directory,
-                )
-                cached_path = Path(
-                    load_dataset.call_args.kwargs["data_files"]["train"]
                 )
                 cached_path.write_bytes(b"corrupt cached bytes")
                 load_dataset.reset_mock()
@@ -1061,28 +1105,215 @@ class DatasetLoaderTest(unittest.TestCase):
                 self.assertEqual(cached_path.read_bytes(), body)
                 load_dataset.assert_called_once_with(
                     "csv",
-                    data_files={"train": str(cached_path)},
+                    data_files={"train": str(observed_paths[-1])},
                     split="train",
                 )
 
         self.assertEqual(first, "dataset")
         self.assertEqual(second, "dataset")
+        self.assertEqual(observed_bytes, [body, body])
+        self.assertTrue(all(not path.exists() for path in observed_paths))
         self.assertEqual(server.requests, ["/train.csv", "/train.csv"])
+
+    def test_parser_uses_private_snapshot_after_cache_path_is_replaced(self):
+        body = b'{"text":"verified"}\n'
+        replacement = b'{"text":"unverified"}\n'
+        digest = hashlib.sha256(body).hexdigest()
+        checksum = f"sha256:{digest}"
+        with LocalDatasetServer({"/train.json": body}) as server:
+            spec = self.training_spec(
+                source=server.url("/train.json"),
+                loader={"type": "json", "checksum": checksum},
+            )
+            observed = {}
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                cache_directory = root / "cache"
+                replacement_path = root / "replacement.json"
+                replacement_path.write_bytes(replacement)
+                cached_path = cache_directory / f"{digest}.json"
+
+                def parse_dataset(_loader_type, *, data_files, split):
+                    snapshot_path = Path(data_files[split])
+                    observed["snapshot_path"] = snapshot_path
+                    self.assertNotEqual(snapshot_path, cached_path)
+                    cached_path.unlink()
+                    cached_path.symlink_to(replacement_path)
+                    observed["bytes"] = snapshot_path.read_bytes()
+                    return "dataset"
+
+                result = target_unsloth.load_training_dataset(
+                    spec,
+                    load_dataset=parse_dataset,
+                    cache_directory=cache_directory,
+                )
+
+                self.assertEqual(result, "dataset")
+                self.assertEqual(observed["bytes"], body)
+                self.assertTrue(cached_path.is_symlink())
+                self.assertEqual(replacement_path.read_bytes(), replacement)
+                self.assertFalse(observed["snapshot_path"].exists())
+
+    def test_cache_entry_symlink_is_replaced_without_following_target(self):
+        body = b'{"text":"verified"}\n'
+        digest = hashlib.sha256(body).hexdigest()
+        checksum = f"sha256:{digest}"
+        with LocalDatasetServer({"/train.json": body}) as server:
+            spec = self.training_spec(
+                source=server.url("/train.json"),
+                loader={"type": "json", "checksum": checksum},
+            )
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                cache_directory = root / "cache"
+                cache_directory.mkdir()
+                symlink_target = root / "outside.json"
+                symlink_target.write_bytes(body)
+                cached_path = cache_directory / f"{digest}.json"
+                cached_path.symlink_to(symlink_target)
+                observed = []
+
+                def parse_dataset(_loader_type, *, data_files, split):
+                    observed.append(Path(data_files[split]).read_bytes())
+                    return "dataset"
+
+                result = target_unsloth.load_training_dataset(
+                    spec,
+                    load_dataset=parse_dataset,
+                    cache_directory=cache_directory,
+                )
+
+                self.assertEqual(result, "dataset")
+                self.assertEqual(observed, [body])
+                self.assertFalse(cached_path.is_symlink())
+                self.assertEqual(cached_path.read_bytes(), body)
+                self.assertEqual(symlink_target.read_bytes(), body)
+                self.assertEqual(server.requests, ["/train.json"])
+
+    def test_cache_lock_symlink_is_rejected_without_following_target(self):
+        body = b'{"text":"verified"}\n'
+        digest = hashlib.sha256(body).hexdigest()
+        checksum = f"sha256:{digest}"
+        with LocalDatasetServer({"/train.json": body}) as server:
+            source = server.url("/train.json") + "?token=private#fragment"
+            spec = self.training_spec(
+                source=source,
+                loader={"type": "json", "checksum": checksum},
+            )
+            parser = mock.Mock()
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                cache_directory = root / "cache"
+                cache_directory.mkdir()
+                lock_target = root / "outside.lock"
+                lock_target.write_text("outside", encoding="utf-8")
+                lock_path = cache_directory / f".{digest}.lock"
+                lock_path.symlink_to(lock_target)
+
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "cache lock could not be acquired safely",
+                ) as raised:
+                    target_unsloth.load_training_dataset(
+                        spec,
+                        load_dataset=parser,
+                        cache_directory=cache_directory,
+                    )
+
+                self.assertEqual(lock_target.read_text(encoding="utf-8"), "outside")
+                self.assertTrue(lock_path.is_symlink())
+                self.assertEqual(server.requests, [])
+
+        parser.assert_not_called()
+        self.assertNotIn("private", str(raised.exception))
+        self.assertNotIn("fragment", str(raised.exception))
+
+    def test_per_digest_lock_serializes_corrupt_entry_replacement(self):
+        body = b'{"text":"verified"}\n'
+        digest = hashlib.sha256(body).hexdigest()
+        checksum = f"sha256:{digest}"
+        cache_started = threading.Event()
+        release_download = threading.Event()
+        second_download = threading.Event()
+        call_lock = threading.Lock()
+        open_calls = 0
+
+        def open_url(_request_url):
+            nonlocal open_calls
+            with call_lock:
+                open_calls += 1
+                call_number = open_calls
+            if call_number == 1:
+                cache_started.set()
+            else:
+                second_download.set()
+            if not release_download.wait(timeout=5):
+                raise RuntimeError("test download was not released")
+            return io.BytesIO(body)
+
+        with tempfile.TemporaryDirectory() as cache_directory_name:
+            cache_directory = Path(cache_directory_name)
+            cached_path = cache_directory / f"{digest}.json"
+            cached_path.write_bytes(b"corrupt")
+            results = []
+            errors = []
+            second_started = threading.Event()
+
+            def materialize(*, second=False):
+                if second:
+                    second_started.set()
+                try:
+                    with target_unsloth.materialize_remote_dataset_file(
+                        "https://example.test/train.json",
+                        loader_type="json",
+                        checksum=checksum,
+                        cache_directory=cache_directory,
+                        open_url=open_url,
+                    ) as snapshot_path:
+                        results.append(snapshot_path.read_bytes())
+                except Exception as error:
+                    errors.append(error)
+
+            first_thread = threading.Thread(target=materialize)
+            second_thread = threading.Thread(
+                target=materialize,
+                kwargs={"second": True},
+            )
+            first_thread.start()
+            self.assertTrue(cache_started.wait(timeout=2))
+            second_thread.start()
+            self.assertTrue(second_started.wait(timeout=2))
+            try:
+                self.assertFalse(second_download.wait(timeout=0.5))
+            finally:
+                release_download.set()
+            first_thread.join(timeout=5)
+            second_thread.join(timeout=5)
+
+            self.assertFalse(first_thread.is_alive())
+            self.assertFalse(second_thread.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(results, [body, body])
+            self.assertEqual(open_calls, 1)
+            self.assertEqual(cached_path.read_bytes(), body)
 
     def test_unchecksummed_download_uses_actual_content_digest(self):
         body = b"line one\nline two\n"
         digest = hashlib.sha256(body).hexdigest()
         with LocalDatasetServer({"/download": body}) as server:
             with tempfile.TemporaryDirectory() as cache_directory:
-                path = target_unsloth.materialize_remote_dataset_file(
+                with target_unsloth.materialize_remote_dataset_file(
                     server.url("/download"),
                     loader_type="text",
                     checksum=None,
                     cache_directory=cache_directory,
-                )
+                ) as snapshot_path:
+                    self.assertEqual(snapshot_path.name, "dataset.txt")
+                    self.assertEqual(snapshot_path.read_bytes(), body)
 
-                self.assertEqual(path.name, digest + ".txt")
-                self.assertEqual(path.read_bytes(), body)
+                cached_path = Path(cache_directory) / f"{digest}.txt"
+                self.assertEqual(cached_path.read_bytes(), body)
+                self.assertFalse(snapshot_path.exists())
 
     def test_default_cache_directory_uses_aikit_namespace(self):
         with tempfile.TemporaryDirectory() as cache_root:
@@ -1112,8 +1343,9 @@ class DatasetLoaderTest(unittest.TestCase):
                     load_dataset=initial_loader,
                     cache_directory=cache_directory,
                 )
-                cached_path = Path(
-                    initial_loader.call_args.kwargs["data_files"]["train"]
+                cached_path = (
+                    Path(cache_directory)
+                    / f"{checksum.removeprefix('sha256:')}.json"
                 )
                 cached_path.write_bytes(b"corrupt")
                 server.responses["/train.json"] = changed
@@ -1130,7 +1362,7 @@ class DatasetLoaderTest(unittest.TestCase):
                     )
 
                 parser.assert_not_called()
-                self.assertFalse(cached_path.exists())
+                self.assertEqual(cached_path.read_bytes(), b"corrupt")
 
     def test_preserves_data_and_compression_suffixes(self):
         self.assertEqual(
@@ -1162,13 +1394,14 @@ class DatasetLoaderTest(unittest.TestCase):
                 RuntimeError,
                 "remote json dataset could not be downloaded",
             ) as raised:
-                target_unsloth.materialize_remote_dataset_file(
+                with target_unsloth.materialize_remote_dataset_file(
                     source,
                     loader_type="json",
                     checksum=None,
                     cache_directory=cache_directory,
                     open_url=fail_with_url,
-                )
+                ):
+                    self.fail("download failure should prevent materialization")
 
         message = str(raised.exception)
         for secret in (
@@ -4249,7 +4482,7 @@ class TrainingPhaseTest(unittest.TestCase):
         with mock.patch.object(
             target_unsloth,
             "materialize_remote_dataset_file",
-            return_value=local_file,
+            return_value=nullcontext(local_file),
         ):
             with self.assertRaisesRegex(
                 RuntimeError,

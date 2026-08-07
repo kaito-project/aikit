@@ -2,15 +2,19 @@
 
 import argparse
 import copy
+import errno
+import fcntl
 import hashlib
 import json
 import operator
 import os
 import re
+import secrets
 import shutil
 import stat
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from enum import Enum
 from functools import partial
 from pathlib import Path
@@ -601,24 +605,310 @@ def remote_dataset_file_suffix(source: str, loader_type: str) -> str:
     return data_suffix + compression_suffix
 
 
-def file_sha256(path: Path) -> str:
+def nofollow_open_flags(flags: int) -> int:
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise RuntimeError(
+            "remote dataset cache requires no-follow file support"
+        )
+    return flags | nofollow | getattr(os, "O_CLOEXEC", 0)
+
+
+@contextmanager
+def open_dataset_cache_directory(cache_path: Path) -> Iterator[int]:
+    cache_descriptor: int | None = None
+    try:
+        cache_path.mkdir(parents=True, exist_ok=True)
+        cache_descriptor = os.open(
+            cache_path,
+            nofollow_open_flags(
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            ),
+        )
+        if not stat.S_ISDIR(os.fstat(cache_descriptor).st_mode):
+            raise OSError(errno.ENOTDIR, "cache path is not a directory")
+    except (OSError, RuntimeError):
+        if cache_descriptor is not None:
+            os.close(cache_descriptor)
+        raise RuntimeError(
+            "remote dataset cache directory could not be opened safely"
+        ) from None
+
+    try:
+        yield cache_descriptor
+    finally:
+        os.close(cache_descriptor)
+
+
+@contextmanager
+def dataset_digest_lock(
+    cache_descriptor: int,
+    digest: str,
+) -> Iterator[None]:
+    lock_name = f".{digest}.lock"
+    lock_descriptor: int | None = None
+    lock_acquired = False
+    try:
+        lock_descriptor = os.open(
+            lock_name,
+            nofollow_open_flags(os.O_RDWR | os.O_CREAT),
+            0o600,
+            dir_fd=cache_descriptor,
+        )
+        descriptor_stat = os.fstat(lock_descriptor)
+        if (
+            not stat.S_ISREG(descriptor_stat.st_mode)
+            or descriptor_stat.st_nlink != 1
+        ):
+            raise OSError(errno.EINVAL, "cache lock is not a regular file")
+        fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+        lock_acquired = True
+        path_stat = os.stat(
+            lock_name,
+            dir_fd=cache_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(path_stat.st_mode)
+            or (descriptor_stat.st_dev, descriptor_stat.st_ino)
+            != (path_stat.st_dev, path_stat.st_ino)
+        ):
+            raise OSError(errno.EAGAIN, "cache lock path changed")
+    except (OSError, RuntimeError):
+        if lock_descriptor is not None:
+            if lock_acquired:
+                fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+            os.close(lock_descriptor)
+        raise RuntimeError(
+            "remote dataset cache lock could not be acquired safely"
+        ) from None
+
+    try:
+        yield
+    finally:
+        fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+        os.close(lock_descriptor)
+
+
+def open_regular_cache_entry(
+    cache_descriptor: int,
+    entry_name: str,
+) -> int | None:
+    try:
+        entry_descriptor = os.open(
+            entry_name,
+            nofollow_open_flags(
+                os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+            ),
+            dir_fd=cache_descriptor,
+        )
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            return None
+        raise RuntimeError(
+            "remote dataset cache entry could not be opened safely"
+        ) from None
+
+    entry_stat = os.fstat(entry_descriptor)
+    if not stat.S_ISREG(entry_stat.st_mode) or entry_stat.st_nlink != 1:
+        os.close(entry_descriptor)
+        return None
+    return entry_descriptor
+
+
+def write_file_descriptor(file_descriptor: int, data: bytes) -> None:
+    remaining = memoryview(data)
+    while remaining:
+        written = os.write(file_descriptor, remaining)
+        if written <= 0:
+            raise OSError(errno.EIO, "failed to write dataset file")
+        remaining = remaining[written:]
+
+
+def copy_file_descriptor(source_descriptor: int, target_descriptor: int) -> str:
+    original_offset = os.lseek(source_descriptor, 0, os.SEEK_CUR)
     digest = hashlib.sha256()
-    with path.open("rb") as cached_file:
-        while chunk := cached_file.read(REMOTE_DATASET_CHUNK_SIZE):
+    try:
+        os.lseek(source_descriptor, 0, os.SEEK_SET)
+        while chunk := os.read(
+            source_descriptor,
+            REMOTE_DATASET_CHUNK_SIZE,
+        ):
+            write_file_descriptor(target_descriptor, chunk)
             digest.update(chunk)
+    finally:
+        os.lseek(source_descriptor, original_offset, os.SEEK_SET)
     return digest.hexdigest()
 
 
-def verified_cached_dataset_file(path: Path, expected_digest: str) -> bool:
+def create_verified_dataset_snapshot(
+    cache_descriptor: int,
+    entry_name: str,
+    expected_digest: str,
+    snapshot_directory: Path,
+    suffix: str,
+) -> Path | None:
+    source_descriptor = open_regular_cache_entry(
+        cache_descriptor,
+        entry_name,
+    )
+    if source_descriptor is None:
+        return None
+
+    snapshot_path = snapshot_directory / f"dataset{suffix}"
+    snapshot_descriptor: int | None = None
+    snapshot_valid = False
     try:
-        mode = path.lstat().st_mode
-    except FileNotFoundError:
-        return False
-    if not stat.S_ISREG(mode):
-        return False
-    return file_sha256(path) == expected_digest
+        snapshot_descriptor = os.open(
+            snapshot_path,
+            nofollow_open_flags(os.O_WRONLY | os.O_CREAT | os.O_EXCL),
+            0o600,
+        )
+        actual_digest = copy_file_descriptor(
+            source_descriptor,
+            snapshot_descriptor,
+        )
+        os.fsync(snapshot_descriptor)
+        if actual_digest != expected_digest:
+            return None
+        os.fchmod(snapshot_descriptor, 0o400)
+        snapshot_valid = True
+        return snapshot_path
+    except OSError:
+        raise RuntimeError(
+            "remote dataset verified snapshot could not be created safely"
+        ) from None
+    finally:
+        os.close(source_descriptor)
+        if snapshot_descriptor is not None:
+            os.close(snapshot_descriptor)
+        if not snapshot_valid:
+            try:
+                snapshot_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
+@contextmanager
+def download_remote_dataset_file(
+    request_url: str,
+    *,
+    loader_type: str,
+    suffix: str,
+    open_url: Callable[..., Any],
+) -> Iterator[tuple[int, str]]:
+    with tempfile.TemporaryDirectory(
+        prefix="aikit-dataset-download-"
+    ) as temporary_directory:
+        download_path = Path(temporary_directory) / f"dataset{suffix}"
+        download_descriptor = os.open(
+            download_path,
+            nofollow_open_flags(os.O_RDWR | os.O_CREAT | os.O_EXCL),
+            0o600,
+        )
+        digest = hashlib.sha256()
+        try:
+            try:
+                with open_url(request_url) as response:
+                    while chunk := response.read(REMOTE_DATASET_CHUNK_SIZE):
+                        write_file_descriptor(download_descriptor, chunk)
+                        digest.update(chunk)
+                os.fsync(download_descriptor)
+            except Exception:
+                raise RuntimeError(
+                    f"remote {loader_type} dataset could not be downloaded"
+                ) from None
+            yield download_descriptor, digest.hexdigest()
+        finally:
+            os.close(download_descriptor)
+
+
+def publish_cached_dataset_file(
+    cache_descriptor: int,
+    entry_name: str,
+    source_descriptor: int,
+    expected_digest: str,
+) -> None:
+    temporary_name = (
+        f".publish-{expected_digest}-{secrets.token_hex(16)}.tmp"
+    )
+    temporary_descriptor: int | None = None
+    try:
+        temporary_descriptor = os.open(
+            temporary_name,
+            nofollow_open_flags(os.O_WRONLY | os.O_CREAT | os.O_EXCL),
+            0o600,
+            dir_fd=cache_descriptor,
+        )
+        actual_digest = copy_file_descriptor(
+            source_descriptor,
+            temporary_descriptor,
+        )
+        os.fsync(temporary_descriptor)
+        if actual_digest != expected_digest:
+            raise RuntimeError(
+                "remote dataset cache publication verification failed"
+            ) from None
+        os.replace(
+            temporary_name,
+            entry_name,
+            src_dir_fd=cache_descriptor,
+            dst_dir_fd=cache_descriptor,
+        )
+    except OSError:
+        raise RuntimeError(
+            "remote dataset cache entry could not be published safely"
+        ) from None
+    finally:
+        if temporary_descriptor is not None:
+            os.close(temporary_descriptor)
+        try:
+            os.unlink(temporary_name, dir_fd=cache_descriptor)
+        except FileNotFoundError:
+            pass
+
+
+def materialize_locked_dataset_snapshot(
+    cache_descriptor: int,
+    entry_name: str,
+    expected_digest: str,
+    snapshot_directory: Path,
+    suffix: str,
+    downloaded_descriptor: int | None = None,
+) -> Path | None:
+    snapshot_path = create_verified_dataset_snapshot(
+        cache_descriptor,
+        entry_name,
+        expected_digest,
+        snapshot_directory,
+        suffix,
+    )
+    if snapshot_path is not None or downloaded_descriptor is None:
+        return snapshot_path
+
+    publish_cached_dataset_file(
+        cache_descriptor,
+        entry_name,
+        downloaded_descriptor,
+        expected_digest,
+    )
+    snapshot_path = create_verified_dataset_snapshot(
+        cache_descriptor,
+        entry_name,
+        expected_digest,
+        snapshot_directory,
+        suffix,
+    )
+    if snapshot_path is None:
+        raise RuntimeError(
+            "remote dataset cache verification failed"
+        ) from None
+    return snapshot_path
+
+
+@contextmanager
 def materialize_remote_dataset_file(
     source: str,
     *,
@@ -626,7 +916,7 @@ def materialize_remote_dataset_file(
     checksum: str | None,
     cache_directory: Path | str | None = None,
     open_url: Callable[..., Any] = urlopen,
-) -> Path:
+) -> Iterator[Path]:
     if loader_type not in REMOTE_DATASET_LOADERS:
         raise ValueError(f"unsupported remote dataset loader {loader_type!r}")
     if not is_http_dataset_source(source):
@@ -644,69 +934,66 @@ def materialize_remote_dataset_file(
         if cache_directory is not None
         else dataset_cache_directory()
     )
-    cache_path.mkdir(parents=True, exist_ok=True)
     suffix = remote_dataset_file_suffix(source, loader_type)
     expected_digest = checksum.removeprefix("sha256:") if checksum else None
-    if expected_digest is not None:
-        cached_path = cache_path / f"{expected_digest}{suffix}"
-        if verified_cached_dataset_file(cached_path, expected_digest):
-            return cached_path
-        try:
-            cached_path.unlink()
-        except FileNotFoundError:
-            pass
-
     parsed_source = urlparse(source)
     request_url = urlunparse(parsed_source._replace(fragment=""))
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=cache_path,
-            prefix=".download-",
-            suffix=suffix,
-            delete=False,
-        ) as temporary_file:
-            temporary_path = Path(temporary_file.name)
-            digest = hashlib.sha256()
-            try:
-                with open_url(request_url) as response:
-                    while chunk := response.read(REMOTE_DATASET_CHUNK_SIZE):
-                        temporary_file.write(chunk)
-                        digest.update(chunk)
-            except Exception:
-                raise RuntimeError(
-                    f"remote {loader_type} dataset could not be downloaded"
-                ) from None
-            temporary_file.flush()
-            os.fsync(temporary_file.fileno())
 
-        actual_digest = digest.hexdigest()
-        if expected_digest is not None and actual_digest != expected_digest:
-            raise RuntimeError(
-                f"remote {loader_type} dataset checksum does not match the "
-                "configured sha256 digest"
-            ) from None
+    with tempfile.TemporaryDirectory(
+        prefix="aikit-verified-dataset-"
+    ) as snapshot_directory_name:
+        snapshot_directory = Path(snapshot_directory_name)
+        os.chmod(snapshot_directory, 0o700)
+        with open_dataset_cache_directory(cache_path) as cache_descriptor:
+            if expected_digest is not None:
+                entry_name = f"{expected_digest}{suffix}"
+                with dataset_digest_lock(cache_descriptor, expected_digest):
+                    snapshot_path = materialize_locked_dataset_snapshot(
+                        cache_descriptor,
+                        entry_name,
+                        expected_digest,
+                        snapshot_directory,
+                        suffix,
+                    )
+                    if snapshot_path is None:
+                        with download_remote_dataset_file(
+                            request_url,
+                            loader_type=loader_type,
+                            suffix=suffix,
+                            open_url=open_url,
+                        ) as (download_descriptor, actual_digest):
+                            if actual_digest != expected_digest:
+                                raise RuntimeError(
+                                    f"remote {loader_type} dataset checksum "
+                                    "does not match the configured sha256 digest"
+                                ) from None
+                            snapshot_path = materialize_locked_dataset_snapshot(
+                                cache_descriptor,
+                                entry_name,
+                                expected_digest,
+                                snapshot_directory,
+                                suffix,
+                                downloaded_descriptor=download_descriptor,
+                            )
+            else:
+                with download_remote_dataset_file(
+                    request_url,
+                    loader_type=loader_type,
+                    suffix=suffix,
+                    open_url=open_url,
+                ) as (download_descriptor, actual_digest):
+                    entry_name = f"{actual_digest}{suffix}"
+                    with dataset_digest_lock(cache_descriptor, actual_digest):
+                        snapshot_path = materialize_locked_dataset_snapshot(
+                            cache_descriptor,
+                            entry_name,
+                            actual_digest,
+                            snapshot_directory,
+                            suffix,
+                            downloaded_descriptor=download_descriptor,
+                        )
 
-        cached_path = cache_path / f"{actual_digest}{suffix}"
-        if verified_cached_dataset_file(cached_path, actual_digest):
-            temporary_path.unlink()
-            temporary_path = None
-            return cached_path
-
-        os.replace(temporary_path, cached_path)
-        temporary_path = None
-        if not verified_cached_dataset_file(cached_path, actual_digest):
-            raise RuntimeError(
-                f"remote {loader_type} dataset cache verification failed"
-            ) from None
-        return cached_path
-    finally:
-        if temporary_path is not None:
-            try:
-                temporary_path.unlink()
-            except FileNotFoundError:
-                pass
+        yield snapshot_path
 
 
 def load_training_dataset(
@@ -719,31 +1006,35 @@ def load_training_dataset(
     is_remote = is_http_dataset_source(dataset_spec.source) and (
         loader_type is None or loader_type in REMOTE_DATASET_LOADERS
     )
-    local_file = None
-    if is_remote:
-        effective_loader = loader_type or DATASET_LOADER_JSON
-        local_file = materialize_remote_dataset_file(
-            dataset_spec.source,
-            loader_type=effective_loader,
-            checksum=dataset_spec.loader.checksum,
-            cache_directory=cache_directory,
-        )
 
-    load_spec = dataset_load_spec(dataset_spec, local_file=local_file)
-    try:
-        return load_dataset(load_spec.path, **load_spec.kwargs)
-    except Exception:
-        if is_remote or dataset_spec.dataset_type in (
-            *CHAT_DATASET_TYPES,
-            DATASET_TYPE_TEXT,
-        ):
-            subject = dataset_error_subject(
-                dataset_spec.dataset_type,
-                source=dataset_spec.source,
-                loader_type=loader_type,
-            )
-            raise RuntimeError(f"{subject} could not be loaded") from None
-        raise
+    def load_materialized_dataset(local_file: Path | None = None) -> Any:
+        load_spec = dataset_load_spec(dataset_spec, local_file=local_file)
+        try:
+            return load_dataset(load_spec.path, **load_spec.kwargs)
+        except Exception:
+            if is_remote or dataset_spec.dataset_type in (
+                *CHAT_DATASET_TYPES,
+                DATASET_TYPE_TEXT,
+            ):
+                subject = dataset_error_subject(
+                    dataset_spec.dataset_type,
+                    source=dataset_spec.source,
+                    loader_type=loader_type,
+                )
+                raise RuntimeError(f"{subject} could not be loaded") from None
+            raise
+
+    if not is_remote:
+        return load_materialized_dataset()
+
+    effective_loader = loader_type or DATASET_LOADER_JSON
+    with materialize_remote_dataset_file(
+        dataset_spec.source,
+        loader_type=effective_loader,
+        checksum=dataset_spec.loader.checksum,
+        cache_directory=cache_directory,
+    ) as local_file:
+        return load_materialized_dataset(local_file)
 
 
 def training_loss(
