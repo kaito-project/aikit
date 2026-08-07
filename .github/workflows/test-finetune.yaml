@@ -17,6 +17,7 @@ on:
           - text-smoke
           - loader-smoke
           - multiple-datasets-smoke
+          - dpo-smoke
           - full
 
 permissions: read-all
@@ -67,6 +68,9 @@ jobs:
             multiple-datasets-smoke)
               smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/multiple-alpaca-smoke.jsonl"
               smoke_dataset_file_2="${GITHUB_WORKSPACE}/test/fixtures/multiple-text-smoke.jsonl"
+              ;;
+            dpo-smoke)
+              smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/preference-smoke.jsonl"
               ;;
             full) ;;
             *)
@@ -266,6 +270,11 @@ jobs:
               source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-multiple-datasets-smoke.yaml"
               dataset_url="${SMOKE_DATASET_URL:?first multiple-datasets smoke URL is required}"
               dataset_url_2="${SMOKE_DATASET_URL_2:?second multiple-datasets smoke URL is required}"
+              ;;
+            dpo-smoke)
+              source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-dpo-smoke.yaml"
+              dataset_url="${SMOKE_DATASET_URL:?DPO smoke dataset URL is required}"
+              dataset_checksum="sha256:$(sha256sum "$SMOKE_DATASET_FILE" | awk '{print $1}')"
               ;;
             full)
               source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth.yaml"

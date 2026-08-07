@@ -736,6 +736,232 @@ func Test_validateFineTuneConfig(t *testing.T) {
 	}
 }
 
+func Test_validateDPOFineTuneConfig(t *testing.T) {
+	const (
+		revision       = "0123456789abcdef0123456789abcdef01234567"
+		checksum       = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		dpoLoaderSplit = "train"
+		betaError      = "objective.beta must be a finite value greater than zero"
+	)
+
+	tests := []struct {
+		name    string
+		mutate  func(*config.FineTuneConfig)
+		wantErr string
+	}{
+		{name: "valid defaults"},
+		{
+			name: "DPO rejects multiple preference datasets",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets = append(c.Datasets, c.Datasets[0])
+			},
+			wantErr: "objective type dpo requires exactly one dataset",
+		},
+		{
+			name: "valid pinned Hugging Face loader",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Loader = &config.DatasetLoaderSpec{
+					Type: utils.DatasetLoaderHuggingFace, Split: dpoLoaderSplit, Revision: revision,
+				}
+			},
+		},
+		{
+			name: "valid checksummed JSON loader",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Source = "https://example.test/preferences.jsonl"
+				c.Datasets[0].Loader = &config.DatasetLoaderSpec{
+					Type: utils.DatasetLoaderJSON, Split: dpoLoaderSplit, Checksum: checksum,
+				}
+			},
+		},
+		{
+			name: "missing objective type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Type = ""
+			},
+			wantErr: "objective.type is not defined",
+		},
+		{
+			name: "whitespace objective type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Type = " \t"
+			},
+			wantErr: "objective.type is not defined",
+		},
+		{
+			name: "unsupported objective type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Type = "orpo"
+			},
+			wantErr: "objective.type orpo is not supported",
+		},
+		{
+			name: "SFT rejects preference",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective = config.FineTuneObjectiveSpec{Type: utils.ObjectiveSFT}
+			},
+			wantErr: "dataset type preference is supported only for objective type dpo",
+		},
+		{
+			name: "SFT rejects DPO settings",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective = config.FineTuneObjectiveSpec{Type: utils.ObjectiveSFT, Beta: 0.1}
+				c.Datasets[0].Type = utils.DatasetAlpaca
+			},
+			wantErr: "objective beta, lossType, and maxPromptLength are supported only for objective type dpo",
+		},
+		{
+			name: "DPO rejects Alpaca",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetAlpaca
+			},
+			wantErr: "objective type dpo requires dataset type preference, got alpaca",
+		},
+		{
+			name: "DPO rejects messages",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetMessages
+			},
+			wantErr: "objective type dpo requires dataset type preference, got messages",
+		},
+		{
+			name: "DPO rejects ShareGPT",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetShareGPT
+			},
+			wantErr: "objective type dpo requires dataset type preference, got sharegpt",
+		},
+		{
+			name: "DPO rejects prompt-completion",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetPromptCompletion
+			},
+			wantErr: "objective type dpo requires dataset type preference, got prompt-completion",
+		},
+		{
+			name: "DPO rejects text",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetText
+			},
+			wantErr: "objective type dpo requires dataset type preference, got text",
+		},
+		{
+			name: "DPO rejects text loader",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Source = "https://example.test/preferences.txt"
+				c.Datasets[0].Loader = &config.DatasetLoaderSpec{Type: utils.DatasetLoaderText, Split: "train"}
+			},
+			wantErr: "dataset type preference does not support loader type text",
+		},
+		{
+			name: "DPO rejects response loss",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Config.Unsloth.Loss = utils.SFTLossResponse
+			},
+			wantErr: "config.unsloth.loss response is an SFT-only setting and is not supported for objective type dpo",
+		},
+		{
+			name: "DPO rejects packing",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Config.Unsloth.Packing = true
+			},
+			wantErr: "objective type dpo does not support config.unsloth.packing",
+		},
+		{
+			name: "zero beta",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Beta = 0
+			},
+			wantErr: betaError,
+		},
+		{
+			name: "negative beta",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Beta = -0.1
+			},
+			wantErr: betaError,
+		},
+		{
+			name: "NaN beta",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Beta = math.NaN()
+			},
+			wantErr: betaError,
+		},
+		{
+			name: "positive infinity beta",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Beta = math.Inf(1)
+			},
+			wantErr: betaError,
+		},
+		{
+			name: "negative infinity beta",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Beta = math.Inf(-1)
+			},
+			wantErr: betaError,
+		},
+		{
+			name: "missing loss type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.LossType = ""
+			},
+			wantErr: "objective.lossType is not defined",
+		},
+		{
+			name: "unsupported loss type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.LossType = "hinge"
+			},
+			wantErr: "objective.lossType hinge is not supported",
+		},
+		{
+			name: "zero max prompt length",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.MaxPromptLength = 0
+			},
+			wantErr: "objective.maxPromptLength must be greater than zero",
+		},
+		{
+			name: "negative max prompt length",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.MaxPromptLength = -1
+			},
+			wantErr: "objective.maxPromptLength must be greater than zero",
+		},
+		{
+			name: "max prompt length exceeds sequence length",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.MaxPromptLength = c.Config.Unsloth.MaxSeqLength + 1
+			},
+			wantErr: "objective.maxPromptLength must not exceed config.unsloth.maxSeqLength",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fineTuneConfig := validDPOFineTuneConfig()
+			if tt.mutate != nil {
+				tt.mutate(fineTuneConfig)
+			}
+			err := validateFinetuneConfig(fineTuneConfig)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateFinetuneConfig() error = %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateFinetuneConfig() error = nil, want %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("validateFinetuneConfig() error = %q, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func Test_validateNormalizedFineTuneConfig(t *testing.T) {
 	datasetTypes := []string{utils.DatasetAlpaca, utils.DatasetMessages, utils.DatasetPromptCompletion, utils.DatasetShareGPT, utils.DatasetText}
 	for _, datasetType := range datasetTypes {
@@ -764,6 +990,43 @@ datasets:
 				t.Fatalf("validateFinetuneConfig() error = %v", err)
 			}
 		})
+	}
+}
+
+func Test_validateNormalizedDPOFineTuneConfig(t *testing.T) {
+	_, fineTuneConfig, err := config.NewFromBytes([]byte(`
+apiVersion: v1alpha1
+baseModel: unsloth/test-model
+objective:
+  type: dpo
+datasets:
+  - source: organization/preferences
+    type: preference
+config:
+  unsloth:
+    packing: false
+`))
+	if err != nil {
+		t.Fatalf("config.NewFromBytes() error = %v", err)
+	}
+	if fineTuneConfig == nil {
+		t.Fatal("config.NewFromBytes() returned no fine-tune config")
+	}
+	fineTuneConfig.Target = utils.TargetUnsloth
+
+	if got := fineTuneConfig.Objective; got != (config.FineTuneObjectiveSpec{
+		Type:            utils.ObjectiveDPO,
+		Beta:            0.1,
+		LossType:        utils.DPOLossSigmoid,
+		MaxPromptLength: 512,
+	}) {
+		t.Fatalf("objective = %#v, want normalized DPO defaults", got)
+	}
+	if got := fineTuneConfig.Config.Unsloth.LearningRate; got != 0.000001 {
+		t.Fatalf("learning rate = %g, want DPO default 0.000001", got)
+	}
+	if err := validateFinetuneConfig(fineTuneConfig); err != nil {
+		t.Fatalf("validateFinetuneConfig() error = %v", err)
 	}
 }
 
@@ -858,6 +1121,7 @@ func validFineTuneConfig() *config.FineTuneConfig {
 		APIVersion: "v1alpha1",
 		Target:     "unsloth",
 		BaseModel:  "unsloth/test-model",
+		Objective:  config.FineTuneObjectiveSpec{Type: utils.ObjectiveSFT},
 		Datasets: []config.Dataset{
 			{Source: "test-dataset", Type: "alpaca"},
 		},
@@ -883,6 +1147,19 @@ func validFineTuneConfig() *config.FineTuneConfig {
 			Name:     "aikit-model",
 		},
 	}
+}
+
+func validDPOFineTuneConfig() *config.FineTuneConfig {
+	c := validFineTuneConfig()
+	c.Objective = config.FineTuneObjectiveSpec{
+		Type:            utils.ObjectiveDPO,
+		Beta:            0.1,
+		LossType:        utils.DPOLossSigmoid,
+		MaxPromptLength: 512,
+	}
+	c.Datasets[0].Type = utils.DatasetPreference
+	c.Config.Unsloth.LearningRate = 0.000001
+	return c
 }
 
 func Test_parseFineTuneBuildOptions(t *testing.T) {

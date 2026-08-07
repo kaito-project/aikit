@@ -1,0 +1,4 @@
+{"prompt":"How should I rotate an API key?","chosen":"Create and deploy a replacement before revoking the old key.","rejected":"Revoke the old key before creating a replacement."}
+{"prompt":"Where should a production secret be stored?","chosen":"Store it in a dedicated secret manager and grant least-privilege access.","rejected":"Commit it to the application repository for convenience."}
+{"prompt":"What should I do before applying a database migration?","chosen":"Back up the data, test the migration, and plan a rollback.","rejected":"Run it directly in production without a backup."}
+{"prompt":"How should a service handle an expired credential?","chosen":"Fail safely, obtain a replacement through the approved flow, and audit the event.","rejected":"Keep retrying the expired credential indefinitely."}

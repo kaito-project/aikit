@@ -6,6 +6,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import math
 import operator
 import os
 import re
@@ -31,6 +32,9 @@ ADAPTER_CONFIG_FILENAME = "adapter_config.json"
 HF_COMMIT_HASH_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DATASET_CHECKSUM_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 DATASET_SPLIT_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$")
+GO_YAML_SCIENTIFIC_FLOAT_PATTERN = re.compile(
+    r"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)[eE][+-]?[0-9]+$"
+)
 DATASET_LOADER_HUGGINGFACE = "huggingface"
 DATASET_LOADER_JSON = "json"
 DATASET_LOADER_CSV = "csv"
@@ -73,6 +77,7 @@ REMOTE_DATASET_COMPRESSION_SUFFIXES = frozenset(
 REMOTE_DATASET_CHUNK_SIZE = 1024 * 1024
 DATASET_TYPE_ALPACA = "alpaca"
 DATASET_TYPE_MESSAGES = "messages"
+DATASET_TYPE_PREFERENCE = "preference"
 DATASET_TYPE_PROMPT_COMPLETION = "prompt-completion"
 DATASET_TYPE_SHAREGPT = "sharegpt"
 DATASET_TYPE_TEXT = "text"
@@ -80,6 +85,7 @@ SUPPORTED_DATASET_TYPES = frozenset(
     (
         DATASET_TYPE_ALPACA,
         DATASET_TYPE_MESSAGES,
+        DATASET_TYPE_PREFERENCE,
         DATASET_TYPE_PROMPT_COMPLETION,
         DATASET_TYPE_SHAREGPT,
         DATASET_TYPE_TEXT,
@@ -88,6 +94,7 @@ SUPPORTED_DATASET_TYPES = frozenset(
 DATASET_REQUIRED_FIELDS = {
     DATASET_TYPE_ALPACA: ("instruction", "input", "output"),
     DATASET_TYPE_MESSAGES: ("messages",),
+    DATASET_TYPE_PREFERENCE: ("prompt", "chosen", "rejected"),
     DATASET_TYPE_PROMPT_COMPLETION: ("prompt", "completion"),
     DATASET_TYPE_SHAREGPT: ("conversations",),
     DATASET_TYPE_TEXT: ("text",),
@@ -106,6 +113,13 @@ CHAT_DATASET_TYPES = frozenset((DATASET_TYPE_MESSAGES, DATASET_TYPE_SHAREGPT))
 LOSS_ALL = "all"
 LOSS_RESPONSE = "response"
 SUPPORTED_LOSSES = frozenset((LOSS_ALL, LOSS_RESPONSE))
+OBJECTIVE_TYPE_SFT = "sft"
+OBJECTIVE_TYPE_DPO = "dpo"
+SUPPORTED_OBJECTIVE_TYPES = frozenset((OBJECTIVE_TYPE_SFT, OBJECTIVE_TYPE_DPO))
+DPO_LOSS_SIGMOID = "sigmoid"
+DPO_TRUNCATION_KEEP_END = "keep_end"
+DEFAULT_DPO_BETA = 0.1
+DEFAULT_DPO_MAX_PROMPT_LENGTH = 512
 DATASET_COMPATIBILITY_FULL_SEQUENCE = "full-sequence"
 DATASET_COMPATIBILITY_PROMPT_COMPLETION = "completion-only"
 DATASET_COMPATIBILITY_RESPONSE_CHAT = "response-only chat"
@@ -199,6 +213,13 @@ class TrainingDatasetSpec(NamedTuple):
     index: int | None = None
 
 
+class TrainingObjectiveSpec(NamedTuple):
+    objective_type: str
+    beta: float | None
+    loss_type: str | None
+    max_prompt_length: int | None
+
+
 class PromptPrefixFingerprint(NamedTuple):
     sequence_count: int
     first_digest_sum: int
@@ -245,6 +266,8 @@ class TrainDependencies(NamedTuple):
     resolve_model_name: Callable[..., str]
     sft_config: Callable[..., Any]
     sft_trainer: Callable[..., Any]
+    dpo_config: Callable[..., Any]
+    dpo_trainer: Callable[..., Any]
     get_chat_template_parts: Callable[..., tuple[str, str]]
     train_on_responses_only: Callable[..., Any]
     concatenate_datasets: Callable[[list[Any]], Any] | None = None
@@ -289,6 +312,127 @@ def unsloth_config(train_config: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def output_config(export_config: Mapping[str, Any]) -> Mapping[str, Any]:
     return export_config["output"]
+
+
+def normalize_go_yaml_float(
+    value: Any,
+    *,
+    description: str,
+    allow_zero: bool,
+) -> float:
+    """Normalize Go YAML scientific scalars and enforce their numeric range."""
+    requirement = "zero or greater" if allow_zero else "greater than zero"
+    error_message = f"{description} must be a finite value {requirement}"
+
+    if isinstance(value, str):
+        if GO_YAML_SCIENTIFIC_FLOAT_PATTERN.fullmatch(value) is None:
+            raise ValueError(error_message)
+        value = float(value)
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(error_message)
+
+    normalized = float(value)
+    if (
+        not math.isfinite(normalized)
+        or normalized < 0
+        or (not allow_zero and normalized == 0)
+    ):
+        raise ValueError(error_message)
+
+    return normalized
+
+
+def training_objective_spec(
+    train_config: Mapping[str, Any],
+) -> TrainingObjectiveSpec:
+    objective = train_config.get("objective")
+    if objective is None:
+        objective = {}
+    if not isinstance(objective, Mapping):
+        raise ValueError("training objective must be a mapping")
+    if any(not isinstance(field, str) for field in objective):
+        raise ValueError("training objective field names must be strings")
+
+    allowed_fields = frozenset(
+        ("type", "beta", "lossType", "maxPromptLength")
+    )
+    unknown_fields = sorted(set(objective) - allowed_fields)
+    if unknown_fields:
+        quoted_fields = ", ".join(repr(field) for field in unknown_fields)
+        raise ValueError(
+            f"training objective contains unknown fields: {quoted_fields}"
+        )
+
+    configured_type = objective.get("type", OBJECTIVE_TYPE_SFT)
+    objective_type = (
+        OBJECTIVE_TYPE_SFT if configured_type is None else configured_type
+    )
+    if (
+        not isinstance(objective_type, str)
+        or objective_type not in SUPPORTED_OBJECTIVE_TYPES
+    ):
+        raise ValueError(f"unsupported training objective {objective_type!r}")
+
+    if objective_type == OBJECTIVE_TYPE_SFT:
+        dpo_fields = sorted(
+            field
+            for field in ("beta", "lossType", "maxPromptLength")
+            if field in objective
+        )
+        if dpo_fields:
+            quoted_fields = ", ".join(repr(field) for field in dpo_fields)
+            raise ValueError(
+                "SFT objective does not support DPO fields: "
+                f"{quoted_fields}"
+            )
+        return TrainingObjectiveSpec(
+            objective_type=OBJECTIVE_TYPE_SFT,
+            beta=None,
+            loss_type=None,
+            max_prompt_length=None,
+        )
+
+    configured_beta = objective.get("beta", DEFAULT_DPO_BETA)
+    beta = normalize_go_yaml_float(
+        DEFAULT_DPO_BETA if configured_beta is None else configured_beta,
+        description="DPO objective beta",
+        allow_zero=False,
+    )
+
+    configured_loss_type = objective.get("lossType", DPO_LOSS_SIGMOID)
+    loss_type = (
+        DPO_LOSS_SIGMOID
+        if configured_loss_type is None
+        else configured_loss_type
+    )
+    if not isinstance(loss_type, str) or loss_type != DPO_LOSS_SIGMOID:
+        raise ValueError(f"unsupported DPO objective loss type {loss_type!r}")
+
+    configured_max_prompt_length = objective.get(
+        "maxPromptLength",
+        DEFAULT_DPO_MAX_PROMPT_LENGTH,
+    )
+    max_prompt_length = (
+        DEFAULT_DPO_MAX_PROMPT_LENGTH
+        if configured_max_prompt_length is None
+        else configured_max_prompt_length
+    )
+    if (
+        isinstance(max_prompt_length, bool)
+        or not isinstance(max_prompt_length, int)
+        or max_prompt_length <= 0
+    ):
+        raise ValueError(
+            "DPO objective maxPromptLength must be an integer greater than zero"
+        )
+
+    return TrainingObjectiveSpec(
+        objective_type=OBJECTIVE_TYPE_DPO,
+        beta=beta,
+        loss_type=loss_type,
+        max_prompt_length=max_prompt_length,
+    )
 
 
 def require_hf_commit_hash(revision: Any, *, description: str) -> str:
@@ -1076,7 +1220,6 @@ def load_training_dataset(
             f"datasets[{dataset_spec.index}] {error}"
         ) from None
 
-
 def configured_training_loss(train_config: Mapping[str, Any]) -> str:
     cfg = unsloth_config(train_config)
     configured_loss = cfg.get("loss", LOSS_ALL)
@@ -1087,6 +1230,10 @@ def configured_training_loss(train_config: Mapping[str, Any]) -> str:
 
 
 def dataset_compatibility_group(dataset_type: str, *, loss: str) -> str:
+    if dataset_type == DATASET_TYPE_PREFERENCE:
+        raise ValueError(
+            "preference datasets are supported only for the DPO objective"
+        )
     if loss == LOSS_RESPONSE and dataset_type not in CHAT_DATASET_TYPES:
         raise ValueError(
             "response SFT loss is supported only for messages and sharegpt datasets"
@@ -1159,6 +1306,71 @@ def training_loss(
     dataset_compatibility_group(dataset_type, loss=loss)
     validate_response_packing(train_config, loss=loss)
     return loss
+
+
+def validate_training_objective(
+    train_config: Mapping[str, Any],
+    *,
+    objective: TrainingObjectiveSpec,
+    dataset_spec: TrainingDatasetSpec,
+) -> str:
+    if objective.objective_type == OBJECTIVE_TYPE_SFT:
+        if dataset_spec.dataset_type == DATASET_TYPE_PREFERENCE:
+            raise ValueError(
+                "preference datasets are supported only for the DPO objective"
+            )
+        return training_loss(
+            train_config,
+            dataset_type=dataset_spec.dataset_type,
+        )
+
+    if dataset_spec.dataset_type != DATASET_TYPE_PREFERENCE:
+        raise ValueError(
+            "DPO objective requires a preference dataset with prompt, chosen, "
+            "and rejected fields"
+        )
+    if (
+        dataset_spec.loader.loader_type == DATASET_LOADER_TEXT
+    ):
+        raise ValueError(
+            "preference datasets do not support the text loader because DPO "
+            "requires prompt, chosen, and rejected columns"
+        )
+
+    cfg = unsloth_config(train_config)
+    packing = cfg.get("packing", False)
+    if not isinstance(packing, bool):
+        raise ValueError("config.unsloth.packing must be a boolean")
+    if packing:
+        raise ValueError("DPO objective does not support packing")
+
+    configured_loss = cfg.get("loss", LOSS_ALL)
+    loss = LOSS_ALL if configured_loss is None else configured_loss
+    if not isinstance(loss, str) or loss not in SUPPORTED_LOSSES:
+        raise ValueError(f"unsupported SFT loss {loss!r}")
+    if loss == LOSS_RESPONSE:
+        raise ValueError(
+            "response SFT loss is not supported for the DPO objective"
+        )
+
+    max_seq_length = cfg.get("maxSeqLength")
+    if (
+        isinstance(max_seq_length, bool)
+        or not isinstance(max_seq_length, int)
+        or max_seq_length <= 0
+    ):
+        raise ValueError(
+            "config.unsloth.maxSeqLength must be an integer greater than zero"
+        )
+    if (
+        objective.max_prompt_length is None
+        or objective.max_prompt_length > max_seq_length
+    ):
+        raise ValueError(
+            "DPO objective maxPromptLength must not exceed "
+            "config.unsloth.maxSeqLength"
+        )
+    return LOSS_ALL
 
 
 def dataset_error_subject(
@@ -1384,6 +1596,16 @@ def validate_training_dataset(
             raise ValueError(
                 f'{dataset_type} dataset record {record_index} field "completion" must be a non-empty string'
             )
+        if dataset_type == DATASET_TYPE_PREFERENCE:
+            for field in DATASET_REQUIRED_FIELDS[DATASET_TYPE_PREFERENCE]:
+                if not record[field].strip():
+                    raise ValueError(
+                        f'{subject} field "{field}" must be a non-empty string'
+                    )
+            if record["chosen"] == record["rejected"]:
+                raise ValueError(
+                    f'{subject} fields "chosen" and "rejected" must be distinct'
+                )
         if dataset_type == DATASET_TYPE_TEXT and record["text"] == "":
             raise ValueError(
                 f'{subject} field "text" must be a non-empty string'
@@ -3988,6 +4210,212 @@ def cleanup_gguf_export(export_directory: Path | str) -> None:
     shutil.rmtree(Path(f"{export_path}_gguf"), ignore_errors=True)
 
 
+def require_dpo_tokenizer(processing_class: Any) -> None:
+    tokenizer = getattr(processing_class, "tokenizer", processing_class)
+    eos_token = getattr(tokenizer, "eos_token", None)
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if not isinstance(eos_token, str) or not eos_token:
+        raise RuntimeError("DPO training requires a tokenizer EOS token")
+    if isinstance(eos_token_id, bool) or not isinstance(eos_token_id, int):
+        raise RuntimeError("DPO training requires a tokenizer EOS token ID")
+
+
+def dpo_prepared_token_ids(
+    record: Mapping[str, Any],
+    *,
+    field: str,
+    record_index: int,
+) -> list[int]:
+    if field not in record:
+        raise RuntimeError(
+            f'DPO trainer prepared preference record {record_index} without "{field}"'
+        )
+
+    raw_token_ids = sequence_values(
+        record[field],
+        description=(
+            f'preference record {record_index} field "{field}" token IDs'
+        ),
+        preprocessing="DPO",
+    )
+    token_ids = []
+    for token_index, raw_token_id in enumerate(raw_token_ids):
+        try:
+            token_id = operator.index(raw_token_id)
+        except TypeError as error:
+            raise RuntimeError(
+                "DPO preprocessing preference record "
+                f'{record_index} field "{field}" token ID {token_index} '
+                "must be an integer"
+            ) from error
+        if isinstance(raw_token_id, bool) or token_id < 0:
+            raise RuntimeError(
+                "DPO preprocessing preference record "
+                f'{record_index} field "{field}" token ID {token_index} '
+                "must be a non-negative integer"
+            )
+        token_ids.append(token_id)
+
+    return token_ids
+
+
+def effective_dpo_completion_token_ids(
+    prompt_token_ids: Sequence[int],
+    completion_token_ids: Sequence[int],
+    *,
+    max_length: int,
+    is_encoder_decoder: bool,
+) -> list[int]:
+    if is_encoder_decoder:
+        return list(completion_token_ids)
+
+    # Pinned TRL right-flushes prompt + completion, keeps the final max_length
+    # positions, and applies completion loss only where the completion mask is 1.
+    first_retained_index = max(
+        0,
+        len(prompt_token_ids) + len(completion_token_ids) - max_length,
+    )
+    completion_offset = max(
+        0,
+        first_retained_index - len(prompt_token_ids),
+    )
+    return list(completion_token_ids[completion_offset:])
+
+
+def validate_prepared_dpo_dataset(
+    train_dataset: Any,
+    *,
+    max_length: int,
+    is_encoder_decoder: bool,
+) -> None:
+    for record_index, record in enumerate(train_dataset):
+        if not isinstance(record, Mapping):
+            raise RuntimeError(
+                f"DPO trainer prepared preference record {record_index} "
+                "as a non-mapping value"
+            )
+
+        prompt_token_ids = dpo_prepared_token_ids(
+            record,
+            field="prompt_input_ids",
+            record_index=record_index,
+        )
+        chosen_token_ids = dpo_prepared_token_ids(
+            record,
+            field="chosen_input_ids",
+            record_index=record_index,
+        )
+        rejected_token_ids = dpo_prepared_token_ids(
+            record,
+            field="rejected_input_ids",
+            record_index=record_index,
+        )
+        if not chosen_token_ids or not rejected_token_ids:
+            raise RuntimeError(
+                f"DPO trainer prepared preference record {record_index} "
+                "with an empty completion token sequence"
+            )
+
+        effective_chosen_token_ids = effective_dpo_completion_token_ids(
+            prompt_token_ids,
+            chosen_token_ids,
+            max_length=max_length,
+            is_encoder_decoder=is_encoder_decoder,
+        )
+        effective_rejected_token_ids = effective_dpo_completion_token_ids(
+            prompt_token_ids,
+            rejected_token_ids,
+            max_length=max_length,
+            is_encoder_decoder=is_encoder_decoder,
+        )
+        if effective_chosen_token_ids == effective_rejected_token_ids:
+            raise RuntimeError(
+                f"DPO trainer prepared preference record {record_index} with "
+                "token-identical chosen and rejected completions after "
+                "tokenization and effective truncation"
+            )
+
+
+def validate_dpo_trainer_contract(
+    trainer: Any,
+    *,
+    policy_model: Any,
+    objective: TrainingObjectiveSpec,
+    max_seq_length: int,
+) -> None:
+    if getattr(trainer, "ref_model", object()) is not None:
+        raise RuntimeError(
+            "DPO trainer must use ref_model=None so the disabled policy "
+            "adapter supplies reference behavior"
+        )
+    if getattr(trainer, "is_peft_model", False) is not True:
+        raise RuntimeError("DPO trainer did not recognize the policy as a PEFT model")
+    if getattr(trainer, "reference_free", True) is not False:
+        raise RuntimeError("DPO trainer must not use reference-free training")
+    if getattr(trainer, "model", None) is not policy_model:
+        raise RuntimeError(
+            "DPO trainer replaced the policy model that AIKit saves after training"
+        )
+
+    accelerator = getattr(trainer, "accelerator", None)
+    unwrap_model = getattr(accelerator, "unwrap_model", None)
+    if not callable(unwrap_model):
+        raise RuntimeError("DPO trainer does not expose model unwrapping")
+    try:
+        effective_model = unwrap_model(trainer.model)
+    except Exception:
+        raise RuntimeError("DPO trainer policy model could not be unwrapped") from None
+    if not callable(getattr(effective_model, "disable_adapter", None)):
+        raise RuntimeError(
+            "DPO trainer policy model does not support disabling its PEFT adapter"
+        )
+
+    if getattr(trainer, "beta", None) != objective.beta:
+        raise RuntimeError("DPO trainer beta does not match the configured objective")
+    effective_loss_types = getattr(trainer, "loss_type", None)
+    if isinstance(effective_loss_types, str):
+        effective_loss_types = [effective_loss_types]
+    if effective_loss_types != [objective.loss_type]:
+        raise RuntimeError(
+            "DPO trainer loss type does not match the configured objective"
+        )
+    if getattr(trainer, "max_prompt_length", None) != objective.max_prompt_length:
+        raise RuntimeError(
+            "DPO trainer max prompt length does not match the configured objective"
+        )
+    if getattr(trainer, "max_length", None) != max_seq_length:
+        raise RuntimeError(
+            "DPO trainer max length does not match config.unsloth.maxSeqLength"
+        )
+    if getattr(trainer, "max_completion_length", object()) is not None:
+        raise RuntimeError(
+            "DPO trainer must not apply a separate completion truncation limit"
+        )
+    if (
+        getattr(trainer, "truncation_mode", None)
+        != DPO_TRUNCATION_KEEP_END
+    ):
+        raise RuntimeError(
+            "DPO trainer must use keep_end full-sequence truncation"
+        )
+
+    train_dataset = getattr(trainer, "train_dataset", None)
+    try:
+        record_count = len(train_dataset)
+    except (TypeError, AttributeError):
+        raise RuntimeError("DPO trainer does not expose a sized training dataset") from None
+    if record_count == 0:
+        raise RuntimeError("DPO trainer prepared an empty training dataset")
+
+    validate_prepared_dpo_dataset(
+        train_dataset,
+        max_length=max_seq_length,
+        is_encoder_decoder=bool(
+            getattr(trainer, "is_encoder_decoder", False)
+        ),
+    )
+
+
 def load_train_dependencies() -> TrainDependencies:
     # Unsloth must be imported before Transformers-based training dependencies.
     from unsloth import FastLanguageModel, is_bfloat16_supported
@@ -3996,7 +4424,7 @@ def load_train_dependencies() -> TrainDependencies:
     from unsloth_zoo.dataset_utils import get_chat_template_parts
     from datasets import Dataset, concatenate_datasets, load_dataset
     from huggingface_hub import model_info
-    from trl import SFTConfig, SFTTrainer
+    from trl import DPOConfig, DPOTrainer, SFTConfig, SFTTrainer
 
     return TrainDependencies(
         fast_language_model=FastLanguageModel,
@@ -4007,6 +4435,8 @@ def load_train_dependencies() -> TrainDependencies:
         resolve_model_name=get_model_name,
         sft_config=SFTConfig,
         sft_trainer=SFTTrainer,
+        dpo_config=DPOConfig,
+        dpo_trainer=DPOTrainer,
         get_chat_template_parts=get_chat_template_parts,
         train_on_responses_only=train_on_responses_only,
         concatenate_datasets=concatenate_datasets,
@@ -4023,25 +4453,61 @@ def load_export_dependencies() -> ExportDependencies:
     )
 
 
+def save_trained_model(
+    model: Any,
+    tokenizer: Any,
+    trained_model_directory: Path | str,
+) -> Path:
+    trained_model_path = Path(trained_model_directory)
+    trained_model_path.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(trained_model_path)
+    tokenizer.save_pretrained(trained_model_path)
+    return trained_model_path
+
+
 def train_model(
     train_config: Mapping[str, Any],
     *,
     trained_model_directory: Path | str = TRAINED_MODEL_DIRECTORY,
     dependencies: TrainDependencies | None = None,
 ) -> Path:
+    objective = training_objective_spec(train_config)
     dataset_specs = training_dataset_specs(train_config)
-    loss = configured_training_loss(train_config)
-    compatibility = training_dataset_compatibility(
-        dataset_specs,
-        loss=loss,
-    )
-    validate_response_packing(train_config, loss=loss)
+
+    if objective.objective_type == OBJECTIVE_TYPE_DPO:
+        if len(dataset_specs) != 1:
+            raise ValueError(
+                "DPO objective requires exactly one preference dataset"
+            )
+        loss = validate_training_objective(
+            train_config,
+            objective=objective,
+            dataset_spec=dataset_specs[0],
+        )
+        compatibility = None
+    else:
+        loss = configured_training_loss(train_config)
+        compatibility = training_dataset_compatibility(
+            dataset_specs,
+            loss=loss,
+        )
+        validate_response_packing(train_config, loss=loss)
 
     if dependencies is None:
         dependencies = load_train_dependencies()
 
     cfg = unsloth_config(train_config)
     max_seq_length = cfg["maxSeqLength"]
+    learning_rate = normalize_go_yaml_float(
+        cfg["learningRate"],
+        description="config.unsloth.learningRate",
+        allow_zero=False,
+    )
+    weight_decay = normalize_go_yaml_float(
+        cfg["weightDecay"],
+        description="config.unsloth.weightDecay",
+        allow_zero=True,
+    )
 
     source_datasets = []
     for dataset_spec in dataset_specs:
@@ -4056,6 +4522,7 @@ def train_model(
             validation_source = None
             if (
                 dataset_spec.dataset_type in CHAT_DATASET_TYPES
+                or dataset_spec.dataset_type == DATASET_TYPE_PREFERENCE
                 or dataset_spec.dataset_type == DATASET_TYPE_TEXT
             ):
                 validation_source = dataset_spec.source
@@ -4075,7 +4542,8 @@ def train_model(
                     source=dataset_spec.source,
                 )
             if (
-                dataset_spec.dataset_type in CHAT_DATASET_TYPES
+                objective.objective_type == OBJECTIVE_TYPE_SFT
+                and dataset_spec.dataset_type in CHAT_DATASET_TYPES
                 and loss == LOSS_RESPONSE
             ):
                 validate_response_training_dataset(
@@ -4092,93 +4560,117 @@ def train_model(
         load_in_4bit=cfg["loadIn4bit"],
     )
 
-    has_chat_dataset = any(
-        dataset_spec.dataset_type in CHAT_DATASET_TYPES
-        for dataset_spec in dataset_specs
-    )
-    has_text_dataset = any(
-        dataset_spec.dataset_type == DATASET_TYPE_TEXT
-        for dataset_spec in dataset_specs
-    )
-    response_only = compatibility == DATASET_COMPATIBILITY_RESPONSE_CHAT
-    completion_only = (
-        compatibility == DATASET_COMPATIBILITY_PROMPT_COMPLETION
-    )
-    validate_all_full_sequence_records = (
-        compatibility == DATASET_COMPATIBILITY_FULL_SEQUENCE
-        and (len(dataset_specs) > 1 or has_chat_dataset)
-    )
-
+    dataset = None
+    has_chat_dataset = False
+    has_text_dataset = False
+    response_only = False
+    completion_only = False
+    validate_all_full_sequence_records = False
     response_markers = None
-    if has_chat_dataset:
-        require_messages_chat_template(tokenizer)
-        if response_only:
-            response_markers = derive_response_markers(
-                tokenizer,
-                get_chat_template_parts=dependencies.get_chat_template_parts,
-            )
-
     text_policy = None
-    if has_text_dataset:
-        text_policy = text_boundary_policy(tokenizer)
+    prompt_prefix_fingerprint = None
+    messages_token_fingerprint = None
 
-    prompt_add_special_tokens = None
-    if completion_only:
-        first_prompt_record = next(iter(source_datasets[0]))
-        prompt_add_special_tokens = prompt_completion_add_special_tokens(
-            tokenizer,
-            first_prompt_record["prompt"],
+    if objective.objective_type == OBJECTIVE_TYPE_DPO:
+        require_dpo_tokenizer(tokenizer)
+        dataset = source_datasets[0]
+    else:
+        has_chat_dataset = any(
+            dataset_spec.dataset_type in CHAT_DATASET_TYPES
+            for dataset_spec in dataset_specs
+        )
+        has_text_dataset = any(
+            dataset_spec.dataset_type == DATASET_TYPE_TEXT
+            for dataset_spec in dataset_specs
+        )
+        response_only = compatibility == DATASET_COMPATIBILITY_RESPONSE_CHAT
+        completion_only = (
+            compatibility == DATASET_COMPATIBILITY_PROMPT_COMPLETION
+        )
+        validate_all_full_sequence_records = (
+            compatibility == DATASET_COMPATIBILITY_FULL_SEQUENCE
+            and (len(dataset_specs) > 1 or has_chat_dataset)
         )
 
-    rendered_source_datasets = []
-    canonical_chat_fingerprints = []
-    prompt_prefix_fingerprints = []
-    for dataset_spec, source_dataset in zip(dataset_specs, source_datasets):
-        dataset_index = dataset_spec.index
-        if dataset_index is None:
-            raise RuntimeError("parsed training dataset is missing its index")
-        with indexed_dataset_errors(dataset_index):
-            if dataset_spec.dataset_type in CHAT_DATASET_TYPES:
-                messages_source_dataset = source_dataset
-                source_dataset = render_messages_dataset(
-                    messages_source_dataset,
-                    processing_class=tokenizer,
-                    source=dataset_spec.source,
-                    dataset_type=dataset_spec.dataset_type,
+        if has_chat_dataset:
+            require_messages_chat_template(tokenizer)
+            if response_only:
+                response_markers = derive_response_markers(
+                    tokenizer,
+                    get_chat_template_parts=(
+                        dependencies.get_chat_template_parts
+                    ),
                 )
-                canonical_chat_fingerprints.append(
-                    validate_messages_tokenization(
+
+        if has_text_dataset:
+            text_policy = text_boundary_policy(tokenizer)
+
+        prompt_add_special_tokens = None
+        if completion_only:
+            first_prompt_record = next(iter(source_datasets[0]))
+            prompt_add_special_tokens = prompt_completion_add_special_tokens(
+                tokenizer,
+                first_prompt_record["prompt"],
+            )
+
+        rendered_source_datasets = []
+        canonical_chat_fingerprints = []
+        prompt_prefix_fingerprints = []
+        for dataset_spec, source_dataset in zip(
+            dataset_specs,
+            source_datasets,
+        ):
+            dataset_index = dataset_spec.index
+            if dataset_index is None:
+                raise RuntimeError(
+                    "parsed training dataset is missing its index"
+                )
+            with indexed_dataset_errors(dataset_index):
+                if dataset_spec.dataset_type in CHAT_DATASET_TYPES:
+                    messages_source_dataset = source_dataset
+                    source_dataset = render_messages_dataset(
                         messages_source_dataset,
-                        source_dataset,
                         processing_class=tokenizer,
-                        max_seq_length=max_seq_length,
                         source=dataset_spec.source,
                         dataset_type=dataset_spec.dataset_type,
-                        response_markers=response_markers,
                     )
-                )
-            elif dataset_spec.dataset_type == DATASET_TYPE_PROMPT_COMPLETION:
-                prompt_prefix_fingerprints.append(
-                    validate_prompt_completion_tokenization(
+                    canonical_chat_fingerprints.append(
+                        validate_messages_tokenization(
+                            messages_source_dataset,
+                            source_dataset,
+                            processing_class=tokenizer,
+                            max_seq_length=max_seq_length,
+                            source=dataset_spec.source,
+                            dataset_type=dataset_spec.dataset_type,
+                            response_markers=response_markers,
+                        )
+                    )
+                elif (
+                    dataset_spec.dataset_type
+                    == DATASET_TYPE_PROMPT_COMPLETION
+                ):
+                    prompt_prefix_fingerprints.append(
+                        validate_prompt_completion_tokenization(
+                            source_dataset,
+                            processing_class=tokenizer,
+                            max_seq_length=max_seq_length,
+                            add_special_tokens=prompt_add_special_tokens,
+                        )
+                    )
+                elif dataset_spec.dataset_type == DATASET_TYPE_TEXT:
+                    if text_policy is None:
+                        raise RuntimeError(
+                            "text preprocessing did not produce a boundary "
+                            "policy"
+                        )
+                    validate_text_sequence_lengths(
                         source_dataset,
                         processing_class=tokenizer,
+                        policy=text_policy,
                         max_seq_length=max_seq_length,
-                        add_special_tokens=prompt_add_special_tokens,
+                        source=dataset_spec.source,
                     )
-                )
-            elif dataset_spec.dataset_type == DATASET_TYPE_TEXT:
-                if text_policy is None:
-                    raise RuntimeError(
-                        "text preprocessing did not produce a boundary policy"
-                    )
-                validate_text_sequence_lengths(
-                    source_dataset,
-                    processing_class=tokenizer,
-                    policy=text_policy,
-                    max_seq_length=max_seq_length,
-                    source=dataset_spec.source,
-                )
-            rendered_source_datasets.append(source_dataset)
+                rendered_source_datasets.append(source_dataset)
 
     base_model_name, base_model_revision = resolve_export_base_model(
         train_config["baseModel"],
@@ -4213,6 +4705,58 @@ def train_model(
         base_model_name=base_model_name,
         revision=base_model_revision,
     )
+
+    if objective.objective_type == OBJECTIVE_TYPE_DPO:
+        if not callable(getattr(model, "disable_adapter", None)):
+            raise RuntimeError(
+                "DPO policy model does not support disabling its PEFT adapter"
+            )
+        bfloat16_supported = dependencies.is_bfloat16_supported()
+        trainer = dependencies.dpo_trainer(
+            model=model,
+            ref_model=None,
+            train_dataset=dataset,
+            processing_class=tokenizer,
+            args=dependencies.dpo_config(
+                output_dir="outputs",
+                dataset_num_proc=2,
+                max_length=max_seq_length,
+                max_prompt_length=objective.max_prompt_length,
+                max_completion_length=None,
+                truncation_mode=DPO_TRUNCATION_KEEP_END,
+                beta=objective.beta,
+                loss_type=objective.loss_type,
+                reference_free=False,
+                per_device_train_batch_size=cfg["batchSize"],
+                gradient_accumulation_steps=cfg[
+                    "gradientAccumulationSteps"
+                ],
+                warmup_steps=cfg["warmupSteps"],
+                max_steps=cfg["maxSteps"],
+                learning_rate=learning_rate,
+                fp16=not bfloat16_supported,
+                bf16=bfloat16_supported,
+                logging_steps=cfg["loggingSteps"],
+                optim=cfg["optimizer"],
+                weight_decay=weight_decay,
+                lr_scheduler_type=cfg["lrSchedulerType"],
+                seed=cfg["seed"],
+                save_strategy="no",
+                report_to="none",
+            ),
+        )
+        validate_dpo_trainer_contract(
+            trainer,
+            policy_model=model,
+            objective=objective,
+            max_seq_length=max_seq_length,
+        )
+        trainer.train()
+        return save_trained_model(
+            model,
+            tokenizer,
+            trained_model_directory,
+        )
 
     canonical_datasets = []
     for dataset_spec, source_dataset in zip(
@@ -4287,16 +4831,15 @@ def train_model(
     else:
         if not callable(dependencies.concatenate_datasets):
             raise RuntimeError(
-                "multiple training datasets require datasets.concatenate_datasets"
+                "multiple training datasets require "
+                "datasets.concatenate_datasets"
             )
         dataset = dependencies.concatenate_datasets(canonical_datasets)
 
-    messages_token_fingerprint = None
     if response_only or validate_all_full_sequence_records:
         messages_token_fingerprint = merge_messages_token_fingerprints(
             messages_token_fingerprints
         )
-    prompt_prefix_fingerprint = None
     if completion_only:
         prompt_prefix_fingerprint = merge_prompt_prefix_fingerprints(
             prompt_prefix_fingerprints
@@ -4320,12 +4863,12 @@ def train_model(
             gradient_accumulation_steps=cfg["gradientAccumulationSteps"],
             warmup_steps=cfg["warmupSteps"],
             max_steps=cfg["maxSteps"],
-            learning_rate=cfg["learningRate"],
+            learning_rate=learning_rate,
             fp16=not bfloat16_supported,
             bf16=bfloat16_supported,
             logging_steps=cfg["loggingSteps"],
             optim=cfg["optimizer"],
-            weight_decay=cfg["weightDecay"],
+            weight_decay=weight_decay,
             lr_scheduler_type=cfg["lrSchedulerType"],
             seed=cfg["seed"],
             save_strategy="no",
@@ -4335,9 +4878,9 @@ def train_model(
     if response_only:
         if bool(getattr(trainer.args, "packing", False)):
             raise RuntimeError(
-                "response-only messages preprocessing does not support effective "
-                "trainer packing because response masks must not cross "
-                "conversation boundaries"
+                "response-only messages preprocessing does not support "
+                "effective trainer packing because response masks must not "
+                "cross conversation boundaries"
             )
         if response_markers is None:
             raise RuntimeError(
@@ -4371,7 +4914,11 @@ def train_model(
             eos_token_id=tokenizer.eos_token_id,
             max_seq_length=max_seq_length,
             packing=bool(getattr(trainer.args, "packing", False)),
-            packing_strategy=getattr(trainer.args, "packing_strategy", "bfd"),
+            packing_strategy=getattr(
+                trainer.args,
+                "packing_strategy",
+                "bfd",
+            ),
             expected_prompt_prefix_fingerprint=prompt_prefix_fingerprint,
         )
 
@@ -4386,7 +4933,11 @@ def train_model(
             max_seq_length=max_seq_length,
             packing=bool(getattr(trainer.args, "packing", False)),
             padding_free=bool(getattr(trainer.args, "padding_free", False)),
-            packing_strategy=getattr(trainer.args, "packing_strategy", "bfd"),
+            packing_strategy=getattr(
+                trainer.args,
+                "packing_strategy",
+                "bfd",
+            ),
             expected_fingerprint=messages_token_fingerprint,
             loss=loss,
             response_markers=response_markers,
@@ -4404,13 +4955,7 @@ def train_model(
             policy=text_policy,
         )
     trainer.train()
-
-    trained_model_path = Path(trained_model_directory)
-    trained_model_path.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(trained_model_path)
-    tokenizer.save_pretrained(trained_model_path)
-    return trained_model_path
-
+    return save_trained_model(model, tokenizer, trained_model_directory)
 
 def export_model(
     export_config: Mapping[str, Any],
