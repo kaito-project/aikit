@@ -10,10 +10,11 @@ apiVersion: # required. only v1alpha1 is supported at the moment
 baseModel: # required. any base model from Huggingface. for unsloth, see for 4bit pre-quantized models: https://huggingface.co/unsloth
 datasets:
   - source: # required. this can be a Huggingface dataset repo or a URL pointing to a JSON or JSON Lines file
-    type: # required. can be "alpaca", "messages", "prompt-completion", or "text"
+    type: # required. can be "alpaca", "messages", "sharegpt", "prompt-completion", or "text"
 config:
   unsloth:
-    packing: # optional. defaults to false. can make training 5x faster for short sequences.
+    loss: # optional. omitted or null defaults to all. response is supported only for messages and sharegpt
+    packing: # optional. defaults to false. not supported with loss: response.
     maxSeqLength: # optional. defaults to 2048
     loadIn4bit: # optional. defaults to true
     batchSize: # optional. default to 2
@@ -38,11 +39,14 @@ Only one dataset is currently supported. Its `type` determines the required colu
 | Type | Required record shape | Loss behavior |
 | --- | --- | --- |
 | `alpaca` | `instruction`, `input`, `output` | Renders the existing Alpaca prompt, appends EOS, and supervises the full sequence. |
-| `messages` | Non-empty `messages` list containing text-only `role` and `content` mappings | Applies the tokenizer's chat template and supervises the full rendered sequence. |
+| `messages` | Non-empty `messages` list containing text-only `role` and `content` mappings | Applies the tokenizer's chat template. `loss: all` supervises the full rendered sequence; `loss: response` supervises assistant responses. |
+| `sharegpt` | Non-empty `conversations` list containing string `from` and `value` mappings | Converts fixed ShareGPT roles to canonical messages, then uses the same rendering and loss pipeline as `messages`. |
 | `prompt-completion` | `prompt`, non-empty `completion` | Keeps both columns separate, masks prompt tokens, and supervises completion and EOS tokens. |
 | `text` | non-empty `text` | Preserves the preformatted sequence, normalizes BOS/EOS boundaries, and supervises the full sequence. |
 
 Empty datasets, missing or null fields, values of the wrong type, and unknown dataset types are rejected. Existing `alpaca` configurations retain their current rendering and full-sequence loss behavior.
+
+The chat loss setting defaults to `all` for backward compatibility when omitted or set to YAML `null`; an explicit empty string is invalid. `response` is accepted only for `messages` and `sharegpt`; `alpaca`, `prompt-completion`, and `text` retain their fixed loss behavior. Response-only training requires `packing: false` so masking cannot cross conversation boundaries. It derives markers from the model's deterministic chat template and uses Unsloth's response masking after trainer construction. AIKit rejects marker strings or token matches that collide with message content or fail to match the rendered role boundaries, then validates the actual prepared labels before training. If marker derivation fails, labels do not match the response spans, or a prepared dataset has no supervised response tokens, training fails without falling back to `all`. Native assistant-only loss, custom chat templates, custom markers, and per-dataset loss settings are not supported.
 
 For example, a prompt-completion dataset entry and record are:
 
@@ -68,11 +72,30 @@ datasets:
 {"messages":[{"role":"system","content":"You are concise."},{"role":"user","content":"What is a container image?"},{"role":"assistant","content":"An immutable application package."}]}
 ```
 
-The `messages` list must be non-empty. Benign top-level metadata columns, such as IDs and source labels, are ignored when records are projected to `messages`; top-level tool, template-control, document, image, audio, and video fields are rejected. Every turn must contain exactly the string fields `role` and `content`; only `system`, `user`, and `assistant` roles are supported. Each conversation must contain at least one assistant turn and end with an assistant turn. Extra fields within turns, tool calls, structured content, and multimodal content are rejected. AIKit does not perform ShareGPT conversion or accept a custom chat template.
+The `messages` list must be non-empty. Benign top-level metadata columns, such as IDs and source labels, are ignored when records are projected to `messages`; top-level tool, template-control, document, image, audio, and video fields are rejected. Every turn must contain exactly the string fields `role` and `content`; only `system`, `user`, and `assistant` roles are supported. Each conversation must contain at least one assistant turn and end with an assistant turn. Extra fields within turns, tool calls, structured content, and multimodal content are rejected. AIKit does not accept a custom chat template.
 
 The base model tokenizer must provide a usable, deterministic chat template. Wall-clock-dependent templates containing `strftime_now` are rejected until deterministic template values can be configured and included in cache keys. Before LoRA allocation, AIKit calls `apply_chat_template` with `tokenize=False` and `add_generation_prompt=False`, stores the result in the canonical `text` field, and sends rendered text rather than raw messages to the locked Unsloth SFT path. It adds no special tokens to that rendering. Direct chat-template token IDs must exactly match the locked rendered-text tokenization; mismatches and records over `maxSeqLength` fail instead of being silently changed or truncated. Source-aware errors redact URL credentials and query values.
 
-Messages use full-sequence SFT. All system, user, assistant, and template tokens are supervised with no completion-only loss or assistant mask. AIKit verifies the actual prepared labels and per-record packing boundaries before training, including when records are duplicated or reordered by packing.
+Messages use full-sequence SFT when `loss` is omitted or set to `all`: system, user, assistant, and template tokens are supervised, and existing packing and role-order behavior is preserved. With `loss: response`, only assistant responses are supervised, `packing` must be `false`, any system messages must form a prefix, and the remaining messages must alternate user and assistant in complete pairs. AIKit validates unique marker placement and the actual prepared labels before training.
+
+For a ShareGPT dataset, each record contains a text-only `conversations` list:
+
+```yaml
+datasets:
+  - source: organization/sharegpt-data
+    type: sharegpt
+config:
+  unsloth:
+    loss: response
+```
+
+```json
+{"conversations":[{"from":"system","value":"You are concise."},{"from":"human","value":"What is a container image?"},{"from":"gpt","value":"An immutable application package."}]}
+```
+
+Every turn must provide string `from` and `value` fields. The adapter maps `system` to `system`; `human` and `user` to `user`; and `gpt` and `assistant` to `assistant`. Unknown roles, missing fields, non-string content, and empty conversations are rejected. Alternate keys and role names are not inferred. AIKit projects `conversations` independently of benign top-level metadata, so a valid one-record dataset is accepted without heuristic schema detection.
+
+The adapter produces canonical text-only messages and then uses the `messages` validation, deterministic chat-template rendering, token-equivalence, sequence-length, and loss checks. Packing is supported with `loss: all` and rejected with `loss: response`. The normalized conversation must contain an assistant response and end with an assistant turn. Tools, custom templates or markers, and structured or multimodal content are not supported.
 
 For a `text` dataset, each record is already the complete sequence to train on:
 

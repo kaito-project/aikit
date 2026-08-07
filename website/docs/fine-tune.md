@@ -53,7 +53,7 @@ apiVersion: v1alpha1
 baseModel: "unsloth/llama-2-7b-bnb-4bit" # base model to be fine tuned. this can be any model from Huggingface. For unsloth optimized base models, see https://huggingface.co/unsloth
 datasets:
   - source: "yahma/alpaca-cleaned" # data set to be used for fine tuning. This can be a Huggingface dataset or a URL pointing to a JSON or JSON Lines file
-    type: "alpaca" # supported types are alpaca, messages, prompt-completion, and text
+    type: "alpaca" # supported types are alpaca, messages, sharegpt, prompt-completion, and text
 config:
   unsloth:
 ```
@@ -63,6 +63,19 @@ For full configuration, please refer to [Fine Tune API Specifications](./specs-f
 #### Dataset Types
 
 AIKit supports one dataset per fine-tuning configuration. The configured `type` selects the record schema and training loss behavior; unknown types fail instead of falling back to another formatter.
+
+For the chat dataset types `messages` and `sharegpt`, `config.unsloth.loss` controls which tokens are supervised:
+
+- `all` is the default when `loss` is omitted or set to YAML `null` and preserves full-sequence chat training. System, user, assistant, and chat-template tokens are supervised.
+- `response` supervises assistant responses and masks the rest of each rendered conversation.
+
+```yaml
+config:
+  unsloth:
+    loss: response
+```
+
+An explicit empty `loss` string is invalid. Response-only loss is not supported for `alpaca`, `prompt-completion`, or `text`; those types retain their established loss behavior. For the initial response-only release, `packing` must be `false` so masking cannot cross conversation boundaries. AIKit derives response markers from the model's deterministic chat template, rejects marker collisions with message content or rendered role boundaries, applies Unsloth's response masking after constructing the trainer, and validates the actual prepared labels before training. Missing or unusable markers, a prepared dataset with no supervised response tokens, or labels that do not match the expected response spans fail instead of falling back to full-sequence loss. Custom templates and marker strings are not accepted.
 
 ##### Alpaca
 
@@ -102,7 +115,32 @@ An expected JSON Lines record is:
 
 AIKit requires the tokenizer to provide a usable, deterministic chat template. Wall-clock-dependent templates containing `strftime_now` are rejected until deterministic template values can be configured and included in cache keys. Before allocating LoRA adapters, AIKit renders each conversation to the canonical `text` field with `tokenize=False` and `add_generation_prompt=False`. It does not add special tokens around the rendered text. AIKit verifies that the locked Unsloth text path produces the same token IDs as direct chat-template tokenization and rejects mismatches or sequences longer than `maxSeqLength` instead of truncating them. Validation errors include source and row context while redacting URL credentials and query values.
 
-The `messages` type uses full-sequence SFT: system, user, assistant, and template tokens are all supervised. AIKit does not enable completion-only loss or assistant masks. Prepared labels and packed record boundaries are verified before training. ShareGPT conversion, tools, custom chat templates, and multimodal messages are not supported.
+With the default `loss: all`, the `messages` type uses full-sequence SFT and retains existing packing and role-order behavior. Set `loss: response` to supervise assistant responses only; response-only configurations must set `packing: false`, place any system messages before the conversation, and then alternate user and assistant messages in complete pairs. AIKit verifies that derived marker tokens uniquely match the rendered user and assistant boundaries and do not collide with message content, then verifies the prepared labels before training. Tools, custom chat templates, and multimodal messages are not supported.
+
+##### ShareGPT
+
+The `sharegpt` type is a deterministic compatibility adapter for text-only ShareGPT records. Each record must contain a non-empty `conversations` list, and each turn must provide string `from` and `value` fields. AIKit uses this fixed role map:
+
+- `system` becomes `system`.
+- `human` and `user` become `user`.
+- `gpt` and `assistant` become `assistant`.
+
+Unknown roles, missing fields, and non-string values are rejected. AIKit does not infer alternate keys or roles. After conversion, the conversation follows the same validation, chat-template rendering, token-equivalence, and `loss` pipeline as `messages`; it must contain an assistant response and end with an assistant turn. Packing remains available with `loss: all` but is rejected with `loss: response`. A valid dataset may contain a single record, and benign top-level metadata does not affect the conversion.
+
+```yaml
+datasets:
+  - source: organization/sharegpt-data
+    type: sharegpt
+config:
+  unsloth:
+    loss: response
+```
+
+An expected JSON Lines record is:
+
+```json
+{"conversations":[{"from":"system","value":"You are concise."},{"from":"human","value":"What is a container image?"},{"from":"gpt","value":"An immutable application package."}]}
+```
 
 ##### Text
 
@@ -136,6 +174,8 @@ Please make sure to change syntax to `#syntax=ghcr.io/kaito-project/aikit/aikit:
 
 - [Alpaca](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth.yaml)
 - [Messages smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-messages-smoke.yaml)
+- [Response-only messages smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-messages-response-smoke.yaml)
+- [Response-only ShareGPT smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-sharegpt-response-smoke.yaml)
 - [Prompt-completion smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-prompt-completion-smoke.yaml)
 - [Text smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-text-smoke.yaml)
 

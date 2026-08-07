@@ -82,6 +82,7 @@ func TestNewFromBytesNormalizesFineTuneDefaults(t *testing.T) {
 		Packing:                   false,
 		MaxSeqLength:              2048,
 		LoadIn4bit:                true,
+		Loss:                      utils.SFTLossAll,
 		BatchSize:                 2,
 		GradientAccumulationSteps: 4,
 		WarmupSteps:               10,
@@ -132,6 +133,7 @@ config:
     packing: false
     maxSeqLength: 0
     loadIn4bit: false
+    loss: ""
     batchSize: 0
     gradientAccumulationSteps: 0
     warmupSteps: 0
@@ -161,5 +163,80 @@ output:
 	}
 	if fineTuneConfig.Output != (FineTuneOutputSpec{}) {
 		t.Errorf("output config = %#v, want explicit empty values", fineTuneConfig.Output)
+	}
+}
+
+func TestNewFromBytesPreservesExplicitFineTuneLoss(t *testing.T) {
+	input := []byte(`
+apiVersion: v1alpha1
+baseModel: test-model
+datasets:
+  - source: test-dataset
+    type: messages
+config:
+  unsloth:
+    loss: response
+`)
+
+	_, fineTuneConfig, err := NewFromBytes(input)
+	if err != nil {
+		t.Fatalf("NewFromBytes() error = %v", err)
+	}
+	if fineTuneConfig == nil {
+		t.Fatal("NewFromBytes() returned no fine-tune config")
+	}
+	if got := fineTuneConfig.Config.Unsloth.Loss; got != utils.SFTLossResponse {
+		t.Fatalf("unsloth loss = %q, want %q", got, utils.SFTLossResponse)
+	}
+}
+
+func TestNewFromBytesPreservesExplicitEmptyFineTuneLoss(t *testing.T) {
+	input := []byte(`
+apiVersion: v1alpha1
+baseModel: test-model
+datasets:
+  - source: test-dataset
+    type: messages
+config:
+  unsloth:
+    loss: ""
+`)
+
+	_, fineTuneConfig, err := NewFromBytes(input)
+	if err != nil {
+		t.Fatalf("NewFromBytes() error = %v", err)
+	}
+	if fineTuneConfig == nil {
+		t.Fatal("NewFromBytes() returned no fine-tune config")
+	}
+	if got := fineTuneConfig.Config.Unsloth.Loss; got != "" {
+		t.Fatalf("unsloth loss = %q, want explicit empty value", got)
+	}
+}
+
+func TestNewFromBytesDefaultsNullFineTuneLoss(t *testing.T) {
+	for _, loss := range []string{"loss: null", "loss:"} {
+		t.Run(loss, func(t *testing.T) {
+			input := []byte(`
+apiVersion: v1alpha1
+baseModel: test-model
+datasets:
+  - source: test-dataset
+    type: messages
+config:
+  unsloth:
+    ` + loss + "\n")
+
+			_, fineTuneConfig, err := NewFromBytes(input)
+			if err != nil {
+				t.Fatalf("NewFromBytes() error = %v", err)
+			}
+			if fineTuneConfig == nil {
+				t.Fatal("NewFromBytes() returned no fine-tune config")
+			}
+			if got := fineTuneConfig.Config.Unsloth.Loss; got != utils.SFTLossAll {
+				t.Fatalf("unsloth loss = %q, want null default %q", got, utils.SFTLossAll)
+			}
+		})
 	}
 }

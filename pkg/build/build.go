@@ -440,12 +440,30 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 		if strings.TrimSpace(dataset.Source) == "" {
 			return errors.New("dataset source is not defined")
 		}
-		if dataset.Type != utils.DatasetAlpaca && dataset.Type != utils.DatasetMessages && dataset.Type != utils.DatasetPromptCompletion && dataset.Type != utils.DatasetText {
+		switch dataset.Type {
+		case utils.DatasetAlpaca, utils.DatasetMessages, utils.DatasetPromptCompletion, utils.DatasetShareGPT, utils.DatasetText:
+		default:
 			return errors.Errorf("dataset type %s is not supported", dataset.Type)
 		}
 	}
 
 	unsloth := c.Config.Unsloth
+	if strings.TrimSpace(unsloth.Loss) == "" {
+		return errors.New("config.unsloth.loss is not defined")
+	}
+	if unsloth.Loss != utils.SFTLossAll && unsloth.Loss != utils.SFTLossResponse {
+		return errors.Errorf("config.unsloth.loss %s is not supported", unsloth.Loss)
+	}
+	if unsloth.Loss == utils.SFTLossResponse {
+		for _, dataset := range c.Datasets {
+			if dataset.Type != utils.DatasetMessages && dataset.Type != utils.DatasetShareGPT {
+				return errors.Errorf("config.unsloth.loss response is not supported for dataset type %s", dataset.Type)
+			}
+		}
+		if unsloth.Packing {
+			return errors.New("config.unsloth.loss response does not support packing because response masks must not cross conversation boundaries")
+		}
+	}
 	if unsloth.MaxSeqLength <= 0 {
 		return errors.New("config.unsloth.maxSeqLength must be greater than zero")
 	}

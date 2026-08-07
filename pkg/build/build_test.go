@@ -306,6 +306,26 @@ func Test_validateFineTuneConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "valid sharegpt dataset type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetShareGPT
+			},
+		},
+		{
+			name: "valid messages response loss",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetMessages
+				c.Config.Unsloth.Loss = utils.SFTLossResponse
+			},
+		},
+		{
+			name: "valid sharegpt response loss",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetShareGPT
+				c.Config.Unsloth.Loss = utils.SFTLossResponse
+			},
+		},
+		{
 			name: "valid prompt-completion dataset type",
 			mutate: func(c *config.FineTuneConfig) {
 				c.Datasets[0].Type = utils.DatasetPromptCompletion
@@ -373,6 +393,59 @@ func Test_validateFineTuneConfig(t *testing.T) {
 				c.Datasets[0].Type = "other"
 			},
 			wantErr: "dataset type other is not supported",
+		},
+		{
+			name: "missing loss",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Config.Unsloth.Loss = ""
+			},
+			wantErr: "config.unsloth.loss is not defined",
+		},
+		{
+			name: "whitespace loss",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Config.Unsloth.Loss = " \t"
+			},
+			wantErr: "config.unsloth.loss is not defined",
+		},
+		{
+			name: "unsupported loss",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Config.Unsloth.Loss = "assistant"
+			},
+			wantErr: "config.unsloth.loss assistant is not supported",
+		},
+		{
+			name: "response loss with alpaca dataset",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Config.Unsloth.Loss = utils.SFTLossResponse
+			},
+			wantErr: "config.unsloth.loss response is not supported for dataset type alpaca",
+		},
+		{
+			name: "response loss with prompt-completion dataset",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetPromptCompletion
+				c.Config.Unsloth.Loss = utils.SFTLossResponse
+			},
+			wantErr: "config.unsloth.loss response is not supported for dataset type prompt-completion",
+		},
+		{
+			name: "response loss with text dataset",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetText
+				c.Config.Unsloth.Loss = utils.SFTLossResponse
+			},
+			wantErr: "config.unsloth.loss response is not supported for dataset type text",
+		},
+		{
+			name: "response loss with packing",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Datasets[0].Type = utils.DatasetMessages
+				c.Config.Unsloth.Loss = utils.SFTLossResponse
+				c.Config.Unsloth.Packing = true
+			},
+			wantErr: "config.unsloth.loss response does not support packing because response masks must not cross conversation boundaries",
 		},
 		{
 			name: "non-positive max sequence length",
@@ -574,7 +647,7 @@ func Test_validateFineTuneConfig(t *testing.T) {
 }
 
 func Test_validateNormalizedFineTuneConfig(t *testing.T) {
-	datasetTypes := []string{utils.DatasetAlpaca, utils.DatasetMessages, utils.DatasetPromptCompletion, utils.DatasetText}
+	datasetTypes := []string{utils.DatasetAlpaca, utils.DatasetMessages, utils.DatasetPromptCompletion, utils.DatasetShareGPT, utils.DatasetText}
 	for _, datasetType := range datasetTypes {
 		t.Run(datasetType, func(t *testing.T) {
 			_, fineTuneConfig, err := config.NewFromBytes([]byte(`
@@ -593,6 +666,9 @@ datasets:
 
 			if got := fineTuneConfig.Datasets[0].Type; got != datasetType {
 				t.Fatalf("dataset type = %q, want %q", got, datasetType)
+			}
+			if got := fineTuneConfig.Config.Unsloth.Loss; got != utils.SFTLossAll {
+				t.Fatalf("loss = %q, want default %q", got, utils.SFTLossAll)
 			}
 			if err := validateFinetuneConfig(fineTuneConfig); err != nil {
 				t.Fatalf("validateFinetuneConfig() error = %v", err)
@@ -699,6 +775,7 @@ func validFineTuneConfig() *config.FineTuneConfig {
 			Unsloth: config.FineTuneConfigUnslothSpec{
 				MaxSeqLength:              2048,
 				LoadIn4bit:                true,
+				Loss:                      utils.SFTLossAll,
 				BatchSize:                 2,
 				GradientAccumulationSteps: 4,
 				WarmupSteps:               10,

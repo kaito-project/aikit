@@ -21,6 +21,7 @@ const (
 	testNVIDIADriverVersion = "590.48.01"
 	testSessionA            = "session-a"
 	testSessionB            = "session-b"
+	testDatasetSource       = "test-dataset"
 )
 
 type fineTuneDefinitionOp struct {
@@ -157,11 +158,11 @@ func TestAikit2LLBSeparatesTrainingAndExportPhases(t *testing.T) {
 }
 
 func TestAikit2LLBPropagatesDatasetType(t *testing.T) {
-	datasetTypes := []string{utils.DatasetMessages, utils.DatasetPromptCompletion, utils.DatasetText}
+	datasetTypes := []string{utils.DatasetMessages, utils.DatasetPromptCompletion, utils.DatasetShareGPT, utils.DatasetText}
 	for _, datasetType := range datasetTypes {
 		t.Run(datasetType, func(t *testing.T) {
 			cfg := fineTuneTestConfig()
-			cfg.Datasets = []config.Dataset{{Source: "test-dataset", Type: datasetType}}
+			cfg.Datasets = []config.Dataset{{Source: testDatasetSource, Type: datasetType}}
 
 			ops := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, cfg))
 			_, trainingConfigFile := findFineTuneFile(t, ops, "/train-config.yaml")
@@ -175,7 +176,7 @@ func TestAikit2LLBPropagatesDatasetType(t *testing.T) {
 			}
 
 			alpacaCfg := *cfg
-			alpacaCfg.Datasets = []config.Dataset{{Source: "test-dataset", Type: utils.DatasetAlpaca}}
+			alpacaCfg.Datasets = []config.Dataset{{Source: testDatasetSource, Type: utils.DatasetAlpaca}}
 			alpacaOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, &alpacaCfg))
 			if got, want := findFineTuneExec(t, ops, "target_unsloth.py train").digest, findFineTuneExec(t, alpacaOps, "target_unsloth.py train").digest; got == want {
 				t.Fatalf("dataset type change did not invalidate training: %s", got)
@@ -184,6 +185,39 @@ func TestAikit2LLBPropagatesDatasetType(t *testing.T) {
 				t.Fatalf("dataset type change did not invalidate export: %s", got)
 			}
 		})
+	}
+}
+
+func TestAikit2LLBPropagatesLoss(t *testing.T) {
+	responseConfig := fineTuneTestConfig()
+	responseConfig.Datasets = []config.Dataset{{Source: testDatasetSource, Type: utils.DatasetMessages}}
+	responseConfig.Config.Unsloth.Loss = utils.SFTLossResponse
+	responseOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, responseConfig))
+
+	_, trainingConfigFile := findFineTuneFile(t, responseOps, "/train-config.yaml")
+	wantTrainingConfig := mustMarshalYAML(unslothTrainingConfig{
+		BaseModel: responseConfig.BaseModel,
+		Datasets:  responseConfig.Datasets,
+		Config:    responseConfig.Config,
+	})
+	if !slices.Equal(trainingConfigFile.Data, wantTrainingConfig) {
+		t.Fatalf("training config = %q, want %q", string(trainingConfigFile.Data), string(wantTrainingConfig))
+	}
+	if !strings.Contains(string(trainingConfigFile.Data), "    loss: response\n") {
+		t.Fatalf("training config does not serialize response loss: %q", string(trainingConfigFile.Data))
+	}
+
+	allConfig := *responseConfig
+	allConfig.Config.Unsloth.Loss = utils.SFTLossAll
+	allOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, &allConfig))
+	if got, want := findFineTuneExec(t, responseOps, "uv pip sync").digest, findFineTuneExec(t, allOps, "uv pip sync").digest; got != want {
+		t.Fatalf("loss change invalidated dependency installation: got %s, want %s", got, want)
+	}
+	if got, want := findFineTuneExec(t, responseOps, "target_unsloth.py train").digest, findFineTuneExec(t, allOps, "target_unsloth.py train").digest; got == want {
+		t.Fatalf("loss change did not invalidate training: %s", got)
+	}
+	if got, want := findFineTuneExec(t, responseOps, "target_unsloth.py export").digest, findFineTuneExec(t, allOps, "target_unsloth.py export").digest; got == want {
+		t.Fatalf("loss change did not invalidate export: %s", got)
 	}
 }
 
@@ -536,6 +570,7 @@ func fineTuneTestConfig() *config.FineTuneConfig {
 			Unsloth: config.FineTuneConfigUnslothSpec{
 				MaxSeqLength:              2048,
 				LoadIn4bit:                true,
+				Loss:                      utils.SFTLossAll,
 				BatchSize:                 2,
 				GradientAccumulationSteps: 4,
 				MaxSteps:                  20,

@@ -16,7 +16,11 @@ const (
 	DatasetAlpaca           = "alpaca"
 	DatasetMessages         = "messages"
 	DatasetPromptCompletion = "prompt-completion"
+	DatasetShareGPT         = "sharegpt"
 	DatasetText             = "text"
+
+	SFTLossAll      = "all"
+	SFTLossResponse = "response"
 
 	APIv1alpha1 = "v1alpha1"
 

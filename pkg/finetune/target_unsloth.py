@@ -24,12 +24,14 @@ HF_COMMIT_HASH_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DATASET_TYPE_ALPACA = "alpaca"
 DATASET_TYPE_MESSAGES = "messages"
 DATASET_TYPE_PROMPT_COMPLETION = "prompt-completion"
+DATASET_TYPE_SHAREGPT = "sharegpt"
 DATASET_TYPE_TEXT = "text"
 SUPPORTED_DATASET_TYPES = frozenset(
     (
         DATASET_TYPE_ALPACA,
         DATASET_TYPE_MESSAGES,
         DATASET_TYPE_PROMPT_COMPLETION,
+        DATASET_TYPE_SHAREGPT,
         DATASET_TYPE_TEXT,
     )
 )
@@ -37,10 +39,23 @@ DATASET_REQUIRED_FIELDS = {
     DATASET_TYPE_ALPACA: ("instruction", "input", "output"),
     DATASET_TYPE_MESSAGES: ("messages",),
     DATASET_TYPE_PROMPT_COMPLETION: ("prompt", "completion"),
+    DATASET_TYPE_SHAREGPT: ("conversations",),
     DATASET_TYPE_TEXT: ("text",),
 }
 MESSAGE_FIELDS = frozenset(("role", "content"))
 SUPPORTED_MESSAGE_ROLES = frozenset(("system", "user", "assistant"))
+SHAREGPT_MESSAGE_FIELDS = frozenset(("from", "value"))
+SHAREGPT_ROLE_MAP = {
+    "system": "system",
+    "human": "user",
+    "user": "user",
+    "gpt": "assistant",
+    "assistant": "assistant",
+}
+CHAT_DATASET_TYPES = frozenset((DATASET_TYPE_MESSAGES, DATASET_TYPE_SHAREGPT))
+LOSS_ALL = "all"
+LOSS_RESPONSE = "response"
+SUPPORTED_LOSSES = frozenset((LOSS_ALL, LOSS_RESPONSE))
 UNSUPPORTED_MESSAGES_TOP_LEVEL_FIELDS = frozenset(
     (
         "add_generation_prompt",
@@ -133,7 +148,19 @@ class MessagesTokenFingerprint(NamedTuple):
     second_digest_sum: int
 
 
+class ResponseMarkers(NamedTuple):
+    instruction_part: str
+    response_part: str
+    instruction_token_ids: tuple[int, ...]
+    response_token_ids: tuple[int, ...]
+    use_tokenizer_parts: bool
+
+
 class MessagesRenderError(RuntimeError):
+    pass
+
+
+class ShareGPTNormalizationError(RuntimeError):
     pass
 
 
@@ -155,6 +182,8 @@ class TrainDependencies(NamedTuple):
     resolve_model_name: Callable[..., str]
     sft_config: Callable[..., Any]
     sft_trainer: Callable[..., Any]
+    get_chat_template_parts: Callable[..., tuple[str, str]]
+    train_on_responses_only: Callable[..., Any]
 
 
 class ExportDependencies(NamedTuple):
@@ -327,6 +356,29 @@ def training_dataset_spec(
     return TrainingDatasetSpec(source=source, dataset_type=dataset_type)
 
 
+def training_loss(
+    train_config: Mapping[str, Any],
+    *,
+    dataset_type: str,
+) -> str:
+    cfg = unsloth_config(train_config)
+    configured_loss = cfg.get("loss", LOSS_ALL)
+    loss = LOSS_ALL if configured_loss is None else configured_loss
+    if not isinstance(loss, str) or loss not in SUPPORTED_LOSSES:
+        raise ValueError(f"unsupported SFT loss {loss!r}")
+    if loss == LOSS_RESPONSE and dataset_type not in CHAT_DATASET_TYPES:
+        raise ValueError(
+            "response SFT loss is supported only for messages and sharegpt datasets"
+        )
+    if loss == LOSS_RESPONSE and bool(cfg.get("packing", False)):
+        raise ValueError(
+            "response SFT loss does not support packing because response masks "
+            "must not cross conversation boundaries; set config.unsloth.packing "
+            "to false"
+        )
+    return loss
+
+
 def dataset_error_subject(
     dataset_type: str,
     *,
@@ -403,6 +455,67 @@ def validate_messages_value(
         raise ValueError(f"{subject} final message must have role 'assistant'")
 
 
+def canonicalize_sharegpt_conversations(
+    conversations: Any,
+    *,
+    subject: str,
+) -> list[dict[str, str]]:
+    if not isinstance(conversations, list) or not conversations:
+        raise ValueError(
+            f'{subject} field "conversations" must be a non-empty list'
+        )
+
+    messages = []
+    for message_index, conversation in enumerate(conversations):
+        message_subject = f"{subject} conversation {message_index}"
+        if not isinstance(conversation, Mapping):
+            raise ValueError(f"{message_subject} must be a mapping")
+
+        missing_fields = [
+            field for field in SHAREGPT_MESSAGE_FIELDS if field not in conversation
+        ]
+        if missing_fields:
+            quoted_fields = ", ".join(
+                f'"{field}"' for field in sorted(missing_fields)
+            )
+            raise ValueError(
+                f"{message_subject} is missing required fields: {quoted_fields}"
+            )
+
+        unsupported_fields = [
+            field for field in conversation if field not in SHAREGPT_MESSAGE_FIELDS
+        ]
+        if unsupported_fields:
+            quoted_fields = ", ".join(
+                sorted(repr(field) for field in unsupported_fields)
+            )
+            raise ValueError(
+                f"{message_subject} contains unsupported fields: {quoted_fields}"
+            )
+
+        source_role = conversation["from"]
+        content = conversation["value"]
+        if not isinstance(source_role, str):
+            raise ValueError(
+                f'{message_subject} field "from" must be a string'
+            )
+        try:
+            role = SHAREGPT_ROLE_MAP[source_role]
+        except KeyError:
+            raise ValueError(
+                f"{message_subject} has unsupported role {source_role!r}; "
+                "supported roles are system, human, user, gpt, and assistant"
+            ) from None
+        if not isinstance(content, str):
+            raise ValueError(
+                f'{message_subject} field "value" must be a string'
+            )
+        messages.append({"role": role, "content": content})
+
+    validate_messages_value(messages, subject=subject)
+    return messages
+
+
 def validate_messages_top_level_fields(
     fields: Sequence[Any] | Mapping[Any, Any],
     *,
@@ -441,7 +554,7 @@ def validate_training_dataset(
         if not isinstance(record, Mapping):
             raise ValueError(f"{subject} must be a mapping")
 
-        if dataset_type == DATASET_TYPE_MESSAGES:
+        if dataset_type in CHAT_DATASET_TYPES:
             validate_messages_top_level_fields(record, subject=subject)
 
         for field in required_fields:
@@ -451,7 +564,7 @@ def validate_training_dataset(
                 )
 
             value = record[field]
-            if dataset_type == DATASET_TYPE_MESSAGES:
+            if dataset_type in CHAT_DATASET_TYPES:
                 continue
             if not isinstance(value, str):
                 raise ValueError(
@@ -460,6 +573,11 @@ def validate_training_dataset(
 
         if dataset_type == DATASET_TYPE_MESSAGES:
             validate_messages_value(record["messages"], subject=subject)
+        if dataset_type == DATASET_TYPE_SHAREGPT:
+            canonicalize_sharegpt_conversations(
+                record["conversations"],
+                subject=subject,
+            )
         if (
             dataset_type == DATASET_TYPE_PROMPT_COMPLETION
             and record["completion"] == ""
@@ -503,10 +621,63 @@ def project_training_dataset(
             f"{subject} is missing required columns: {quoted_fields}"
         )
 
-    if dataset_type == DATASET_TYPE_MESSAGES:
+    if dataset_type in CHAT_DATASET_TYPES:
         validate_messages_top_level_fields(column_names, subject=subject)
 
     return dataset.select_columns(list(required_fields))
+
+
+def normalize_sharegpt_example(
+    example: Mapping[str, Any],
+    raw_index: Any,
+    *,
+    source_description: str,
+) -> dict[str, list[dict[str, str]]]:
+    try:
+        record_index = operator.index(raw_index)
+    except TypeError as error:
+        raise ShareGPTNormalizationError(
+            "sharegpt normalization row index must be an integer"
+        ) from error
+    subject = (
+        f"{DATASET_TYPE_SHAREGPT} dataset {source_description} "
+        f"row {record_index}"
+    )
+    try:
+        messages = canonicalize_sharegpt_conversations(
+            example["conversations"],
+            subject=subject,
+        )
+    except (KeyError, ValueError) as error:
+        message = str(error) if isinstance(error, ValueError) else (
+            f'{subject} is missing required field "conversations"'
+        )
+        raise ShareGPTNormalizationError(message) from None
+    return {"messages": messages}
+
+
+def normalize_sharegpt_dataset(
+    dataset: Any,
+    *,
+    source: str,
+) -> Any:
+    source_description = dataset_source_description(source)
+    try:
+        return dataset.map(
+            partial(
+                normalize_sharegpt_example,
+                source_description=source_description,
+            ),
+            batched=False,
+            with_indices=True,
+            remove_columns=list(dataset.column_names),
+            writer_batch_size=1,
+        )
+    except ShareGPTNormalizationError:
+        raise
+    except Exception:
+        subject = dataset_error_subject(DATASET_TYPE_SHAREGPT, source=source)
+        raise RuntimeError(f"{subject} could not be normalized") from None
 
 
 def effective_messages_chat_template(processing_class: Any) -> str | None:
@@ -551,6 +722,7 @@ def render_messages_example(
     *,
     processing_class: Any,
     source_description: str,
+    dataset_type: str = DATASET_TYPE_MESSAGES,
 ) -> dict[str, str]:
     try:
         record_index = operator.index(raw_index)
@@ -559,7 +731,7 @@ def render_messages_example(
             "messages preprocessing row index must be an integer"
         ) from error
     subject = (
-        f"{DATASET_TYPE_MESSAGES} dataset {source_description} "
+        f"{dataset_type} dataset {source_description} "
         f"row {record_index}"
     )
     try:
@@ -585,6 +757,7 @@ def render_messages_dataset(
     *,
     processing_class: Any,
     source: str,
+    dataset_type: str = DATASET_TYPE_MESSAGES,
 ) -> Any:
     source_description = dataset_source_description(source)
     try:
@@ -593,6 +766,7 @@ def render_messages_dataset(
                 render_messages_example,
                 processing_class=processing_class,
                 source_description=source_description,
+                dataset_type=dataset_type,
             ),
             batched=False,
             with_indices=True,
@@ -602,7 +776,7 @@ def render_messages_dataset(
     except MessagesRenderError:
         raise
     except Exception:
-        subject = dataset_error_subject(DATASET_TYPE_MESSAGES, source=source)
+        subject = dataset_error_subject(dataset_type, source=source)
         raise RuntimeError(
             f"{subject} could not be rendered with the tokenizer chat template"
         ) from None
@@ -767,6 +941,8 @@ def validate_messages_tokenization(
     max_seq_length: int,
     source: str,
     batch_size: int = MESSAGES_VALIDATION_BATCH_SIZE,
+    dataset_type: str = DATASET_TYPE_MESSAGES,
+    response_markers: ResponseMarkers | None = None,
 ) -> MessagesTokenFingerprint:
     if (
         isinstance(batch_size, bool)
@@ -817,12 +993,13 @@ def validate_messages_tokenization(
     record_count = 0
     batch_start = 0
     rendered_texts: list[str] = []
+    canonical_message_rows: list[Sequence[Mapping[str, str]]] = []
     canonical_token_rows: list[list[Any]] = []
 
     def validate_batch() -> None:
         nonlocal fingerprint
         batch_subject = dataset_error_subject(
-            DATASET_TYPE_MESSAGES,
+            dataset_type,
             source=source,
         )
         batch_subject += (
@@ -835,12 +1012,16 @@ def validate_messages_tokenization(
             max_length=token_limit,
             subject=batch_subject,
         )
-        for batch_index, (canonical_ids, rendered_ids) in enumerate(
-            zip(canonical_token_rows, rendered_token_rows)
+        for batch_index, (messages, canonical_ids, rendered_ids) in enumerate(
+            zip(
+                canonical_message_rows,
+                canonical_token_rows,
+                rendered_token_rows,
+            )
         ):
             record_index = batch_start + batch_index
             subject = dataset_error_subject(
-                DATASET_TYPE_MESSAGES,
+                dataset_type,
                 source=source,
                 record_index=record_index,
             )
@@ -859,6 +1040,13 @@ def validate_messages_tokenization(
                 raise RuntimeError(
                     f"{subject} canonical chat-template token IDs do not match "
                     "the locked Unsloth rendered-text tokenization"
+                )
+            if response_markers is not None:
+                validate_response_marker_layout(
+                    messages,
+                    canonical_ids,
+                    markers=response_markers,
+                    subject=subject,
                 )
             fingerprint = extend_messages_token_fingerprint(
                 fingerprint,
@@ -890,22 +1078,25 @@ def validate_messages_tokenization(
                 "messages preprocessing rendered records must contain string text"
             )
         subject = dataset_error_subject(
-            DATASET_TYPE_MESSAGES,
+            dataset_type,
             source=source,
             record_index=record_count,
         )
+        messages = source_record["messages"]
         canonical_ids = messages_chat_template_token_ids(
             processing_class,
-            source_record["messages"],
+            messages,
             max_length=token_limit,
             subject=subject,
         )
         rendered_texts.append(text)
+        canonical_message_rows.append(messages)
         canonical_token_rows.append(canonical_ids)
         record_count += 1
         if len(rendered_texts) == effective_batch_size:
             validate_batch()
             rendered_texts.clear()
+            canonical_message_rows.clear()
             canonical_token_rows.clear()
             batch_start = record_count
 
@@ -1316,7 +1507,7 @@ def prepare_training_dataset(
             partial(format_alpaca_examples, end_of_sequence=end_of_sequence),
             batched=True,
         )
-    if dataset_type == DATASET_TYPE_MESSAGES:
+    if dataset_type in CHAT_DATASET_TYPES:
         return dataset
     if dataset_type == DATASET_TYPE_PROMPT_COMPLETION:
         return dataset
@@ -1369,6 +1560,341 @@ def single_batch_row(
         description=f"{description} row",
         preprocessing=preprocessing,
     )
+
+
+def response_marker_token_ids(
+    processing_class: Any,
+    marker: str,
+    *,
+    description: str,
+) -> tuple[int, ...]:
+    tokenizer = getattr(processing_class, "tokenizer", processing_class)
+    try:
+        tokenized = tokenizer(marker, add_special_tokens=False)
+    except Exception:
+        raise RuntimeError(
+            f"response-only messages preprocessing could not tokenize the {description}"
+        ) from None
+    if isinstance(tokenized, Mapping):
+        try:
+            raw_token_ids = tokenized["input_ids"]
+        except KeyError as error:
+            raise RuntimeError(
+                f"response-only messages preprocessing {description} tokenization did not produce input_ids"
+            ) from error
+    else:
+        raw_token_ids = getattr(tokenized, "input_ids", None)
+        if raw_token_ids is None:
+            raise RuntimeError(
+                f"response-only messages preprocessing {description} tokenization did not produce input_ids"
+            )
+
+    token_ids = sequence_values(
+        raw_token_ids,
+        description=f"{description} token IDs",
+        preprocessing="response-only messages",
+    )
+    if token_ids and isinstance(token_ids[0], Sequence):
+        raise RuntimeError(
+            f"response-only messages preprocessing {description} token IDs must be one-dimensional"
+        )
+    normalized_ids = []
+    for token_index, raw_token_id in enumerate(token_ids):
+        try:
+            token_id = operator.index(raw_token_id)
+        except TypeError as error:
+            raise RuntimeError(
+                f"response-only messages preprocessing {description} token ID {token_index} must be an integer"
+            ) from error
+        if isinstance(raw_token_id, bool) or token_id < 0:
+            raise RuntimeError(
+                f"response-only messages preprocessing {description} token ID {token_index} must be a non-negative integer"
+            )
+        normalized_ids.append(token_id)
+    if not normalized_ids:
+        raise RuntimeError(
+            f"response-only messages preprocessing {description} must produce at least one token"
+        )
+    return tuple(normalized_ids)
+
+
+def derive_response_markers(
+    processing_class: Any,
+    *,
+    get_chat_template_parts: Callable[..., tuple[str, str]],
+) -> ResponseMarkers:
+    tokenizer = getattr(processing_class, "tokenizer", processing_class)
+    use_tokenizer_parts = hasattr(
+        tokenizer, "_unsloth_input_part"
+    ) and hasattr(tokenizer, "_unsloth_output_part")
+    if use_tokenizer_parts:
+        parts = (
+            getattr(tokenizer, "_unsloth_input_part"),
+            getattr(tokenizer, "_unsloth_output_part"),
+        )
+    else:
+        try:
+            parts = get_chat_template_parts(processing_class)
+        except Exception:
+            raise RuntimeError(
+                "response-only messages preprocessing could not derive stable instruction and response markers from the tokenizer chat template"
+            ) from None
+    if (
+        not isinstance(parts, Sequence)
+        or isinstance(parts, (str, bytes))
+        or len(parts) != 2
+    ):
+        raise RuntimeError(
+            "response-only messages preprocessing marker derivation must return exactly two markers"
+        )
+    instruction_part, response_part = parts
+    if not isinstance(instruction_part, str) or not instruction_part.strip():
+        raise RuntimeError(
+            "response-only messages preprocessing instruction marker must be a non-empty string"
+        )
+    if not isinstance(response_part, str) or not response_part.strip():
+        raise RuntimeError(
+            "response-only messages preprocessing response marker must be a non-empty string"
+        )
+    if instruction_part == response_part:
+        raise RuntimeError(
+            "response-only messages preprocessing instruction and response markers must differ"
+        )
+
+    instruction_token_ids = response_marker_token_ids(
+        processing_class,
+        instruction_part,
+        description="instruction marker",
+    )
+    response_token_ids = response_marker_token_ids(
+        processing_class,
+        response_part,
+        description="response marker",
+    )
+    if instruction_token_ids == response_token_ids:
+        raise RuntimeError(
+            "response-only messages preprocessing instruction and response markers must tokenize differently"
+        )
+    if (
+        token_subsequence_index(
+            instruction_token_ids,
+            response_token_ids,
+            start=0,
+        )
+        is not None
+        or token_subsequence_index(
+            response_token_ids,
+            instruction_token_ids,
+            start=0,
+        )
+        is not None
+    ):
+        raise RuntimeError(
+            "response-only messages preprocessing instruction and response marker token sequences must not contain one another"
+        )
+    return ResponseMarkers(
+        instruction_part=instruction_part,
+        response_part=response_part,
+        instruction_token_ids=instruction_token_ids,
+        response_token_ids=response_token_ids,
+        use_tokenizer_parts=use_tokenizer_parts,
+    )
+
+
+def token_subsequence_index(
+    token_ids: Sequence[Any],
+    marker_ids: Sequence[int],
+    *,
+    start: int,
+) -> int | None:
+    last_start = len(token_ids) - len(marker_ids)
+    for token_index in range(start, last_start + 1):
+        if list(token_ids[token_index : token_index + len(marker_ids)]) == list(
+            marker_ids
+        ):
+            return token_index
+    return None
+
+
+def token_subsequence_indices(
+    token_ids: Sequence[Any],
+    marker_ids: Sequence[int],
+) -> list[int]:
+    matches = []
+    last_start = len(token_ids) - len(marker_ids)
+    for token_index in range(last_start + 1):
+        if list(token_ids[token_index : token_index + len(marker_ids)]) == list(
+            marker_ids
+        ):
+            matches.append(token_index)
+    return matches
+
+
+def response_marker_events(
+    input_ids: Sequence[Any],
+    *,
+    markers: ResponseMarkers,
+    subject: str,
+) -> list[tuple[int, str, int]]:
+    events = [
+        (token_index, "user", len(markers.instruction_token_ids))
+        for token_index in token_subsequence_indices(
+            input_ids,
+            markers.instruction_token_ids,
+        )
+    ]
+    events.extend(
+        (token_index, "assistant", len(markers.response_token_ids))
+        for token_index in token_subsequence_indices(
+            input_ids,
+            markers.response_token_ids,
+        )
+    )
+    events.sort(key=lambda event: (event[0], event[1]))
+
+    previous_end = 0
+    for event_index, (token_index, _, marker_length) in enumerate(events):
+        if event_index > 0 and token_index < previous_end:
+            raise RuntimeError(
+                f"{subject} has overlapping instruction and response marker token matches"
+            )
+        previous_end = token_index + marker_length
+    return events
+
+
+def validate_response_message_sequence(
+    messages: Sequence[Mapping[str, str]],
+    *,
+    subject: str,
+) -> None:
+    expected_role = "user"
+    saw_conversation_turn = False
+    for message_index, message in enumerate(messages):
+        role = message["role"]
+        if role == "system":
+            if saw_conversation_turn:
+                raise ValueError(
+                    f"{subject} response-only loss requires system messages "
+                    "to precede all user and assistant messages"
+                )
+            continue
+
+        saw_conversation_turn = True
+        if role != expected_role:
+            raise ValueError(
+                f"{subject} response-only loss requires user and assistant "
+                f"messages to alternate after any system prefix; message "
+                f"{message_index} must have role {expected_role!r}"
+            )
+        expected_role = "assistant" if role == "user" else "user"
+
+    if not saw_conversation_turn or expected_role != "user":
+        raise ValueError(
+            f"{subject} response-only loss requires one or more user and "
+            "assistant pairs ending with an assistant message"
+        )
+
+
+def validate_response_training_dataset(
+    dataset: Any,
+    *,
+    dataset_type: str,
+    source: str,
+) -> None:
+    for record_index, record in enumerate(dataset):
+        subject = dataset_error_subject(
+            dataset_type,
+            source=source,
+            record_index=record_index,
+        )
+        validate_response_message_sequence(
+            record["messages"],
+            subject=subject,
+        )
+
+
+def validate_response_marker_layout(
+    messages: Sequence[Mapping[str, str]],
+    input_ids: Sequence[Any],
+    *,
+    markers: ResponseMarkers,
+    subject: str,
+) -> None:
+    validate_response_message_sequence(messages, subject=subject)
+    expected_roles = []
+    for message_index, message in enumerate(messages):
+        content = message["content"]
+        if (
+            markers.instruction_part in content
+            or markers.response_part in content
+        ):
+            raise ValueError(
+                f"{subject} message {message_index} content collides with "
+                "response-only chat-template markers"
+            )
+        role = message["role"]
+        if role == "user":
+            expected_roles.append("user")
+        elif role == "assistant":
+            expected_roles.append("assistant")
+
+    events = response_marker_events(
+        input_ids,
+        markers=markers,
+        subject=f"{subject} response-only marker layout",
+    )
+    actual_roles = [role for _, role, _ in events]
+    if actual_roles != expected_roles:
+        raise ValueError(
+            f"{subject} response-only chat-template markers do not uniquely "
+            "match the user and assistant message boundaries; marker collision "
+            "or unstable marker tokenization detected"
+        )
+
+
+def expected_response_only_labels(
+    input_ids: Sequence[Any],
+    *,
+    markers: ResponseMarkers,
+) -> list[Any]:
+    """Reproduce the pinned force-match masking for one conversation."""
+    labels = [-100] * len(input_ids)
+    token_count = len(input_ids)
+    last_token_index = token_count - 1
+    token_index = 0
+    response_spans = []
+    while token_index < token_count:
+        if list(
+            input_ids[
+                token_index : token_index + len(markers.response_token_ids)
+            ]
+        ) == list(markers.response_token_ids):
+            response_start = token_index + len(markers.response_token_ids)
+            token_index = response_start
+            while token_index < token_count:
+                instruction_start = token_index
+                if token_index == last_token_index or list(
+                    input_ids[
+                        token_index : token_index
+                        + len(markers.instruction_token_ids)
+                    ]
+                ) == list(markers.instruction_token_ids):
+                    if token_index == last_token_index:
+                        response_end = token_count
+                        token_index = token_count
+                    else:
+                        response_end = instruction_start
+                        token_index += len(markers.instruction_token_ids)
+                    response_spans.append((response_start, response_end))
+                    break
+                token_index += 1
+        token_index += 1
+
+    for response_start, response_end in response_spans:
+        labels[response_start:response_end] = input_ids[
+            response_start:response_end
+        ]
+    return labels
 
 
 def tokenize_verification_text(
@@ -1949,15 +2475,33 @@ def validate_prepared_messages_dataset(
     padding_free: bool,
     packing_strategy: str = "bfd",
     expected_fingerprint: MessagesTokenFingerprint,
+    loss: str = LOSS_ALL,
+    response_markers: ResponseMarkers | None = None,
 ) -> None:
-    """Verify actual rendered-message boundaries and full-sequence labels."""
+    """Verify actual rendered-message boundaries and loss labels."""
+    if loss == LOSS_RESPONSE and packing:
+        raise RuntimeError(
+            "response-only messages preprocessing does not support packing "
+            "because response masks must not cross conversation boundaries"
+        )
     if packing and packing_strategy != "bfd":
         raise RuntimeError(
             "messages preprocessing validation requires the bfd packing strategy"
         )
+    if loss not in SUPPORTED_LOSSES:
+        raise RuntimeError(f"messages preprocessing has unsupported loss {loss!r}")
+    if loss == LOSS_RESPONSE and response_markers is None:
+        raise RuntimeError(
+            "response-only messages preprocessing requires validated markers"
+        )
+    if loss == LOSS_ALL and response_markers is not None:
+        raise RuntimeError(
+            "full-sequence messages preprocessing must not use response markers"
+        )
 
     fingerprint = empty_messages_token_fingerprint()
     record_count = 0
+    supervised_response_tokens = 0
     for record_index, prepared_record in enumerate(dataset):
         record_count += 1
         if not isinstance(prepared_record, Mapping):
@@ -1980,6 +2524,23 @@ def validate_prepared_messages_dataset(
                 f"messages preprocessing record {record_index} exceeds maxSeqLength {max_seq_length}"
             )
 
+        prepared_labels = None
+        if loss == LOSS_RESPONSE:
+            try:
+                prepared_labels = sequence_values(
+                    prepared_record["labels"],
+                    description=f"record {record_index} labels",
+                    preprocessing="response-only messages",
+                )
+            except KeyError as error:
+                raise RuntimeError(
+                    f"response-only messages preprocessing record {record_index} did not produce labels"
+                ) from error
+            if len(prepared_labels) != len(input_ids):
+                raise RuntimeError(
+                    f"response-only messages preprocessing record {record_index} input_ids and labels lengths differ"
+                )
+
         sequence_starts = set()
         sequence_ends = set()
         offset = 0
@@ -1999,6 +2560,34 @@ def validate_prepared_messages_dataset(
                 segment,
                 description=location,
             )
+
+            if loss == LOSS_RESPONSE:
+                expected_labels = expected_response_only_labels(
+                    segment,
+                    markers=response_markers,
+                )
+                if all(label == -100 for label in expected_labels):
+                    raise RuntimeError(
+                        f"response-only messages preprocessing {location} has no supervised response tokens"
+                    )
+                actual_labels = prepared_labels[
+                    offset - len(segment) : offset
+                ]
+                for expected_label, actual_label in zip(
+                    expected_labels, actual_labels
+                ):
+                    if actual_label == expected_label:
+                        continue
+                    if expected_label == -100:
+                        raise RuntimeError(
+                            f"response-only messages preprocessing {location} must mask all non-response tokens"
+                        )
+                    raise RuntimeError(
+                        f"response-only messages preprocessing {location} assistant response tokens must be supervised"
+                    )
+                supervised_response_tokens += sum(
+                    label != -100 for label in actual_labels
+                )
 
         collated = data_collator([prepared_record])
         if not isinstance(collated, Mapping):
@@ -2034,28 +2623,44 @@ def validate_prepared_messages_dataset(
                 "messages preprocessing labels are shorter than input_ids"
             )
 
-        allow_sequence_start_masking = packing or padding_free
-        for token_index, input_id in enumerate(input_ids):
-            if labels[token_index] == input_id:
-                continue
-            if (
-                allow_sequence_start_masking
-                and token_index in sequence_starts
-                and labels[token_index] == -100
-            ):
-                continue
-            raise RuntimeError(
-                "messages preprocessing must use full-sequence labels"
-            )
-        for sequence_end in sequence_ends:
-            if labels[sequence_end] != input_ids[sequence_end]:
+        if loss == LOSS_RESPONSE:
+            for token_index, prepared_label in enumerate(prepared_labels):
+                if labels[token_index] == prepared_label:
+                    continue
+                if prepared_label == -100:
+                    raise RuntimeError(
+                        "response-only messages preprocessing data collator unmasked non-response tokens"
+                    )
                 raise RuntimeError(
-                    "messages preprocessing final tokens must be supervised"
+                    "response-only messages preprocessing data collator masked assistant response tokens"
                 )
+        else:
+            allow_sequence_start_masking = packing or padding_free
+            for token_index, input_id in enumerate(input_ids):
+                if labels[token_index] == input_id:
+                    continue
+                if (
+                    allow_sequence_start_masking
+                    and token_index in sequence_starts
+                    and labels[token_index] == -100
+                ):
+                    continue
+                raise RuntimeError(
+                    "messages preprocessing must use full-sequence labels"
+                )
+            for sequence_end in sequence_ends:
+                if labels[sequence_end] != input_ids[sequence_end]:
+                    raise RuntimeError(
+                        "messages preprocessing final tokens must be supervised"
+                    )
 
     if record_count == 0:
         raise RuntimeError(
             "messages preprocessing produced an empty training dataset"
+        )
+    if loss == LOSS_RESPONSE and supervised_response_tokens == 0:
+        raise RuntimeError(
+            "response-only messages preprocessing training dataset has no supervised response tokens"
         )
     if fingerprint != expected_fingerprint:
         raise RuntimeError(
@@ -2306,7 +2911,9 @@ def cleanup_gguf_export(export_directory: Path | str) -> None:
 def load_train_dependencies() -> TrainDependencies:
     # Unsloth must be imported before Transformers-based training dependencies.
     from unsloth import FastLanguageModel, is_bfloat16_supported
+    from unsloth.chat_templates import train_on_responses_only
     from unsloth.models.loader_utils import get_model_name
+    from unsloth_zoo.dataset_utils import get_chat_template_parts
     from datasets import Dataset, load_dataset
     from huggingface_hub import model_info
     from trl import SFTConfig, SFTTrainer
@@ -2320,6 +2927,8 @@ def load_train_dependencies() -> TrainDependencies:
         resolve_model_name=get_model_name,
         sft_config=SFTConfig,
         sft_trainer=SFTTrainer,
+        get_chat_template_parts=get_chat_template_parts,
+        train_on_responses_only=train_on_responses_only,
     )
 
 
@@ -2340,6 +2949,7 @@ def train_model(
     dependencies: TrainDependencies | None = None,
 ) -> Path:
     dataset_spec = training_dataset_spec(train_config)
+    loss = training_loss(train_config, dataset_type=dataset_spec.dataset_type)
 
     if dependencies is None:
         dependencies = load_train_dependencies()
@@ -2351,19 +2961,19 @@ def train_model(
     try:
         dataset = dependencies.load_dataset(load_spec.path, **load_spec.kwargs)
     except Exception:
-        if dataset_spec.dataset_type == DATASET_TYPE_MESSAGES:
+        if dataset_spec.dataset_type in CHAT_DATASET_TYPES:
             subject = dataset_error_subject(
-                DATASET_TYPE_MESSAGES,
+                dataset_spec.dataset_type,
                 source=dataset_spec.source,
             )
             raise RuntimeError(f"{subject} could not be loaded") from None
         raise
-    validation_source = (
-        dataset_spec.source
-        if dataset_spec.dataset_type
-        in {DATASET_TYPE_MESSAGES, DATASET_TYPE_TEXT}
-        else None
-    )
+    validation_source = None
+    if (
+        dataset_spec.dataset_type in CHAT_DATASET_TYPES
+        or dataset_spec.dataset_type == DATASET_TYPE_TEXT
+    ):
+        validation_source = dataset_spec.source
     dataset = project_training_dataset(
         dataset,
         dataset_type=dataset_spec.dataset_type,
@@ -2374,6 +2984,17 @@ def train_model(
         dataset_type=dataset_spec.dataset_type,
         source=validation_source,
     )
+    if dataset_spec.dataset_type == DATASET_TYPE_SHAREGPT:
+        dataset = normalize_sharegpt_dataset(
+            dataset,
+            source=dataset_spec.source,
+        )
+    if dataset_spec.dataset_type in CHAT_DATASET_TYPES and loss == LOSS_RESPONSE:
+        validate_response_training_dataset(
+            dataset,
+            dataset_type=dataset_spec.dataset_type,
+            source=dataset_spec.source,
+        )
 
     model, tokenizer = dependencies.fast_language_model.from_pretrained(
         model_name=train_config["baseModel"],
@@ -2382,13 +3003,20 @@ def train_model(
         load_in_4bit=cfg["loadIn4bit"],
     )
     messages_token_fingerprint = None
-    if dataset_spec.dataset_type == DATASET_TYPE_MESSAGES:
+    response_markers = None
+    if dataset_spec.dataset_type in CHAT_DATASET_TYPES:
         require_messages_chat_template(tokenizer)
+        if loss == LOSS_RESPONSE:
+            response_markers = derive_response_markers(
+                tokenizer,
+                get_chat_template_parts=dependencies.get_chat_template_parts,
+            )
         messages_source_dataset = dataset
         dataset = render_messages_dataset(
             messages_source_dataset,
             processing_class=tokenizer,
             source=dataset_spec.source,
+            dataset_type=dataset_spec.dataset_type,
         )
         messages_token_fingerprint = validate_messages_tokenization(
             messages_source_dataset,
@@ -2396,6 +3024,8 @@ def train_model(
             processing_class=tokenizer,
             max_seq_length=max_seq_length,
             source=dataset_spec.source,
+            dataset_type=dataset_spec.dataset_type,
+            response_markers=response_markers,
         )
 
     prompt_prefix_fingerprint = None
@@ -2488,6 +3118,31 @@ def train_model(
             report_to="none",
         ),
     )
+    if dataset_spec.dataset_type in CHAT_DATASET_TYPES and loss == LOSS_RESPONSE:
+        if bool(getattr(trainer.args, "packing", False)):
+            raise RuntimeError(
+                "response-only messages preprocessing does not support effective "
+                "trainer packing because response masks must not cross "
+                "conversation boundaries"
+            )
+        if response_markers is None:
+            raise RuntimeError(
+                "response-only messages preprocessing did not derive markers"
+            )
+        marker_kwargs = {"force_match": True}
+        if not response_markers.use_tokenizer_parts:
+            marker_kwargs.update(
+                instruction_part=response_markers.instruction_part,
+                response_part=response_markers.response_part,
+            )
+        trainer = dependencies.train_on_responses_only(
+            trainer,
+            **marker_kwargs,
+        )
+        if trainer is None:
+            raise RuntimeError(
+                "response-only messages preprocessing did not return a trainer"
+            )
     if dataset_spec.dataset_type == DATASET_TYPE_PROMPT_COMPLETION:
         # This is exercised by the GPU smoke path against the exact locked,
         # Unsloth-patched TRL trainer before any training step can silently use
@@ -2506,7 +3161,7 @@ def train_model(
             expected_prompt_prefix_fingerprint=prompt_prefix_fingerprint,
         )
 
-    if dataset_spec.dataset_type == DATASET_TYPE_MESSAGES:
+    if dataset_spec.dataset_type in CHAT_DATASET_TYPES:
         if messages_token_fingerprint is None:
             raise RuntimeError(
                 "messages preprocessing did not produce a source fingerprint"
@@ -2519,6 +3174,8 @@ def train_model(
             padding_free=bool(getattr(trainer.args, "padding_free", False)),
             packing_strategy=getattr(trainer.args, "packing_strategy", "bfd"),
             expected_fingerprint=messages_token_fingerprint,
+            loss=loss,
+            response_markers=response_markers,
         )
 
     if dataset_spec.dataset_type == DATASET_TYPE_TEXT:

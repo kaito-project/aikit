@@ -1,8 +1,11 @@
 package config
 
+import "github.com/kaito-project/aikit/pkg/utils"
+
 const (
 	defaultMaxSeqLength              = 2048
 	defaultLoadIn4bit                = true
+	defaultLoss                      = utils.SFTLossAll
 	defaultBatchSize                 = 2
 	defaultGradientAccumulationSteps = 4
 	defaultWarmupSteps               = 10
@@ -50,6 +53,7 @@ type FineTuneConfigUnslothSpec struct {
 	Packing                   bool    `yaml:"packing"`
 	MaxSeqLength              int     `yaml:"maxSeqLength"`
 	LoadIn4bit                bool    `yaml:"loadIn4bit"`
+	Loss                      string  `yaml:"loss"`
 	BatchSize                 int     `yaml:"batchSize"`
 	GradientAccumulationSteps int     `yaml:"gradientAccumulationSteps"`
 	WarmupSteps               int     `yaml:"warmupSteps"`
@@ -84,6 +88,7 @@ type rawFineTuneConfigUnslothSpec struct {
 	Packing                   *bool    `yaml:"packing"`
 	MaxSeqLength              *int     `yaml:"maxSeqLength"`
 	LoadIn4bit                *bool    `yaml:"loadIn4bit"`
+	Loss                      *string  `yaml:"loss"`
 	BatchSize                 *int     `yaml:"batchSize"`
 	GradientAccumulationSteps *int     `yaml:"gradientAccumulationSteps"`
 	WarmupSteps               *int     `yaml:"warmupSteps"`
@@ -123,11 +128,11 @@ func normalizeUnslothConfig(c *rawFineTuneConfigUnslothSpec) FineTuneConfigUnslo
 	if c == nil {
 		c = &rawFineTuneConfigUnslothSpec{}
 	}
-
 	return FineTuneConfigUnslothSpec{
 		Packing:                   valueOrDefault(c.Packing, false),
 		MaxSeqLength:              valueOrDefault(c.MaxSeqLength, defaultMaxSeqLength),
 		LoadIn4bit:                valueOrDefault(c.LoadIn4bit, defaultLoadIn4bit),
+		Loss:                      valueOrDefault(c.Loss, defaultLoss),
 		BatchSize:                 valueOrDefault(c.BatchSize, defaultBatchSize),
 		GradientAccumulationSteps: valueOrDefault(c.GradientAccumulationSteps, defaultGradientAccumulationSteps),
 		WarmupSteps:               valueOrDefault(c.WarmupSteps, defaultWarmupSteps),

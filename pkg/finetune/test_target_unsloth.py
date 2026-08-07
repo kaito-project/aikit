@@ -433,6 +433,10 @@ def example_train_dependencies(dataset):
         resolve_model_name=mock.Mock(return_value="example/resolved-model"),
         sft_config=mock.Mock(return_value="sft-config"),
         sft_trainer=mock.Mock(return_value=trainer),
+        get_chat_template_parts=mock.Mock(
+            return_value=("<user>", "<assistant>")
+        ),
+        train_on_responses_only=mock.Mock(side_effect=lambda trainer, **_: trainer),
     )
     return dependencies
 
@@ -508,6 +512,72 @@ class ConfigTest(unittest.TestCase):
             target_unsloth.output_config(export_config),
             export_config["output"],
         )
+
+    def test_sft_loss_defaults_to_all_and_limits_response_to_chat_data(self):
+        train_config = example_train_config()
+        self.assertEqual(
+            target_unsloth.training_loss(
+                train_config,
+                dataset_type=target_unsloth.DATASET_TYPE_ALPACA,
+            ),
+            target_unsloth.LOSS_ALL,
+        )
+
+        train_config["config"]["unsloth"]["loss"] = None
+        self.assertEqual(
+            target_unsloth.training_loss(
+                train_config,
+                dataset_type=target_unsloth.DATASET_TYPE_MESSAGES,
+            ),
+            target_unsloth.LOSS_ALL,
+        )
+
+        train_config["config"]["unsloth"]["loss"] = "response"
+        for dataset_type in (
+            target_unsloth.DATASET_TYPE_MESSAGES,
+            target_unsloth.DATASET_TYPE_SHAREGPT,
+        ):
+            with self.subTest(dataset_type=dataset_type):
+                self.assertEqual(
+                    target_unsloth.training_loss(
+                        train_config,
+                        dataset_type=dataset_type,
+                    ),
+                    target_unsloth.LOSS_RESPONSE,
+                )
+
+        for dataset_type in (
+            target_unsloth.DATASET_TYPE_ALPACA,
+            target_unsloth.DATASET_TYPE_PROMPT_COMPLETION,
+            target_unsloth.DATASET_TYPE_TEXT,
+        ):
+            with self.subTest(dataset_type=dataset_type):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "supported only for messages and sharegpt",
+                ):
+                    target_unsloth.training_loss(
+                        train_config,
+                        dataset_type=dataset_type,
+                    )
+
+        train_config["config"]["unsloth"]["packing"] = True
+        train_config["config"]["unsloth"]["loss"] = "response"
+        with self.assertRaisesRegex(ValueError, "does not support packing"):
+            target_unsloth.training_loss(
+                train_config,
+                dataset_type=target_unsloth.DATASET_TYPE_MESSAGES,
+            )
+
+        train_config["config"]["unsloth"]["packing"] = False
+        for invalid_loss in ("", "assistant"):
+            train_config["config"]["unsloth"]["loss"] = invalid_loss
+            with self.subTest(invalid_loss=invalid_loss):
+                with self.assertRaisesRegex(ValueError, "unsupported SFT loss"):
+                    target_unsloth.training_loss(
+                        train_config,
+                        dataset_type=target_unsloth.DATASET_TYPE_MESSAGES,
+                    )
 
 
 class CLITest(unittest.TestCase):
@@ -876,6 +946,184 @@ class MessagesSchemaTest(unittest.TestCase):
             self.assertNotIn(secret, message)
 
 
+class ShareGPTAdapterTest(unittest.TestCase):
+    def test_normalizes_one_row_with_exact_role_map_and_bounded_mapping(self):
+        conversations = [
+            {"from": "system", "value": "Be concise."},
+            {"from": "human", "value": "First question?"},
+            {"from": "gpt", "value": "First answer."},
+            {"from": "user", "value": "Follow-up?"},
+            {"from": "assistant", "value": "Follow-up answer."},
+        ]
+        dataset = FunctionalDataset(
+            [
+                {
+                    "conversations": conversations,
+                    "id": "one-row-regression",
+                    "metadata": {"source": "curated"},
+                }
+            ]
+        )
+
+        projected = target_unsloth.project_training_dataset(
+            dataset,
+            dataset_type=target_unsloth.DATASET_TYPE_SHAREGPT,
+            source="organization/sharegpt-data",
+        )
+        target_unsloth.validate_training_dataset(
+            projected,
+            dataset_type=target_unsloth.DATASET_TYPE_SHAREGPT,
+            source="organization/sharegpt-data",
+        )
+        normalized = target_unsloth.normalize_sharegpt_dataset(
+            projected,
+            source="organization/sharegpt-data",
+        )
+
+        self.assertEqual(
+            list(normalized),
+            [
+                {
+                    "messages": [
+                        {"role": "system", "content": "Be concise."},
+                        {"role": "user", "content": "First question?"},
+                        {"role": "assistant", "content": "First answer."},
+                        {"role": "user", "content": "Follow-up?"},
+                        {
+                            "role": "assistant",
+                            "content": "Follow-up answer.",
+                        },
+                    ]
+                }
+            ],
+        )
+        dataset.select_columns.assert_called_once_with(["conversations"])
+        projected.map.assert_called_once_with(
+            mock.ANY,
+            batched=False,
+            with_indices=True,
+            remove_columns=["conversations"],
+            writer_batch_size=1,
+        )
+
+    def test_rejects_malformed_conversations_without_heuristic_inference(self):
+        valid_user = {"from": "human", "value": "Question?"}
+        valid_assistant = {"from": "gpt", "value": "Answer."}
+        cases = (
+            ("empty", [], "conversations.*non-empty list"),
+            (
+                "non-list",
+                (valid_user, valid_assistant),
+                "conversations.*non-empty list",
+            ),
+            (
+                "non-mapping",
+                [valid_user, "answer"],
+                "conversation 1.*mapping",
+            ),
+            (
+                "missing from",
+                [{"value": "Question?"}, valid_assistant],
+                "conversation 0.*from",
+            ),
+            (
+                "missing value",
+                [{"from": "human"}, valid_assistant],
+                "conversation 0.*value",
+            ),
+            (
+                "heuristic role key",
+                [{"role": "human", "value": "Question?"}, valid_assistant],
+                "conversation 0.*from",
+            ),
+            (
+                "heuristic content key",
+                [{"from": "human", "content": "Question?"}, valid_assistant],
+                "conversation 0.*value",
+            ),
+            (
+                "unknown role",
+                [{"from": "tool", "value": "Question?"}, valid_assistant],
+                "unsupported role 'tool'",
+            ),
+            (
+                "non-string role",
+                [{"from": 7, "value": "Question?"}, valid_assistant],
+                "from.*string",
+            ),
+            (
+                "non-string content",
+                [valid_user, {"from": "gpt", "value": ["Answer."]}],
+                "value.*string",
+            ),
+            (
+                "conversation metadata",
+                [
+                    {"from": "human", "value": "Question?", "name": "alice"},
+                    valid_assistant,
+                ],
+                "unsupported fields.*name",
+            ),
+            ("no assistant", [valid_user], "at least one assistant"),
+            (
+                "user final",
+                [valid_user, valid_assistant, valid_user],
+                "final message.*assistant",
+            ),
+        )
+
+        for name, conversations, error_pattern in cases:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.validate_training_dataset(
+                        [{"conversations": conversations}],
+                        dataset_type=target_unsloth.DATASET_TYPE_SHAREGPT,
+                        source="organization/sharegpt-data",
+                    )
+
+    def test_rejects_semantic_top_level_fields_and_redacts_url_errors(self):
+        conversations = [
+            {"from": "human", "value": "Question?"},
+            {"from": "gpt", "value": "Answer."},
+        ]
+        dataset = in_memory_dataset(
+            [{"conversations": conversations, "tools": []}]
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "unsupported top-level fields.*tools",
+        ):
+            target_unsloth.project_training_dataset(
+                dataset,
+                dataset_type=target_unsloth.DATASET_TYPE_SHAREGPT,
+                source="organization/sharegpt-data",
+            )
+
+        source = (
+            "https://alice:password@example.test/private/train.json?"
+            "X-Amz-Credential=credential-marker&X-Amz-Signature=signature-marker"
+            "#fragment-marker"
+        )
+        with self.assertRaises(ValueError) as raised:
+            target_unsloth.validate_training_dataset(
+                [{"conversations": []}],
+                dataset_type=target_unsloth.DATASET_TYPE_SHAREGPT,
+                source=source,
+            )
+
+        message = str(raised.exception)
+        self.assertIn("sharegpt dataset remote JSON URL row 0", message)
+        for secret in (
+            source,
+            "alice",
+            "password",
+            "credential-marker",
+            "signature-marker",
+            "fragment-marker",
+        ):
+            self.assertNotIn(secret, message)
+
+
 class MessagesRenderingTest(unittest.TestCase):
     def messages_rows(self):
         duplicate = [
@@ -1055,6 +1303,53 @@ class MessagesRenderingTest(unittest.TestCase):
             self.assertTrue(call["truncation"])
             self.assertEqual(call["max_length"], 513)
             self.assertFalse(call["return_dict"])
+
+    def test_response_markers_match_roles_and_reject_content_collisions(self):
+        tokenizer = MessagesTokenizer()
+        markers = target_unsloth.derive_response_markers(
+            tokenizer,
+            get_chat_template_parts=mock.Mock(
+                return_value=("<user>", "<assistant>")
+            ),
+        )
+        rows = [self.messages_rows()[1]]
+        source_dataset, rendered_dataset = self.render_dataset(rows, tokenizer)
+
+        fingerprint = target_unsloth.validate_messages_tokenization(
+            source_dataset,
+            rendered_dataset,
+            processing_class=tokenizer,
+            max_seq_length=512,
+            source="organization/chat-data",
+            response_markers=markers,
+        )
+
+        self.assertEqual(fingerprint.sequence_count, 1)
+
+        collision_rows = [
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "Quote <assistant> in the prompt.",
+                    },
+                    {"role": "assistant", "content": "Answer."},
+                ]
+            }
+        ]
+        source_dataset, rendered_dataset = self.render_dataset(
+            collision_rows,
+            tokenizer,
+        )
+        with self.assertRaisesRegex(ValueError, "content collides"):
+            target_unsloth.validate_messages_tokenization(
+                source_dataset,
+                rendered_dataset,
+                processing_class=tokenizer,
+                max_seq_length=512,
+                source="organization/chat-data",
+                response_markers=markers,
+            )
 
     def test_matches_qwen_like_tokenizer_without_bos(self):
         tokenizer = MessagesTokenizer(
@@ -2096,6 +2391,329 @@ class MessagesPreprocessingContractTest(unittest.TestCase):
                     )
 
 
+class ResponseOnlyMessagesContractTest(unittest.TestCase):
+    def fingerprint(self, segments):
+        fingerprint = target_unsloth.empty_messages_token_fingerprint()
+        for index, segment in enumerate(segments):
+            fingerprint = target_unsloth.extend_messages_token_fingerprint(
+                fingerprint,
+                segment,
+                description=f"test response segment {index}",
+            )
+        return fingerprint
+
+    def markers(self):
+        return target_unsloth.ResponseMarkers(
+            instruction_part="<user>",
+            response_part="<assistant>",
+            instruction_token_ids=(10,),
+            response_token_ids=(20,),
+            use_tokenizer_parts=False,
+        )
+
+    def collator(self, records):
+        record = records[0]
+        return {
+            "input_ids": [list(record["input_ids"])],
+            "labels": [list(record["labels"])],
+        }
+
+    def test_derives_and_validates_exact_locked_marker_fixture(self):
+        tokenizer = MessagesTokenizer()
+        get_chat_template_parts = mock.Mock(
+            return_value=("<user>", "<assistant>")
+        )
+
+        markers = target_unsloth.derive_response_markers(
+            tokenizer,
+            get_chat_template_parts=get_chat_template_parts,
+        )
+
+        self.assertEqual(markers.instruction_part, "<user>")
+        self.assertEqual(markers.response_part, "<assistant>")
+        self.assertEqual(
+            markers.instruction_token_ids,
+            tuple(tokenizer.raw_token_ids("<user>")),
+        )
+        self.assertEqual(
+            markers.response_token_ids,
+            tuple(tokenizer.raw_token_ids("<assistant>")),
+        )
+        self.assertFalse(markers.use_tokenizer_parts)
+        get_chat_template_parts.assert_called_once_with(tokenizer)
+
+    def test_validates_cached_unsloth_markers_without_passing_custom_parts(self):
+        tokenizer = MessagesTokenizer()
+        tokenizer._unsloth_input_part = "<user>"
+        tokenizer._unsloth_output_part = "<assistant>"
+        get_chat_template_parts = mock.Mock()
+
+        markers = target_unsloth.derive_response_markers(
+            tokenizer,
+            get_chat_template_parts=get_chat_template_parts,
+        )
+
+        self.assertTrue(markers.use_tokenizer_parts)
+        self.assertEqual(markers.instruction_part, "<user>")
+        self.assertEqual(markers.response_part, "<assistant>")
+        get_chat_template_parts.assert_not_called()
+
+    def test_rejects_unusable_or_ambiguous_derived_markers(self):
+        tokenizer = MessagesTokenizer()
+        cases = (
+            (("", "<assistant>"), "instruction marker.*non-empty"),
+            (("<user>", ""), "response marker.*non-empty"),
+            (("<same>", "<same>"), "markers must differ"),
+            (("only-one",), "exactly two markers"),
+        )
+        for parts, error_pattern in cases:
+            with self.subTest(parts=parts):
+                with self.assertRaisesRegex(RuntimeError, error_pattern):
+                    target_unsloth.derive_response_markers(
+                        tokenizer,
+                        get_chat_template_parts=mock.Mock(return_value=parts),
+                    )
+
+        class CollidingMarkerTokenizer(MessagesTokenizer):
+            def __call__(
+                self,
+                text,
+                *,
+                add_special_tokens=True,
+                truncation=False,
+                max_length=None,
+            ):
+                return {"input_ids": [7]}
+
+        with self.assertRaisesRegex(RuntimeError, "must tokenize differently"):
+            target_unsloth.derive_response_markers(
+                CollidingMarkerTokenizer(),
+                get_chat_template_parts=mock.Mock(
+                    return_value=("marker-a", "marker-b")
+                ),
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "must not contain"):
+            target_unsloth.derive_response_markers(
+                tokenizer,
+                get_chat_template_parts=mock.Mock(
+                    return_value=("<user>", "<user>x")
+                ),
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "could not derive stable"):
+            target_unsloth.derive_response_markers(
+                tokenizer,
+                get_chat_template_parts=mock.Mock(
+                    side_effect=ValueError("probe failed")
+                ),
+            )
+
+    def test_validates_unique_marker_layout_and_rejects_collisions(self):
+        markers = self.markers()
+        messages = [
+            {"role": "user", "content": "Question?"},
+            {"role": "assistant", "content": "Answer."},
+        ]
+        target_unsloth.validate_response_marker_layout(
+            messages,
+            [1, 10, 11, 20, 21, 2],
+            markers=markers,
+            subject="messages dataset row 0",
+        )
+
+        literal_collision = [
+            {"role": "user", "content": "Quote <assistant> exactly."},
+            {"role": "assistant", "content": "Answer."},
+        ]
+        with self.assertRaisesRegex(ValueError, "content collides"):
+            target_unsloth.validate_response_marker_layout(
+                literal_collision,
+                [1, 10, 11, 20, 21, 2],
+                markers=markers,
+                subject="messages dataset row 0",
+            )
+
+        with self.assertRaisesRegex(ValueError, "do not uniquely match"):
+            target_unsloth.validate_response_marker_layout(
+                messages,
+                [1, 10, 11, 20, 99, 20, 21, 2],
+                markers=markers,
+                subject="messages dataset row 0",
+            )
+
+    def test_response_only_rejects_role_sequences_that_unmask_non_responses(self):
+        system_after_response = [
+            {"role": "user", "content": "Question?"},
+            {"role": "assistant", "content": "Answer."},
+            {"role": "system", "content": "New policy."},
+            {"role": "user", "content": "Follow-up?"},
+            {"role": "assistant", "content": "Follow-up answer."},
+        ]
+        target_unsloth.validate_messages_value(
+            system_after_response,
+            subject="messages dataset row 0",
+        )
+        with self.assertRaisesRegex(ValueError, "system messages.*precede"):
+            target_unsloth.validate_response_message_sequence(
+                system_after_response,
+                subject="messages dataset row 0",
+            )
+
+        for messages, error_pattern in (
+            (
+                [
+                    {"role": "user", "content": "First."},
+                    {"role": "user", "content": "Second."},
+                    {"role": "assistant", "content": "Answer."},
+                ],
+                "messages to alternate",
+            ),
+            (
+                [{"role": "assistant", "content": "Answer."}],
+                "message 0 must have role 'user'",
+            ),
+        ):
+            with self.subTest(messages=messages):
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.validate_response_message_sequence(
+                        messages,
+                        subject="messages dataset row 0",
+                    )
+
+    def test_proves_prompt_masking_and_response_supervision_without_packing(self):
+        markers = self.markers()
+        first = [1, 10, 11, 20, 21, 22, 10, 12, 20, 23, 2]
+        second = [1, 10, 13, 20, 24, 2]
+        first_labels = target_unsloth.expected_response_only_labels(
+            first,
+            markers=markers,
+        )
+        second_labels = target_unsloth.expected_response_only_labels(
+            second,
+            markers=markers,
+        )
+        self.assertEqual(
+            first_labels,
+            [-100, -100, -100, -100, 21, 22, -100, -100, -100, 23, 2],
+        )
+        self.assertEqual(
+            second_labels,
+            [-100, -100, -100, -100, 24, 2],
+        )
+        prepared_dataset = [
+            {"input_ids": first, "labels": first_labels},
+            {"input_ids": second, "labels": second_labels},
+        ]
+
+        target_unsloth.validate_prepared_messages_dataset(
+            prepared_dataset,
+            data_collator=self.collator,
+            max_seq_length=32,
+            packing=False,
+            padding_free=False,
+            expected_fingerprint=self.fingerprint([first, second]),
+            loss=target_unsloth.LOSS_RESPONSE,
+            response_markers=markers,
+        )
+
+    def test_rejects_response_only_packing_before_inspecting_records(self):
+        with self.assertRaisesRegex(RuntimeError, "does not support packing"):
+            target_unsloth.validate_prepared_messages_dataset(
+                [],
+                data_collator=self.collator,
+                max_seq_length=32,
+                packing=True,
+                padding_free=True,
+                packing_strategy="bfd",
+                expected_fingerprint=self.fingerprint([]),
+                loss=target_unsloth.LOSS_RESPONSE,
+                response_markers=self.markers(),
+            )
+
+    def test_rejects_full_loss_fallback_fully_masked_and_collator_changes(self):
+        markers = self.markers()
+        segment = [1, 10, 11, 20, 21, 2]
+        expected_fingerprint = self.fingerprint([segment])
+        expected_labels = target_unsloth.expected_response_only_labels(
+            segment,
+            markers=markers,
+        )
+        cases = (
+            (
+                "full loss fallback",
+                list(segment),
+                self.collator,
+                "mask all non-response tokens",
+            ),
+            (
+                "fully masked",
+                [-100] * len(segment),
+                self.collator,
+                "response tokens must be supervised",
+            ),
+            (
+                "collator unmasks prompt",
+                expected_labels,
+                lambda records: {
+                    "input_ids": [list(records[0]["input_ids"])],
+                    "labels": [list(records[0]["input_ids"])],
+                },
+                "data collator unmasked non-response tokens",
+            ),
+        )
+        for name, labels, collator, error_pattern in cases:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(RuntimeError, error_pattern):
+                    target_unsloth.validate_prepared_messages_dataset(
+                        [{"input_ids": segment, "labels": labels}],
+                        data_collator=collator,
+                        max_seq_length=16,
+                        packing=False,
+                        padding_free=False,
+                        expected_fingerprint=expected_fingerprint,
+                        loss=target_unsloth.LOSS_RESPONSE,
+                        response_markers=markers,
+                    )
+
+    def test_rejects_missing_markers_or_filtered_canonical_rows(self):
+        markers = self.markers()
+        valid = [1, 10, 11, 20, 21, 2]
+        valid_record = {
+            "input_ids": valid,
+            "labels": target_unsloth.expected_response_only_labels(
+                valid,
+                markers=markers,
+            ),
+        }
+        with self.assertRaisesRegex(RuntimeError, "no supervised response tokens"):
+            target_unsloth.validate_prepared_messages_dataset(
+                [{"input_ids": [1, 10, 11, 2], "labels": [-100] * 4}],
+                data_collator=self.collator,
+                max_seq_length=16,
+                packing=False,
+                padding_free=False,
+                expected_fingerprint=self.fingerprint([[1, 10, 11, 2]]),
+                loss=target_unsloth.LOSS_RESPONSE,
+                response_markers=markers,
+            )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "do not match the canonical conversations",
+        ):
+            target_unsloth.validate_prepared_messages_dataset(
+                [valid_record],
+                data_collator=self.collator,
+                max_seq_length=16,
+                packing=False,
+                padding_free=False,
+                expected_fingerprint=self.fingerprint([valid, valid]),
+                loss=target_unsloth.LOSS_RESPONSE,
+                response_markers=markers,
+            )
+
+
 class TextPreprocessingContractTest(unittest.TestCase):
     def packed_verification_record(self, tokenizer, policy):
         normalized_texts = [
@@ -2597,6 +3215,429 @@ class TrainingPhaseTest(unittest.TestCase):
         self.assertEqual(trainer.data_collator.call_count, 1)
         trainer.train.assert_called_once_with()
         tokenizer.save_pretrained.assert_called_once()
+
+    def test_response_loss_rejects_unsafe_role_order_before_model_allocation(self):
+        cases = (
+            (
+                "messages",
+                {
+                    "messages": [
+                        {"role": "user", "content": "Question?"},
+                        {"role": "assistant", "content": "Answer."},
+                        {"role": "system", "content": "New policy."},
+                        {"role": "user", "content": "Follow-up?"},
+                        {"role": "assistant", "content": "Follow-up answer."},
+                    ]
+                },
+            ),
+            (
+                "sharegpt",
+                {
+                    "conversations": [
+                        {"from": "human", "value": "Question?"},
+                        {"from": "gpt", "value": "Answer."},
+                        {"from": "system", "value": "New policy."},
+                        {"from": "user", "value": "Follow-up?"},
+                        {"from": "assistant", "value": "Follow-up answer."},
+                    ]
+                },
+            ),
+        )
+        for dataset_type, row in cases:
+            with self.subTest(dataset_type=dataset_type):
+                train_config = example_train_config()
+                train_config["datasets"][0]["type"] = dataset_type
+                train_config["config"]["unsloth"]["loss"] = "response"
+                dependencies = example_train_dependencies(
+                    FunctionalDataset([row])
+                )
+
+                with self.assertRaisesRegex(ValueError, "system messages.*precede"):
+                    target_unsloth.train_model(
+                        train_config,
+                        dependencies=dependencies,
+                    )
+
+                dependencies.fast_language_model.from_pretrained.assert_not_called()
+                dependencies.fast_language_model.get_peft_model.assert_not_called()
+                dependencies.sft_trainer.assert_not_called()
+
+    def test_response_loss_rejects_marker_collision_before_lora_allocation(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "messages"
+        train_config["config"]["unsloth"]["loss"] = "response"
+        dataset = FunctionalDataset(
+            [
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Quote <assistant> exactly.",
+                        },
+                        {"role": "assistant", "content": "Answer."},
+                    ]
+                }
+            ]
+        )
+        dependencies = example_train_dependencies(dataset)
+        base_model = dependencies.fast_language_model.from_pretrained.return_value[0]
+        tokenizer = MessagesTokenizer()
+        dependencies.fast_language_model.from_pretrained.return_value = (
+            base_model,
+            tokenizer,
+        )
+
+        with self.assertRaisesRegex(ValueError, "content collides"):
+            target_unsloth.train_model(
+                train_config,
+                dependencies=dependencies,
+            )
+
+        dependencies.get_chat_template_parts.assert_called_once_with(tokenizer)
+        dependencies.fast_language_model.get_peft_model.assert_not_called()
+        dependencies.sft_trainer.assert_not_called()
+        dependencies.train_on_responses_only.assert_not_called()
+
+    def test_response_loss_rejects_effective_trainer_packing_before_masking(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "messages"
+        train_config["config"]["unsloth"]["loss"] = "response"
+        messages = [
+            {"role": "user", "content": "Question?"},
+            {"role": "assistant", "content": "Answer."},
+        ]
+        dataset = FunctionalDataset([{"messages": messages}])
+        dependencies = example_train_dependencies(dataset)
+        base_model = dependencies.fast_language_model.from_pretrained.return_value[0]
+        tokenizer = MessagesTokenizer()
+        dependencies.fast_language_model.from_pretrained.return_value = (
+            base_model,
+            tokenizer,
+        )
+        trainer = dependencies.sft_trainer.return_value
+        trainer.args = SimpleNamespace(
+            packing=True,
+            padding_free=True,
+            packing_strategy="bfd",
+            max_length=512,
+            dataset_num_proc=2,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "effective trainer packing"):
+            target_unsloth.train_model(
+                train_config,
+                dependencies=dependencies,
+            )
+
+        dependencies.train_on_responses_only.assert_not_called()
+        trainer.train.assert_not_called()
+
+    def test_response_loss_applies_locked_unsloth_helper_and_validates_labels(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "messages"
+        train_config["config"]["unsloth"]["loss"] = "response"
+        messages = [
+            {"role": "user", "content": "Question?"},
+            {"role": "assistant", "content": "Answer."},
+        ]
+        dataset = FunctionalDataset([{"messages": messages}])
+        dependencies = example_train_dependencies(dataset)
+        fast_language_model = dependencies.fast_language_model
+        base_model = fast_language_model.from_pretrained.return_value[0]
+        tokenizer = MessagesTokenizer()
+        fast_language_model.from_pretrained.return_value = (base_model, tokenizer)
+        input_ids = tokenizer.raw_token_ids(tokenizer.render(messages))
+        trainer = dependencies.sft_trainer.return_value
+        trainer.args = SimpleNamespace(
+            packing=False,
+            padding_free=False,
+            packing_strategy="bfd",
+            max_length=512,
+            dataset_num_proc=2,
+        )
+        trainer.train_dataset = FunctionalDataset([{"input_ids": input_ids}])
+        events = []
+
+        def construct_trainer(**_):
+            events.append("trainer constructed")
+            return trainer
+
+        def apply_response_loss(actual_trainer, **kwargs):
+            events.append("response helper")
+            self.assertIs(actual_trainer, trainer)
+            markers = target_unsloth.ResponseMarkers(
+                instruction_part=kwargs["instruction_part"],
+                response_part=kwargs["response_part"],
+                instruction_token_ids=tuple(
+                    tokenizer.raw_token_ids(kwargs["instruction_part"])
+                ),
+                response_token_ids=tuple(
+                    tokenizer.raw_token_ids(kwargs["response_part"])
+                ),
+                use_tokenizer_parts=False,
+            )
+            labels = target_unsloth.expected_response_only_labels(
+                input_ids,
+                markers=markers,
+            )
+            actual_trainer.train_dataset = FunctionalDataset(
+                [{"input_ids": input_ids, "labels": labels}]
+            )
+            return actual_trainer
+
+        def collate(records):
+            return {
+                "input_ids": [list(records[0]["input_ids"])],
+                "labels": [list(records[0]["labels"])],
+            }
+
+        dependencies.sft_trainer.side_effect = construct_trainer
+        dependencies.train_on_responses_only.side_effect = apply_response_loss
+        trainer.data_collator.side_effect = collate
+        trainer.train.side_effect = lambda: events.append("train")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            target_unsloth.train_model(
+                train_config,
+                trained_model_directory=Path(temporary_directory)
+                / "trained-model",
+                dependencies=dependencies,
+            )
+
+        self.assertEqual(events, ["trainer constructed", "response helper", "train"])
+        dependencies.get_chat_template_parts.assert_called_once_with(tokenizer)
+        dependencies.train_on_responses_only.assert_called_once_with(
+            trainer,
+            force_match=True,
+            instruction_part="<user>",
+            response_part="<assistant>",
+        )
+        prepared_record = trainer.train_dataset[0]
+        labels = list(prepared_record["labels"])
+        user_marker_start = target_unsloth.token_subsequence_index(
+            input_ids,
+            tokenizer.raw_token_ids("<user>"),
+            start=0,
+        )
+        response_marker_start = target_unsloth.token_subsequence_index(
+            input_ids,
+            tokenizer.raw_token_ids("<assistant>"),
+            start=0,
+        )
+        self.assertIsNotNone(user_marker_start)
+        self.assertIsNotNone(response_marker_start)
+        self.assertTrue(
+            all(label == -100 for label in labels[:response_marker_start])
+        )
+        self.assertTrue(
+            any(label != -100 for label in labels[response_marker_start:])
+        )
+        trainer.train.assert_called_once_with()
+
+    def test_response_loss_never_falls_back_when_labels_are_fully_masked(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "messages"
+        train_config["config"]["unsloth"]["loss"] = "response"
+        messages = [
+            {"role": "user", "content": "Question?"},
+            {"role": "assistant", "content": "Answer."},
+        ]
+        dataset = FunctionalDataset([{"messages": messages}])
+        dependencies = example_train_dependencies(dataset)
+        base_model = dependencies.fast_language_model.from_pretrained.return_value[0]
+        tokenizer = MessagesTokenizer()
+        dependencies.fast_language_model.from_pretrained.return_value = (
+            base_model,
+            tokenizer,
+        )
+        input_ids = tokenizer.raw_token_ids(tokenizer.render(messages))
+        trainer = dependencies.sft_trainer.return_value
+        trainer.args = SimpleNamespace(
+            packing=False,
+            padding_free=False,
+            packing_strategy="bfd",
+            max_length=512,
+            dataset_num_proc=2,
+        )
+        trainer.train_dataset = FunctionalDataset(
+            [
+                {
+                    "input_ids": input_ids,
+                    "labels": [-100] * len(input_ids),
+                }
+            ]
+        )
+        trainer.data_collator.side_effect = lambda records: {
+            "input_ids": [list(records[0]["input_ids"])],
+            "labels": [list(records[0]["labels"])],
+        }
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "assistant response tokens must be supervised",
+        ):
+            target_unsloth.train_model(
+                train_config,
+                dependencies=dependencies,
+            )
+
+        dependencies.train_on_responses_only.assert_called_once()
+        trainer.train.assert_not_called()
+        dependencies.fast_language_model.get_peft_model.return_value.save_pretrained.assert_not_called()
+        tokenizer.save_pretrained.assert_not_called()
+
+    def test_sharegpt_uses_canonical_messages_full_loss_pipeline(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "sharegpt"
+        conversations = [
+            {"from": "system", "value": "Be concise."},
+            {"from": "human", "value": "Question?"},
+            {"from": "gpt", "value": "Answer."},
+        ]
+        canonical_messages = [
+            {"role": "system", "content": "Be concise."},
+            {"role": "user", "content": "Question?"},
+            {"role": "assistant", "content": "Answer."},
+        ]
+        dataset = FunctionalDataset(
+            [
+                {
+                    "id": "one-row-regression",
+                    "conversations": conversations,
+                }
+            ]
+        )
+        dependencies = example_train_dependencies(dataset)
+        base_model = dependencies.fast_language_model.from_pretrained.return_value[0]
+        tokenizer = MessagesTokenizer()
+        dependencies.fast_language_model.from_pretrained.return_value = (
+            base_model,
+            tokenizer,
+        )
+        input_ids = tokenizer.raw_token_ids(tokenizer.render(canonical_messages))
+        trainer = dependencies.sft_trainer.return_value
+        trainer.args = SimpleNamespace(
+            packing=False,
+            padding_free=False,
+            packing_strategy="bfd",
+            max_length=512,
+            dataset_num_proc=2,
+        )
+        trainer.train_dataset = [{"input_ids": input_ids}]
+        trainer.data_collator.side_effect = lambda records: {
+            "input_ids": [list(records[0]["input_ids"])],
+            "labels": [list(records[0]["input_ids"])],
+        }
+
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            mock.patch.object(
+                target_unsloth,
+                "format_alpaca_examples",
+                wraps=target_unsloth.format_alpaca_examples,
+            ) as format_alpaca_examples,
+        ):
+            target_unsloth.train_model(
+                train_config,
+                trained_model_directory=Path(temporary_directory)
+                / "trained-model",
+                dependencies=dependencies,
+            )
+
+        dataset.select_columns.assert_called_once_with(["conversations"])
+        dataset.projected_dataset.map.assert_called_once_with(
+            mock.ANY,
+            batched=False,
+            with_indices=True,
+            remove_columns=["conversations"],
+            writer_batch_size=1,
+        )
+        rendered_dataset = dependencies.sft_trainer.call_args.kwargs[
+            "train_dataset"
+        ]
+        self.assertEqual(
+            list(rendered_dataset),
+            [{"text": tokenizer.render(canonical_messages)}],
+        )
+        format_alpaca_examples.assert_not_called()
+        dependencies.get_chat_template_parts.assert_not_called()
+        dependencies.train_on_responses_only.assert_not_called()
+        for call in tokenizer.apply_calls:
+            self.assertFalse(call["add_generation_prompt"])
+        trainer.train.assert_called_once_with()
+
+    def test_sharegpt_response_loss_reuses_canonical_masking_pipeline(self):
+        train_config = example_train_config()
+        train_config["datasets"][0]["type"] = "sharegpt"
+        train_config["config"]["unsloth"]["loss"] = "response"
+        conversations = [
+            {"from": "human", "value": "Question?"},
+            {"from": "gpt", "value": "Answer."},
+        ]
+        canonical_messages = [
+            {"role": "user", "content": "Question?"},
+            {"role": "assistant", "content": "Answer."},
+        ]
+        dataset = FunctionalDataset([{"conversations": conversations}])
+        dependencies = example_train_dependencies(dataset)
+        base_model = dependencies.fast_language_model.from_pretrained.return_value[0]
+        tokenizer = MessagesTokenizer()
+        dependencies.fast_language_model.from_pretrained.return_value = (
+            base_model,
+            tokenizer,
+        )
+        input_ids = tokenizer.raw_token_ids(tokenizer.render(canonical_messages))
+        markers = target_unsloth.ResponseMarkers(
+            instruction_part="<user>",
+            response_part="<assistant>",
+            instruction_token_ids=tuple(tokenizer.raw_token_ids("<user>")),
+            response_token_ids=tuple(tokenizer.raw_token_ids("<assistant>")),
+            use_tokenizer_parts=False,
+        )
+        labels = target_unsloth.expected_response_only_labels(
+            input_ids,
+            markers=markers,
+        )
+        trainer = dependencies.sft_trainer.return_value
+        trainer.args = SimpleNamespace(
+            packing=False,
+            padding_free=False,
+            packing_strategy="bfd",
+            max_length=512,
+            dataset_num_proc=2,
+        )
+        trainer.train_dataset = FunctionalDataset(
+            [{"input_ids": input_ids, "labels": labels}]
+        )
+        trainer.data_collator.side_effect = lambda records: {
+            "input_ids": [list(records[0]["input_ids"])],
+            "labels": [list(records[0]["labels"])],
+        }
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            target_unsloth.train_model(
+                train_config,
+                trained_model_directory=Path(temporary_directory)
+                / "trained-model",
+                dependencies=dependencies,
+            )
+
+        rendered_dataset = dependencies.sft_trainer.call_args.kwargs[
+            "train_dataset"
+        ]
+        self.assertEqual(
+            list(rendered_dataset),
+            [{"text": tokenizer.render(canonical_messages)}],
+        )
+        dependencies.get_chat_template_parts.assert_called_once_with(tokenizer)
+        dependencies.train_on_responses_only.assert_called_once_with(
+            trainer,
+            force_match=True,
+            instruction_part="<user>",
+            response_part="<assistant>",
+        )
+        self.assertTrue(any(label != -100 for label in labels))
+        trainer.train.assert_called_once_with()
 
     def test_wall_clock_template_check_precedes_rendering_and_lora(self):
         train_config = example_train_config()
@@ -3124,6 +4165,40 @@ class TrainingPhaseTest(unittest.TestCase):
             dependencies.model_info.assert_not_called()
             dependencies.sft_trainer.assert_not_called()
 
+    def test_rejects_invalid_loss_before_loading_or_model_allocation(self):
+        cases = (
+            (
+                "alpaca",
+                "response",
+                False,
+                "supported only for messages and sharegpt",
+            ),
+            ("messages", "assistant", False, "unsupported SFT loss"),
+            ("messages", "response", True, "does not support packing"),
+        )
+        for dataset_type, loss, packing, error_pattern in cases:
+            with self.subTest(
+                dataset_type=dataset_type,
+                loss=loss,
+                packing=packing,
+            ):
+                train_config = example_train_config()
+                train_config["datasets"][0]["type"] = dataset_type
+                train_config["config"]["unsloth"]["loss"] = loss
+                train_config["config"]["unsloth"]["packing"] = packing
+                dependencies = example_train_dependencies(mock.Mock())
+
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.train_model(
+                        train_config,
+                        dependencies=dependencies,
+                    )
+
+                dependencies.load_dataset.assert_not_called()
+                dependencies.fast_language_model.from_pretrained.assert_not_called()
+                dependencies.sft_trainer.assert_not_called()
+                dependencies.train_on_responses_only.assert_not_called()
+
     def test_rejects_empty_or_invalid_datasets_before_model_allocation(self):
         valid_prompt_completion = {
             "prompt": "Question?",
@@ -3288,6 +4363,8 @@ class TrainingPhaseTest(unittest.TestCase):
             resolve_model_name=mock.Mock(return_value="example/resolved-model"),
             sft_config=mock.Mock(),
             sft_trainer=mock.Mock(),
+            get_chat_template_parts=mock.Mock(),
+            train_on_responses_only=mock.Mock(),
         )
 
         with self.assertRaisesRegex(
