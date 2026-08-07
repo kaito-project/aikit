@@ -508,8 +508,13 @@ def example_dpo_train_dependencies(dataset, *, train_config=None):
     if train_config is None:
         train_config = example_dpo_train_config()
     dependencies = example_train_dependencies(dataset)
-    tokenizer = dependencies.fast_language_model.from_pretrained.return_value[1]
+    base_model = dependencies.fast_language_model.from_pretrained.return_value[0]
+    tokenizer = TextPreprocessingTokenizer(auto_bos=False)
     tokenizer.tokenizer = tokenizer
+    dependencies.fast_language_model.from_pretrained.return_value = (
+        base_model,
+        tokenizer,
+    )
     trainer = mock.Mock()
     trainer.ref_model = None
     trainer.is_peft_model = True
@@ -517,13 +522,32 @@ def example_dpo_train_dependencies(dataset, *, train_config=None):
     trainer.beta = train_config["objective"]["beta"]
     trainer.loss_type = [train_config["objective"]["lossType"]]
     trainer.max_prompt_length = train_config["objective"]["maxPromptLength"]
+    trainer.max_completion_length = None
     trainer.max_length = train_config["config"]["unsloth"]["maxSeqLength"]
+    trainer.truncation_mode = target_unsloth.DPO_TRUNCATION_KEEP_END
+    trainer.is_encoder_decoder = False
     trainer.model = dependencies.fast_language_model.get_peft_model.return_value
     trainer.accelerator = mock.Mock()
     trainer.accelerator.unwrap_model.side_effect = lambda model: model
 
+    def token_ids(text):
+        return tokenizer(text, add_special_tokens=False)["input_ids"]
+
     def construct_trainer(**kwargs):
-        trainer.train_dataset = kwargs["train_dataset"]
+        prepared_rows = []
+        for row in kwargs["train_dataset"]:
+            prepared_rows.append(
+                {
+                    "prompt_input_ids": token_ids(row["prompt"])[
+                        -trainer.max_prompt_length :
+                    ],
+                    "chosen_input_ids": token_ids(row["chosen"])
+                    + [tokenizer.eos_token_id],
+                    "rejected_input_ids": token_ids(row["rejected"])
+                    + [tokenizer.eos_token_id],
+                }
+            )
+        trainer.train_dataset = FunctionalDataset(prepared_rows)
         return trainer
 
     dependencies.dpo_config.return_value = "dpo-config"
@@ -5737,6 +5761,37 @@ config:
                 dependencies.sft_trainer.assert_not_called()
                 dependencies.dpo_trainer.assert_not_called()
 
+    def test_rejects_preference_pair_collapsed_by_effective_truncation(self):
+        train_config = example_dpo_train_config()
+        train_config["objective"]["maxPromptLength"] = 3
+        train_config["config"]["unsloth"]["maxSeqLength"] = 3
+        dataset = FunctionalDataset(
+            [
+                {
+                    "prompt": "Prompt",
+                    "chosen": "Xab",
+                    "rejected": "Yab",
+                }
+            ]
+        )
+        dependencies = example_dpo_train_dependencies(
+            dataset,
+            train_config=train_config,
+        )
+        runtime_trainer = dependencies.dpo_trainer.runtime_trainer
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "record 0.*token-identical.*effective truncation",
+        ):
+            target_unsloth.train_model(
+                train_config,
+                dependencies=dependencies,
+            )
+
+        runtime_trainer.train.assert_not_called()
+        runtime_trainer.model.save_pretrained.assert_not_called()
+
     def test_rejects_invalid_dpo_runtime_contract_before_training(self):
         cases = (
             (
@@ -5794,6 +5849,20 @@ config:
                 ),
                 "max length does not match",
             ),
+            (
+                "completion length limit",
+                lambda trainer, _model: setattr(
+                    trainer, "max_completion_length", 128
+                ),
+                "must not apply a separate completion truncation limit",
+            ),
+            (
+                "truncation mode mismatch",
+                lambda trainer, _model: setattr(
+                    trainer, "truncation_mode", "keep_start"
+                ),
+                "must use keep_end",
+            ),
         )
         for name, mutate, error_pattern in cases:
             with self.subTest(name=name):
@@ -5807,7 +5876,12 @@ config:
                 runtime_trainer.beta = 0.1
                 runtime_trainer.loss_type = ["sigmoid"]
                 runtime_trainer.max_prompt_length = 512
+                runtime_trainer.max_completion_length = None
                 runtime_trainer.max_length = 2048
+                runtime_trainer.truncation_mode = (
+                    target_unsloth.DPO_TRUNCATION_KEEP_END
+                )
+                runtime_trainer.is_encoder_decoder = False
                 runtime_trainer.model = (
                     dependencies.fast_language_model.get_peft_model.return_value
                 )

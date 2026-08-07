@@ -117,6 +117,7 @@ OBJECTIVE_TYPE_SFT = "sft"
 OBJECTIVE_TYPE_DPO = "dpo"
 SUPPORTED_OBJECTIVE_TYPES = frozenset((OBJECTIVE_TYPE_SFT, OBJECTIVE_TYPE_DPO))
 DPO_LOSS_SIGMOID = "sigmoid"
+DPO_TRUNCATION_KEEP_END = "keep_end"
 DEFAULT_DPO_BETA = 0.1
 DEFAULT_DPO_MAX_PROMPT_LENGTH = 512
 UNSUPPORTED_MESSAGES_TOP_LEVEL_FIELDS = frozenset(
@@ -3822,6 +3823,122 @@ def require_dpo_tokenizer(processing_class: Any) -> None:
         raise RuntimeError("DPO training requires a tokenizer EOS token ID")
 
 
+def dpo_prepared_token_ids(
+    record: Mapping[str, Any],
+    *,
+    field: str,
+    record_index: int,
+) -> list[int]:
+    if field not in record:
+        raise RuntimeError(
+            f'DPO trainer prepared preference record {record_index} without "{field}"'
+        )
+
+    raw_token_ids = sequence_values(
+        record[field],
+        description=(
+            f'preference record {record_index} field "{field}" token IDs'
+        ),
+        preprocessing="DPO",
+    )
+    token_ids = []
+    for token_index, raw_token_id in enumerate(raw_token_ids):
+        try:
+            token_id = operator.index(raw_token_id)
+        except TypeError as error:
+            raise RuntimeError(
+                "DPO preprocessing preference record "
+                f'{record_index} field "{field}" token ID {token_index} '
+                "must be an integer"
+            ) from error
+        if isinstance(raw_token_id, bool) or token_id < 0:
+            raise RuntimeError(
+                "DPO preprocessing preference record "
+                f'{record_index} field "{field}" token ID {token_index} '
+                "must be a non-negative integer"
+            )
+        token_ids.append(token_id)
+
+    return token_ids
+
+
+def effective_dpo_completion_token_ids(
+    prompt_token_ids: Sequence[int],
+    completion_token_ids: Sequence[int],
+    *,
+    max_length: int,
+    is_encoder_decoder: bool,
+) -> list[int]:
+    if is_encoder_decoder:
+        return list(completion_token_ids)
+
+    # Pinned TRL right-flushes prompt + completion, keeps the final max_length
+    # positions, and applies completion loss only where the completion mask is 1.
+    first_retained_index = max(
+        0,
+        len(prompt_token_ids) + len(completion_token_ids) - max_length,
+    )
+    completion_offset = max(
+        0,
+        first_retained_index - len(prompt_token_ids),
+    )
+    return list(completion_token_ids[completion_offset:])
+
+
+def validate_prepared_dpo_dataset(
+    train_dataset: Any,
+    *,
+    max_length: int,
+    is_encoder_decoder: bool,
+) -> None:
+    for record_index, record in enumerate(train_dataset):
+        if not isinstance(record, Mapping):
+            raise RuntimeError(
+                f"DPO trainer prepared preference record {record_index} "
+                "as a non-mapping value"
+            )
+
+        prompt_token_ids = dpo_prepared_token_ids(
+            record,
+            field="prompt_input_ids",
+            record_index=record_index,
+        )
+        chosen_token_ids = dpo_prepared_token_ids(
+            record,
+            field="chosen_input_ids",
+            record_index=record_index,
+        )
+        rejected_token_ids = dpo_prepared_token_ids(
+            record,
+            field="rejected_input_ids",
+            record_index=record_index,
+        )
+        if not chosen_token_ids or not rejected_token_ids:
+            raise RuntimeError(
+                f"DPO trainer prepared preference record {record_index} "
+                "with an empty completion token sequence"
+            )
+
+        effective_chosen_token_ids = effective_dpo_completion_token_ids(
+            prompt_token_ids,
+            chosen_token_ids,
+            max_length=max_length,
+            is_encoder_decoder=is_encoder_decoder,
+        )
+        effective_rejected_token_ids = effective_dpo_completion_token_ids(
+            prompt_token_ids,
+            rejected_token_ids,
+            max_length=max_length,
+            is_encoder_decoder=is_encoder_decoder,
+        )
+        if effective_chosen_token_ids == effective_rejected_token_ids:
+            raise RuntimeError(
+                f"DPO trainer prepared preference record {record_index} with "
+                "token-identical chosen and rejected completions after "
+                "tokenization and effective truncation"
+            )
+
+
 def validate_dpo_trainer_contract(
     trainer: Any,
     *,
@@ -3873,6 +3990,17 @@ def validate_dpo_trainer_contract(
         raise RuntimeError(
             "DPO trainer max length does not match config.unsloth.maxSeqLength"
         )
+    if getattr(trainer, "max_completion_length", object()) is not None:
+        raise RuntimeError(
+            "DPO trainer must not apply a separate completion truncation limit"
+        )
+    if (
+        getattr(trainer, "truncation_mode", None)
+        != DPO_TRUNCATION_KEEP_END
+    ):
+        raise RuntimeError(
+            "DPO trainer must use keep_end full-sequence truncation"
+        )
 
     train_dataset = getattr(trainer, "train_dataset", None)
     try:
@@ -3881,6 +4009,14 @@ def validate_dpo_trainer_contract(
         raise RuntimeError("DPO trainer does not expose a sized training dataset") from None
     if record_count == 0:
         raise RuntimeError("DPO trainer prepared an empty training dataset")
+
+    validate_prepared_dpo_dataset(
+        train_dataset,
+        max_length=max_seq_length,
+        is_encoder_decoder=bool(
+            getattr(trainer, "is_encoder_decoder", False)
+        ),
+    )
 
 
 def load_train_dependencies() -> TrainDependencies:
@@ -4097,7 +4233,7 @@ def train_model(
                 max_length=max_seq_length,
                 max_prompt_length=objective.max_prompt_length,
                 max_completion_length=None,
-                truncation_mode="keep_end",
+                truncation_mode=DPO_TRUNCATION_KEEP_END,
                 beta=objective.beta,
                 loss_type=objective.loss_type,
                 reference_free=False,

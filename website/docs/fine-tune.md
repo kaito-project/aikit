@@ -102,7 +102,7 @@ config:
     maxSeqLength: 2048
 ```
 
-DPO defaults to `beta: 0.1`, `lossType: sigmoid`, `maxPromptLength: 512`, and `learningRate: 0.000001`. `beta` must be finite and positive, `maxPromptLength` must not exceed `maxSeqLength`, and the initial implementation supports only sigmoid loss. DPO requires exactly one `preference` dataset, rejects every SFT dataset type, requires `packing: false`, and rejects the SFT-only `loss: response` setting.
+DPO defaults to `beta: 0.1`, `lossType: sigmoid`, `maxPromptLength: 512`, and `learningRate: 0.000001`. `beta` must be finite and positive, `maxPromptLength` must not exceed `maxSeqLength`, and the initial implementation supports only sigmoid loss. DPO requires exactly one `preference` dataset, rejects every SFT dataset type, requires `packing: false`, and rejects the SFT-only `loss: response` setting. Before training, AIKit also rejects a preference pair when its `chosen` and `rejected` responses become token-identical after the trainer's effective tokenization and `maxSeqLength` truncation.
 
 AIKit constructs a separate DPO trainer with the LoRA policy and `ref_model=None`. The same PEFT model with its adapter disabled supplies reference log probabilities; this is not reference-free DPO. Preference columns are validated before model allocation and bypass Alpaca, prompt-completion, text, messages, and ShareGPT formatting. The trained adapter and tokenizer use the same save, GGUF export, and inference path as SFT.
 
