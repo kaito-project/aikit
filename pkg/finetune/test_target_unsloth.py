@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import math
 import tempfile
 import threading
 import unittest
@@ -81,6 +82,21 @@ def example_train_config():
             }
         },
     }
+
+
+def example_dpo_train_config():
+    train_config = example_train_config()
+    train_config["objective"] = {
+        "type": "dpo",
+        "beta": 0.1,
+        "lossType": "sigmoid",
+        "maxPromptLength": 512,
+    }
+    train_config["datasets"] = [
+        {"source": "organization/preferences", "type": "preference"}
+    ]
+    train_config["config"]["unsloth"]["learningRate"] = 0.000001
+    return train_config
 
 
 def in_memory_dataset(rows):
@@ -478,11 +494,66 @@ def example_train_dependencies(dataset):
         resolve_model_name=mock.Mock(return_value="example/resolved-model"),
         sft_config=mock.Mock(return_value="sft-config"),
         sft_trainer=mock.Mock(return_value=trainer),
+        dpo_config=mock.Mock(return_value="dpo-config"),
+        dpo_trainer=mock.Mock(),
         get_chat_template_parts=mock.Mock(
             return_value=("<user>", "<assistant>")
         ),
         train_on_responses_only=mock.Mock(side_effect=lambda trainer, **_: trainer),
+        concatenate_datasets=mock.Mock(),
     )
+    return dependencies
+
+
+def example_dpo_train_dependencies(dataset, *, train_config=None):
+    if train_config is None:
+        train_config = example_dpo_train_config()
+    dependencies = example_train_dependencies(dataset)
+    base_model = dependencies.fast_language_model.from_pretrained.return_value[0]
+    tokenizer = TextPreprocessingTokenizer(auto_bos=False)
+    tokenizer.tokenizer = tokenizer
+    dependencies.fast_language_model.from_pretrained.return_value = (
+        base_model,
+        tokenizer,
+    )
+    trainer = mock.Mock()
+    trainer.ref_model = None
+    trainer.is_peft_model = True
+    trainer.reference_free = False
+    trainer.beta = train_config["objective"]["beta"]
+    trainer.loss_type = [train_config["objective"]["lossType"]]
+    trainer.max_prompt_length = train_config["objective"]["maxPromptLength"]
+    trainer.max_completion_length = None
+    trainer.max_length = train_config["config"]["unsloth"]["maxSeqLength"]
+    trainer.truncation_mode = target_unsloth.DPO_TRUNCATION_KEEP_END
+    trainer.is_encoder_decoder = False
+    trainer.model = dependencies.fast_language_model.get_peft_model.return_value
+    trainer.accelerator = mock.Mock()
+    trainer.accelerator.unwrap_model.side_effect = lambda model: model
+
+    def token_ids(text):
+        return tokenizer(text, add_special_tokens=False)["input_ids"]
+
+    def construct_trainer(**kwargs):
+        prepared_rows = []
+        for row in kwargs["train_dataset"]:
+            prepared_rows.append(
+                {
+                    "prompt_input_ids": token_ids(row["prompt"])[
+                        -trainer.max_prompt_length :
+                    ],
+                    "chosen_input_ids": token_ids(row["chosen"])
+                    + [tokenizer.eos_token_id],
+                    "rejected_input_ids": token_ids(row["rejected"])
+                    + [tokenizer.eos_token_id],
+                }
+            )
+        trainer.train_dataset = FunctionalDataset(prepared_rows)
+        return trainer
+
+    dependencies.dpo_config.return_value = "dpo-config"
+    dependencies.dpo_trainer.side_effect = construct_trainer
+    dependencies.dpo_trainer.runtime_trainer = trainer
     return dependencies
 
 
@@ -669,6 +740,189 @@ class CLITest(unittest.TestCase):
         export_model.assert_called_once_with(export_config)
         self.assertEqual(output.getvalue(), "Loaded export configuration.\n")
         self.assertNotIn("must-not-log", output.getvalue())
+
+
+class TrainingObjectiveTest(unittest.TestCase):
+    def test_defaults_to_sft_when_omitted_null_or_empty(self):
+        for objective in (mock.sentinel.omitted, None, {}):
+            with self.subTest(objective=objective):
+                train_config = example_train_config()
+                if objective is not mock.sentinel.omitted:
+                    train_config["objective"] = objective
+                self.assertEqual(
+                    target_unsloth.training_objective_spec(train_config),
+                    target_unsloth.TrainingObjectiveSpec(
+                        objective_type="sft",
+                        beta=None,
+                        loss_type=None,
+                        max_prompt_length=None,
+                    ),
+                )
+
+    def test_parses_dpo_defaults_and_explicit_values(self):
+        train_config = example_train_config()
+        train_config["objective"] = {"type": "dpo"}
+        self.assertEqual(
+            target_unsloth.training_objective_spec(train_config),
+            target_unsloth.TrainingObjectiveSpec(
+                objective_type="dpo",
+                beta=0.1,
+                loss_type="sigmoid",
+                max_prompt_length=512,
+            ),
+        )
+
+        train_config["objective"] = {
+            "type": "dpo",
+            "beta": 0.25,
+            "lossType": "sigmoid",
+            "maxPromptLength": 128,
+        }
+        self.assertEqual(
+            target_unsloth.training_objective_spec(train_config),
+            target_unsloth.TrainingObjectiveSpec(
+                objective_type="dpo",
+                beta=0.25,
+                loss_type="sigmoid",
+                max_prompt_length=128,
+            ),
+        )
+
+    def test_normalizes_go_yaml_scientific_dpo_beta(self):
+        train_config = target_unsloth.parse_config(
+            """objective:
+  type: dpo
+  beta: 1e-06
+  lossType: sigmoid
+  maxPromptLength: 512
+"""
+        )
+        self.assertEqual(train_config["objective"]["beta"], "1e-06")
+
+        objective = target_unsloth.training_objective_spec(train_config)
+
+        self.assertEqual(objective.beta, 1e-6)
+        self.assertIsInstance(objective.beta, float)
+
+    def test_rejects_invalid_objective_shapes_and_fields(self):
+        cases = (
+            ([], "must be a mapping"),
+            ({1: "dpo"}, "field names must be strings"),
+            ({"type": "dpo", "future": True}, "unknown fields"),
+            ({"type": ""}, "unsupported training objective"),
+            ({"type": "orpo"}, "unsupported training objective"),
+            ({"type": "sft", "beta": 0.1}, "does not support DPO fields"),
+            ({"type": "sft", "lossType": None}, "does not support DPO fields"),
+        )
+        for objective, error_pattern in cases:
+            with self.subTest(objective=objective):
+                train_config = example_train_config()
+                train_config["objective"] = objective
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.training_objective_spec(train_config)
+
+    def test_rejects_invalid_dpo_values(self):
+        cases = (
+            ("beta", False, "beta.*finite"),
+            ("beta", "0.1", "beta.*finite"),
+            ("beta", "0e+00", "beta.*finite"),
+            ("beta", "-1e-06", "beta.*finite"),
+            ("beta", "1e+309", "beta.*finite"),
+            ("beta", 0, "beta.*finite"),
+            ("beta", -0.1, "beta.*finite"),
+            ("beta", math.nan, "beta.*finite"),
+            ("beta", math.inf, "beta.*finite"),
+            ("lossType", "", "unsupported DPO.*loss"),
+            ("lossType", "hinge", "unsupported DPO.*loss"),
+            ("maxPromptLength", False, "maxPromptLength.*integer"),
+            ("maxPromptLength", 1.5, "maxPromptLength.*integer"),
+            ("maxPromptLength", 0, "maxPromptLength.*integer"),
+            ("maxPromptLength", -1, "maxPromptLength.*integer"),
+        )
+        for field, value, error_pattern in cases:
+            with self.subTest(field=field, value=value):
+                train_config = example_train_config()
+                train_config["objective"] = {"type": "dpo", field: value}
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.training_objective_spec(train_config)
+
+    def test_validates_objective_dataset_and_sft_settings(self):
+        train_config = example_dpo_train_config()
+        objective = target_unsloth.training_objective_spec(train_config)
+        dataset_spec = target_unsloth.training_dataset_spec(train_config)
+        self.assertEqual(
+            target_unsloth.validate_training_objective(
+                train_config,
+                objective=objective,
+                dataset_spec=dataset_spec,
+            ),
+            "all",
+        )
+
+        cases = (
+            (
+                "SFT preference",
+                lambda config: config.pop("objective"),
+                "preference datasets.*DPO",
+            ),
+            (
+                "DPO Alpaca",
+                lambda config: config["datasets"][0].update(type="alpaca"),
+                "DPO objective requires a preference dataset",
+            ),
+            (
+                "DPO packing",
+                lambda config: config["config"]["unsloth"].update(
+                    packing=True
+                ),
+                "DPO objective does not support packing",
+            ),
+            (
+                "DPO non-boolean packing",
+                lambda config: config["config"]["unsloth"].update(
+                    packing="false"
+                ),
+                "packing must be a boolean",
+            ),
+            (
+                "DPO response loss",
+                lambda config: config["config"]["unsloth"].update(
+                    loss="response"
+                ),
+                "response SFT loss.*DPO",
+            ),
+            (
+                "DPO prompt too long",
+                lambda config: config["objective"].update(
+                    maxPromptLength=4096
+                ),
+                "maxPromptLength must not exceed",
+            ),
+            (
+                "DPO text loader",
+                lambda config: config["datasets"][0].update(
+                    source="https://example.test/preferences.txt",
+                    loader={"type": "text"},
+                ),
+                "do not support the text loader",
+            ),
+        )
+        for name, mutate, error_pattern in cases:
+            with self.subTest(name=name):
+                invalid_config = example_dpo_train_config()
+                mutate(invalid_config)
+                invalid_objective = target_unsloth.training_objective_spec(
+                    invalid_config
+                )
+                invalid_dataset = target_unsloth.training_dataset_spec(
+                    invalid_config
+                )
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.validate_training_objective(
+                        invalid_config,
+                        objective=invalid_objective,
+                        dataset_spec=invalid_dataset,
+                    )
 
 
 class DatasetSourceTest(unittest.TestCase):
@@ -1415,6 +1669,169 @@ class DatasetLoaderTest(unittest.TestCase):
             self.assertNotIn(secret, message)
         self.assertIsNone(raised.exception.__cause__)
         self.assertTrue(raised.exception.__suppress_context__)
+
+
+class MultipleDatasetConfigTest(unittest.TestCase):
+    def test_parses_every_dataset_in_yaml_order_with_indexes(self):
+        revision = "0123456789abcdef0123456789abcdef01234567"
+        config = {
+            "datasets": [
+                {"source": "organization/first", "type": "alpaca"},
+                {
+                    "source": "organization/second",
+                    "type": "text",
+                    "loader": {
+                        "type": "huggingface",
+                        "subset": "default",
+                        "split": "train_sft",
+                        "revision": revision,
+                    },
+                },
+                {"source": "organization/third", "type": "messages"},
+            ]
+        }
+
+        specs = target_unsloth.training_dataset_specs(config)
+
+        self.assertEqual([spec.index for spec in specs], [0, 1, 2])
+        self.assertEqual(
+            [spec.source for spec in specs],
+            [
+                "organization/first",
+                "organization/second",
+                "organization/third",
+            ],
+        )
+        self.assertEqual(
+            specs[1].loader,
+            target_unsloth.DatasetLoaderSpec(
+                loader_type="huggingface",
+                subset="default",
+                split="train_sft",
+                revision=revision,
+                checksum=None,
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "exactly one dataset"):
+            target_unsloth.training_dataset_spec(config)
+
+    def test_rejects_indexed_dataset_and_loader_configuration_errors(self):
+        cases = (
+            (
+                [
+                    {"source": "first", "type": "text"},
+                    {"source": " ", "type": "text"},
+                ],
+                r"datasets\[1\]\.source",
+            ),
+            (
+                [
+                    {"source": "first", "type": "text"},
+                    {"source": "second", "type": "future"},
+                ],
+                r"datasets\[1\]\.type.*future",
+            ),
+            (
+                [
+                    {"source": "first", "type": "text"},
+                    {
+                        "source": "second",
+                        "type": "text",
+                        "loader": {"type": "huggingface", "split": "bad-split"},
+                    },
+                ],
+                r"datasets\[1\]\.loader.*split",
+            ),
+        )
+        for datasets, error_pattern in cases:
+            with self.subTest(error_pattern=error_pattern):
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.training_dataset_specs({"datasets": datasets})
+
+    def test_validates_one_semantic_compatibility_group(self):
+        cases = (
+            (
+                ["alpaca", "text", "messages", "sharegpt"],
+                "all",
+                target_unsloth.DATASET_COMPATIBILITY_FULL_SEQUENCE,
+            ),
+            (
+                ["prompt-completion", "prompt-completion"],
+                "all",
+                target_unsloth.DATASET_COMPATIBILITY_PROMPT_COMPLETION,
+            ),
+            (
+                ["messages", "sharegpt"],
+                "response",
+                target_unsloth.DATASET_COMPATIBILITY_RESPONSE_CHAT,
+            ),
+        )
+        for dataset_types, loss, expected in cases:
+            with self.subTest(dataset_types=dataset_types, loss=loss):
+                specs = target_unsloth.training_dataset_specs(
+                    {
+                        "datasets": [
+                            {"source": f"source-{index}", "type": dataset_type}
+                            for index, dataset_type in enumerate(dataset_types)
+                        ]
+                    }
+                )
+                self.assertEqual(
+                    target_unsloth.training_dataset_compatibility(
+                        specs,
+                        loss=loss,
+                    ),
+                    expected,
+                )
+
+        specs = target_unsloth.training_dataset_specs(
+            {
+                "datasets": [
+                    {"source": "first", "type": "alpaca"},
+                    {"source": "second", "type": "prompt-completion"},
+                ]
+            }
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            r"datasets\[1\] type prompt-completion is incompatible with "
+            r"datasets\[0\] type alpaca: completion-only and full-sequence",
+        ):
+            target_unsloth.training_dataset_compatibility(specs, loss="all")
+
+        specs = target_unsloth.training_dataset_specs(
+            {
+                "datasets": [
+                    {"source": "first", "type": "messages"},
+                    {"source": "second", "type": "text"},
+                ]
+            }
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            r"datasets\[1\] type text.*supported only for messages and sharegpt",
+        ):
+            target_unsloth.training_dataset_compatibility(
+                specs,
+                loss="response",
+            )
+
+        specs = target_unsloth.training_dataset_specs(
+            {
+                "datasets": [
+                    {"source": "first", "type": "text"},
+                    {"source": "second", "type": "preference"},
+                ]
+            }
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            r"datasets\[1\] type preference.*only for the DPO objective",
+        ):
+            target_unsloth.training_dataset_compatibility(
+                specs,
+                loss="all",
+            )
 
 
 class MessagesSchemaTest(unittest.TestCase):
@@ -3685,6 +4102,85 @@ class TextPreprocessingContractTest(unittest.TestCase):
             )
 
 
+class MultiSourceFingerprintTest(unittest.TestCase):
+    def test_message_fingerprints_merge_order_independently_and_keep_duplicates(self):
+        duplicate = [11, 12, 13]
+        other = [21, 22]
+        first_source = target_unsloth.empty_messages_token_fingerprint()
+        first_source = target_unsloth.extend_messages_token_fingerprint(
+            first_source,
+            duplicate,
+            description="first source duplicate",
+        )
+        second_source = target_unsloth.empty_messages_token_fingerprint()
+        for token_ids in (other, duplicate):
+            second_source = target_unsloth.extend_messages_token_fingerprint(
+                second_source,
+                token_ids,
+                description="second source sequence",
+            )
+
+        merged = target_unsloth.merge_messages_token_fingerprints(
+            [first_source, second_source]
+        )
+        reordered = target_unsloth.empty_messages_token_fingerprint()
+        for token_ids in (duplicate, duplicate, other):
+            reordered = target_unsloth.extend_messages_token_fingerprint(
+                reordered,
+                token_ids,
+                description="BFD reordered sequence",
+            )
+        missing_duplicate = target_unsloth.empty_messages_token_fingerprint()
+        for token_ids in (duplicate, other):
+            missing_duplicate = target_unsloth.extend_messages_token_fingerprint(
+                missing_duplicate,
+                token_ids,
+                description="missing duplicate sequence",
+            )
+
+        self.assertEqual(merged, reordered)
+        self.assertEqual(merged.sequence_count, 3)
+        self.assertNotEqual(merged, missing_duplicate)
+
+    def test_prompt_fingerprints_merge_order_independently_and_keep_duplicates(self):
+        duplicate = [31, 32]
+        other = [41]
+        first_source = target_unsloth.empty_prompt_prefix_fingerprint()
+        for token_ids in (duplicate, other):
+            first_source = target_unsloth.extend_prompt_prefix_fingerprint(
+                first_source,
+                token_ids,
+                description="first source prompt",
+            )
+        second_source = target_unsloth.extend_prompt_prefix_fingerprint(
+            target_unsloth.empty_prompt_prefix_fingerprint(),
+            duplicate,
+            description="second source duplicate prompt",
+        )
+
+        merged = target_unsloth.merge_prompt_prefix_fingerprints(
+            [first_source, second_source]
+        )
+        reordered = target_unsloth.empty_prompt_prefix_fingerprint()
+        for token_ids in (duplicate, duplicate, other):
+            reordered = target_unsloth.extend_prompt_prefix_fingerprint(
+                reordered,
+                token_ids,
+                description="BFD reordered prompt",
+            )
+        missing_duplicate = target_unsloth.empty_prompt_prefix_fingerprint()
+        for token_ids in (duplicate, other):
+            missing_duplicate = target_unsloth.extend_prompt_prefix_fingerprint(
+                missing_duplicate,
+                token_ids,
+                description="missing duplicate prompt",
+            )
+
+        self.assertEqual(merged, reordered)
+        self.assertEqual(merged.sequence_count, 3)
+        self.assertNotEqual(merged, missing_duplicate)
+
+
 class TrainingPhaseTest(unittest.TestCase):
     def assert_dataset_rejected_before_model(
         self,
@@ -3693,8 +4189,11 @@ class TrainingPhaseTest(unittest.TestCase):
         rows,
         error_pattern,
     ):
-        train_config = example_train_config()
-        train_config["datasets"][0]["type"] = dataset_type
+        if dataset_type == target_unsloth.DATASET_TYPE_PREFERENCE:
+            train_config = example_dpo_train_config()
+        else:
+            train_config = example_train_config()
+            train_config["datasets"][0]["type"] = dataset_type
         dataset = in_memory_dataset(rows)
         dependencies = example_train_dependencies(dataset)
 
@@ -3713,9 +4212,10 @@ class TrainingPhaseTest(unittest.TestCase):
             dependencies.resolve_model_name.assert_not_called()
             dependencies.model_info.assert_not_called()
             dependencies.sft_trainer.assert_not_called()
+            dependencies.dpo_trainer.assert_not_called()
 
         dependencies.load_dataset.assert_called_once_with(
-            "organization/dataset",
+            train_config["datasets"][0]["source"],
             split="train",
         )
 
@@ -3795,6 +4295,7 @@ class TrainingPhaseTest(unittest.TestCase):
             "organization/dataset",
             split="train",
         )
+        dependencies.concatenate_datasets.assert_not_called()
         dataset.select_columns.assert_called_once_with(
             ["instruction", "input", "output"]
         )
@@ -3821,6 +4322,8 @@ class TrainingPhaseTest(unittest.TestCase):
             dependencies.sft_config.call_args.kwargs.get("completion_only_loss"),
             False,
         )
+        dependencies.dpo_config.assert_not_called()
+        dependencies.dpo_trainer.assert_not_called()
 
     def test_messages_dataset_renders_to_text_and_verifies_actual_full_loss(self):
         train_config = example_train_config()
@@ -3931,6 +4434,7 @@ class TrainingPhaseTest(unittest.TestCase):
             False,
         )
         self.assertEqual(trainer.data_collator.call_count, 1)
+        dependencies.concatenate_datasets.assert_not_called()
         trainer.train.assert_called_once_with()
         tokenizer.save_pretrained.assert_called_once()
 
@@ -4280,6 +4784,7 @@ class TrainingPhaseTest(unittest.TestCase):
         format_alpaca_examples.assert_not_called()
         dependencies.get_chat_template_parts.assert_not_called()
         dependencies.train_on_responses_only.assert_not_called()
+        dependencies.concatenate_datasets.assert_not_called()
         for call in tokenizer.apply_calls:
             self.assertFalse(call["add_generation_prompt"])
         trainer.train.assert_called_once_with()
@@ -4594,6 +5099,7 @@ class TrainingPhaseTest(unittest.TestCase):
             )
 
         dataset.select_columns.assert_called_once_with(["prompt", "completion"])
+        dependencies.concatenate_datasets.assert_not_called()
         dataset.map.assert_not_called()
         dataset.projected_dataset.map.assert_not_called()
         self.assertIs(
@@ -4852,6 +5358,7 @@ class TrainingPhaseTest(unittest.TestCase):
             processing_class=tokenizer,
             policy=mock.ANY,
         )
+        dependencies.concatenate_datasets.assert_not_called()
         tokenizer.save_pretrained.assert_called_once()
 
     def test_text_dataset_requires_eos_before_lora_allocation(self):
@@ -4982,6 +5489,11 @@ class TrainingPhaseTest(unittest.TestCase):
             ]
         }
         valid_text = {"text": "A complete preformatted sequence."}
+        valid_preference = {
+            "prompt": "Question?",
+            "chosen": "A careful answer.",
+            "rejected": "An unsafe answer.",
+        }
         cases = (
             (
                 "empty messages dataset",
@@ -5081,6 +5593,60 @@ class TrainingPhaseTest(unittest.TestCase):
                 "source 'organization/dataset' row 1.*text.*non-empty string",
             ),
             (
+                "empty preference dataset",
+                "preference",
+                [],
+                "preference dataset source 'organization/preferences'.*at least one",
+            ),
+            (
+                "missing preference column",
+                "preference",
+                [{"prompt": "Question?", "chosen": "Answer."}],
+                "missing required columns.*rejected",
+            ),
+            (
+                "null preference prompt",
+                "preference",
+                [{**valid_preference, "prompt": None}],
+                "prompt.*string",
+            ),
+            (
+                "non-string preference chosen",
+                "preference",
+                [{**valid_preference, "chosen": ["Answer"]}],
+                "chosen.*string",
+            ),
+            (
+                "null preference rejected",
+                "preference",
+                [{**valid_preference, "rejected": None}],
+                "rejected.*string",
+            ),
+            (
+                "empty preference prompt",
+                "preference",
+                [{**valid_preference, "prompt": ""}],
+                "prompt.*non-empty string",
+            ),
+            (
+                "whitespace preference chosen",
+                "preference",
+                [{**valid_preference, "chosen": " \t"}],
+                "chosen.*non-empty string",
+            ),
+            (
+                "empty preference rejected",
+                "preference",
+                [{**valid_preference, "rejected": ""}],
+                "rejected.*non-empty string",
+            ),
+            (
+                "identical preference choices",
+                "preference",
+                [{**valid_preference, "rejected": valid_preference["chosen"]}],
+                "chosen.*rejected.*distinct",
+            ),
+            (
                 "missing Alpaca column",
                 "alpaca",
                 [{"instruction": "Summarize", "input": "Passage"}],
@@ -5134,6 +5700,8 @@ class TrainingPhaseTest(unittest.TestCase):
             resolve_model_name=mock.Mock(return_value="example/resolved-model"),
             sft_config=mock.Mock(),
             sft_trainer=mock.Mock(),
+            dpo_config=mock.Mock(),
+            dpo_trainer=mock.Mock(),
             get_chat_template_parts=mock.Mock(),
             train_on_responses_only=mock.Mock(),
         )
@@ -5154,6 +5722,1207 @@ class TrainingPhaseTest(unittest.TestCase):
         )
         dataset.map.assert_not_called()
         dataset.projected_dataset.map.assert_not_called()
+
+
+class DPOTrainingPhaseTest(unittest.TestCase):
+    def preference_rows(self):
+        return [
+            {
+                "prompt": "How should I rotate an API key?",
+                "chosen": "Deploy a replacement before revoking the old key.",
+                "rejected": "Revoke the old key before creating a replacement.",
+                "metadata": "must be removed",
+            },
+            {
+                "prompt": "How should I store a secret?",
+                "chosen": "Use a dedicated secret manager.",
+                "rejected": "Commit it to source control.",
+                "metadata": "must also be removed",
+            },
+        ]
+
+    def test_trains_dpo_without_sft_formatting_and_preserves_preferences(self):
+        train_config = example_dpo_train_config()
+        train_config["objective"].update(beta=0.25, maxPromptLength=128)
+        train_config["config"]["unsloth"].update(
+            maxSeqLength=1024,
+            batchSize=1,
+            gradientAccumulationSteps=2,
+            warmupSteps=3,
+            maxSteps=4,
+            learningRate=0.000001,
+            loggingSteps=5,
+            optimizer="adamw_8bit",
+            weightDecay=0.02,
+            lrSchedulerType="cosine",
+            seed=7,
+        )
+        dataset = FunctionalDataset(self.preference_rows())
+        dependencies = example_dpo_train_dependencies(
+            dataset,
+            train_config=train_config,
+        )
+        base_model, tokenizer = (
+            dependencies.fast_language_model.from_pretrained.return_value
+        )
+        adapter_model = (
+            dependencies.fast_language_model.get_peft_model.return_value
+        )
+        runtime_trainer = dependencies.dpo_trainer.runtime_trainer
+
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            mock.patch.object(
+                target_unsloth,
+                "prepare_training_dataset",
+            ) as prepare_training_dataset,
+            mock.patch.object(
+                target_unsloth,
+                "format_alpaca_examples",
+            ) as format_alpaca_examples,
+        ):
+            trained_model_directory = (
+                Path(temporary_directory) / "trained-model"
+            )
+            result = target_unsloth.train_model(
+                train_config,
+                trained_model_directory=trained_model_directory,
+                dependencies=dependencies,
+            )
+
+        self.assertEqual(result, trained_model_directory)
+        dependencies.load_dataset.assert_called_once_with(
+            "organization/preferences",
+            split="train",
+        )
+        dataset.select_columns.assert_called_once_with(
+            ["prompt", "chosen", "rejected"]
+        )
+        projected_dataset = dataset.projected_dataset
+        self.assertEqual(
+            projected_dataset.column_names,
+            ["prompt", "chosen", "rejected"],
+        )
+        self.assertEqual(
+            list(projected_dataset),
+            [
+                {
+                    "prompt": row["prompt"],
+                    "chosen": row["chosen"],
+                    "rejected": row["rejected"],
+                }
+                for row in self.preference_rows()
+            ],
+        )
+        projected_dataset.map.assert_not_called()
+        prepare_training_dataset.assert_not_called()
+        format_alpaca_examples.assert_not_called()
+        dependencies.sft_config.assert_not_called()
+        dependencies.sft_trainer.assert_not_called()
+        dependencies.get_chat_template_parts.assert_not_called()
+        dependencies.train_on_responses_only.assert_not_called()
+
+        dependencies.dpo_config.assert_called_once_with(
+            output_dir="outputs",
+            dataset_num_proc=2,
+            max_length=1024,
+            max_prompt_length=128,
+            max_completion_length=None,
+            truncation_mode="keep_end",
+            beta=0.25,
+            loss_type="sigmoid",
+            reference_free=False,
+            per_device_train_batch_size=1,
+            gradient_accumulation_steps=2,
+            warmup_steps=3,
+            max_steps=4,
+            learning_rate=0.000001,
+            fp16=False,
+            bf16=True,
+            logging_steps=5,
+            optim="adamw_8bit",
+            weight_decay=0.02,
+            lr_scheduler_type="cosine",
+            seed=7,
+            save_strategy="no",
+            report_to="none",
+        )
+        dependencies.dpo_trainer.assert_called_once_with(
+            model=adapter_model,
+            ref_model=None,
+            train_dataset=projected_dataset,
+            processing_class=tokenizer,
+            args="dpo-config",
+        )
+        dpo_kwargs = dependencies.dpo_config.call_args.kwargs
+        for sft_only_field in (
+            "packing",
+            "dataset_text_field",
+            "assistant_only_loss",
+            "completion_only_loss",
+            "peft_config",
+        ):
+            self.assertNotIn(sft_only_field, dpo_kwargs)
+            self.assertNotIn(
+                sft_only_field,
+                dependencies.dpo_trainer.call_args.kwargs,
+            )
+
+        runtime_trainer.train.assert_called_once_with()
+        dependencies.fast_language_model.from_pretrained.assert_called_once_with(
+            model_name="example/model",
+            max_seq_length=1024,
+            dtype=None,
+            load_in_4bit=True,
+        )
+        dependencies.fast_language_model.get_peft_model.assert_called_once()
+        adapter_model.save_pretrained.assert_called_once_with(
+            trained_model_directory
+        )
+        tokenizer.save_pretrained.assert_called_once_with(
+            trained_model_directory
+        )
+        self.assertIs(
+            base_model,
+            dependencies.fast_language_model.from_pretrained.return_value[0],
+        )
+
+    def test_normalizes_go_yaml_scientific_floats_for_dpo_config(self):
+        train_config = target_unsloth.parse_config(
+            """baseModel: example/model
+objective:
+  type: dpo
+  beta: 1e-06
+  lossType: sigmoid
+  maxPromptLength: 512
+datasets:
+- source: organization/preferences
+  type: preference
+config:
+  unsloth:
+    packing: false
+    maxSeqLength: 2048
+    loadIn4bit: true
+    loss: all
+    batchSize: 2
+    gradientAccumulationSteps: 4
+    warmupSteps: 10
+    maxSteps: 60
+    learningRate: 1e-06
+    loggingSteps: 1
+    optimizer: adamw_8bit
+    weightDecay: 1e-06
+    lrSchedulerType: linear
+    seed: 42
+"""
+        )
+        cfg = train_config["config"]["unsloth"]
+        self.assertEqual(train_config["objective"]["beta"], "1e-06")
+        self.assertEqual(cfg["learningRate"], "1e-06")
+        self.assertEqual(cfg["weightDecay"], "1e-06")
+
+        dataset = FunctionalDataset(self.preference_rows())
+        dependencies = example_dpo_train_dependencies(
+            dataset,
+            train_config=train_config,
+        )
+        dependencies.dpo_trainer.runtime_trainer.beta = 1e-6
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            target_unsloth.train_model(
+                train_config,
+                trained_model_directory=(
+                    Path(temporary_directory) / "trained-model"
+                ),
+                dependencies=dependencies,
+            )
+
+        dpo_config = dependencies.dpo_config.call_args.kwargs
+        self.assertEqual(dpo_config["beta"], 1e-6)
+        self.assertIsInstance(dpo_config["beta"], float)
+        self.assertEqual(dpo_config["learning_rate"], 1e-6)
+        self.assertIsInstance(dpo_config["learning_rate"], float)
+        self.assertEqual(dpo_config["weight_decay"], 1e-6)
+        self.assertIsInstance(dpo_config["weight_decay"], float)
+
+    def test_rejects_invalid_transport_floats_before_loading_or_model_allocation(
+        self,
+    ):
+        cases = (
+            ("learningRate", "0e+00", "learningRate.*greater than zero"),
+            ("learningRate", "1e+309", "learningRate.*greater than zero"),
+            ("weightDecay", "-1e-06", "weightDecay.*zero or greater"),
+            ("weightDecay", "1e+309", "weightDecay.*zero or greater"),
+        )
+        for field, value, error_pattern in cases:
+            with self.subTest(field=field, value=value):
+                train_config = example_dpo_train_config()
+                train_config["config"]["unsloth"][field] = value
+                dependencies = example_train_dependencies(mock.Mock())
+
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.train_model(
+                        train_config,
+                        dependencies=dependencies,
+                    )
+
+                dependencies.load_dataset.assert_not_called()
+                dependencies.fast_language_model.from_pretrained.assert_not_called()
+                dependencies.fast_language_model.get_peft_model.assert_not_called()
+                dependencies.dpo_config.assert_not_called()
+                dependencies.dpo_trainer.assert_not_called()
+
+    def test_rejects_dpo_configuration_before_loading_or_model_allocation(self):
+        cases = (
+            (
+                "SFT dataset",
+                lambda config: config["datasets"][0].update(type="alpaca"),
+                "DPO objective requires a preference dataset",
+            ),
+            (
+                "packing",
+                lambda config: config["config"]["unsloth"].update(
+                    packing=True
+                ),
+                "does not support packing",
+            ),
+            (
+                "response loss",
+                lambda config: config["config"]["unsloth"].update(
+                    loss="response"
+                ),
+                "response SFT loss",
+            ),
+        )
+        for name, mutate, error_pattern in cases:
+            with self.subTest(name=name):
+                train_config = example_dpo_train_config()
+                mutate(train_config)
+                dependencies = example_train_dependencies(mock.Mock())
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.train_model(
+                        train_config,
+                        dependencies=dependencies,
+                    )
+                dependencies.load_dataset.assert_not_called()
+                dependencies.fast_language_model.from_pretrained.assert_not_called()
+                dependencies.fast_language_model.get_peft_model.assert_not_called()
+                dependencies.sft_trainer.assert_not_called()
+                dependencies.dpo_trainer.assert_not_called()
+
+    def test_rejects_multiple_preference_datasets_before_loading(self):
+        train_config = example_dpo_train_config()
+        train_config["datasets"].append(
+            {
+                "source": "organization/other-preferences",
+                "type": "preference",
+            }
+        )
+        dependencies = example_train_dependencies(mock.Mock())
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "DPO objective requires exactly one preference dataset",
+        ):
+            target_unsloth.train_model(
+                train_config,
+                dependencies=dependencies,
+            )
+
+        dependencies.load_dataset.assert_not_called()
+        dependencies.fast_language_model.from_pretrained.assert_not_called()
+        dependencies.fast_language_model.get_peft_model.assert_not_called()
+        dependencies.sft_trainer.assert_not_called()
+        dependencies.dpo_trainer.assert_not_called()
+
+    def test_rejects_preference_pair_collapsed_by_effective_truncation(self):
+        train_config = example_dpo_train_config()
+        train_config["objective"]["maxPromptLength"] = 3
+        train_config["config"]["unsloth"]["maxSeqLength"] = 3
+        dataset = FunctionalDataset(
+            [
+                {
+                    "prompt": "Prompt",
+                    "chosen": "Xab",
+                    "rejected": "Yab",
+                }
+            ]
+        )
+        dependencies = example_dpo_train_dependencies(
+            dataset,
+            train_config=train_config,
+        )
+        runtime_trainer = dependencies.dpo_trainer.runtime_trainer
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "record 0.*token-identical.*effective truncation",
+        ):
+            target_unsloth.train_model(
+                train_config,
+                dependencies=dependencies,
+            )
+
+        runtime_trainer.train.assert_not_called()
+        runtime_trainer.model.save_pretrained.assert_not_called()
+
+    def test_rejects_invalid_dpo_runtime_contract_before_training(self):
+        cases = (
+            (
+                "reference model",
+                lambda trainer, _model: setattr(trainer, "ref_model", object()),
+                "must use ref_model=None",
+            ),
+            (
+                "not PEFT",
+                lambda trainer, _model: setattr(
+                    trainer, "is_peft_model", False
+                ),
+                "did not recognize.*PEFT",
+            ),
+            (
+                "reference free",
+                lambda trainer, _model: setattr(
+                    trainer, "reference_free", True
+                ),
+                "must not use reference-free",
+            ),
+            (
+                "policy model replaced",
+                lambda trainer, _model: setattr(trainer, "model", mock.Mock()),
+                "replaced the policy model",
+            ),
+            (
+                "adapter cannot be disabled",
+                lambda _trainer, model: setattr(model, "disable_adapter", None),
+                "does not support disabling.*PEFT adapter",
+            ),
+            (
+                "beta mismatch",
+                lambda trainer, _model: setattr(trainer, "beta", 0.2),
+                "beta does not match",
+            ),
+            (
+                "loss mismatch",
+                lambda trainer, _model: setattr(
+                    trainer, "loss_type", ["hinge"]
+                ),
+                "loss type does not match",
+            ),
+            (
+                "prompt length mismatch",
+                lambda trainer, _model: setattr(
+                    trainer, "max_prompt_length", 128
+                ),
+                "max prompt length does not match",
+            ),
+            (
+                "sequence length mismatch",
+                lambda trainer, _model: setattr(
+                    trainer, "max_length", 1024
+                ),
+                "max length does not match",
+            ),
+            (
+                "completion length limit",
+                lambda trainer, _model: setattr(
+                    trainer, "max_completion_length", 128
+                ),
+                "must not apply a separate completion truncation limit",
+            ),
+            (
+                "truncation mode mismatch",
+                lambda trainer, _model: setattr(
+                    trainer, "truncation_mode", "keep_start"
+                ),
+                "must use keep_end",
+            ),
+        )
+        for name, mutate, error_pattern in cases:
+            with self.subTest(name=name):
+                train_config = example_dpo_train_config()
+                dataset = in_memory_dataset(self.preference_rows())
+                dependencies = example_dpo_train_dependencies(dataset)
+                runtime_trainer = mock.Mock()
+                runtime_trainer.ref_model = None
+                runtime_trainer.is_peft_model = True
+                runtime_trainer.reference_free = False
+                runtime_trainer.beta = 0.1
+                runtime_trainer.loss_type = ["sigmoid"]
+                runtime_trainer.max_prompt_length = 512
+                runtime_trainer.max_completion_length = None
+                runtime_trainer.max_length = 2048
+                runtime_trainer.truncation_mode = (
+                    target_unsloth.DPO_TRUNCATION_KEEP_END
+                )
+                runtime_trainer.is_encoder_decoder = False
+                runtime_trainer.model = (
+                    dependencies.fast_language_model.get_peft_model.return_value
+                )
+                runtime_trainer.accelerator = mock.Mock()
+                runtime_trainer.accelerator.unwrap_model.side_effect = (
+                    lambda model: model
+                )
+
+                def construct_trainer(**kwargs):
+                    runtime_trainer.train_dataset = kwargs["train_dataset"]
+                    return runtime_trainer
+
+                dependencies.dpo_trainer.side_effect = construct_trainer
+                mutate(runtime_trainer, runtime_trainer.model)
+                with self.assertRaisesRegex(RuntimeError, error_pattern):
+                    target_unsloth.train_model(
+                        train_config,
+                        dependencies=dependencies,
+                    )
+                runtime_trainer.train.assert_not_called()
+                runtime_trainer.model.save_pretrained.assert_not_called()
+
+    def test_rejects_empty_dataset_after_dpo_trainer_preprocessing(self):
+        train_config = example_dpo_train_config()
+        dataset = in_memory_dataset(self.preference_rows())
+        dependencies = example_dpo_train_dependencies(dataset)
+        runtime_trainer = dependencies.dpo_trainer.runtime_trainer
+
+        def construct_empty_trainer(**_kwargs):
+            runtime_trainer.train_dataset = []
+            return runtime_trainer
+
+        dependencies.dpo_trainer.side_effect = construct_empty_trainer
+        with self.assertRaisesRegex(RuntimeError, "prepared an empty"):
+            target_unsloth.train_model(
+                train_config,
+                dependencies=dependencies,
+            )
+
+        runtime_trainer.train.assert_not_called()
+        runtime_trainer.model.save_pretrained.assert_not_called()
+
+    def test_dpo_checksum_failure_prevents_parser_and_model_allocation(self):
+        body = (
+            b'{"prompt":"Question?","chosen":"Safe",'
+            b'"rejected":"Unsafe"}\n'
+        )
+        with LocalDatasetServer({"/preferences.jsonl": body}) as server:
+            signed_url = (
+                server.url("/preferences.jsonl")
+                + "?token=private-value#fragment-marker"
+            )
+            train_config = example_dpo_train_config()
+            train_config["datasets"][0].update(
+                source=signed_url,
+                loader={
+                    "type": "json",
+                    "checksum": "sha256:" + "0" * 64,
+                },
+            )
+            dependencies = example_dpo_train_dependencies(mock.Mock())
+
+            with tempfile.TemporaryDirectory() as cache_directory:
+                with mock.patch.dict(
+                    target_unsloth.os.environ,
+                    {"HF_DATASETS_CACHE": cache_directory},
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "checksum does not match",
+                    ) as raised:
+                        target_unsloth.train_model(
+                            train_config,
+                            dependencies=dependencies,
+                        )
+
+        for secret in ("token", "private-value", "fragment-marker"):
+            self.assertNotIn(secret, str(raised.exception))
+        dependencies.load_dataset.assert_not_called()
+        dependencies.fast_language_model.from_pretrained.assert_not_called()
+        dependencies.fast_language_model.get_peft_model.assert_not_called()
+        dependencies.dpo_trainer.assert_not_called()
+
+    def test_rejects_missing_dpo_tokenizer_eos_before_lora_allocation(self):
+        train_config = example_dpo_train_config()
+        dataset = in_memory_dataset(self.preference_rows())
+        dependencies = example_dpo_train_dependencies(dataset)
+        tokenizer = dependencies.fast_language_model.from_pretrained.return_value[1]
+        tokenizer.eos_token = None
+
+        with self.assertRaisesRegex(RuntimeError, "tokenizer EOS token"):
+            target_unsloth.train_model(
+                train_config,
+                dependencies=dependencies,
+            )
+
+        dependencies.fast_language_model.get_peft_model.assert_not_called()
+        dependencies.dpo_trainer.assert_not_called()
+
+    def test_imports_unsloth_before_trl_dpo_dependencies(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        function_start = source.index("def load_train_dependencies()")
+        function_end = source.index("\ndef load_export_dependencies()", function_start)
+        dependency_source = source[function_start:function_end]
+        self.assertLess(
+            dependency_source.index("from unsloth import"),
+            dependency_source.index("from trl import"),
+        )
+        self.assertIn("DPOConfig", dependency_source)
+        self.assertIn("DPOTrainer", dependency_source)
+
+
+class MultipleTrainingDatasetsTest(unittest.TestCase):
+    def config_for(self, dataset_types, *, loss="all", packing=False):
+        config = example_train_config()
+        config["datasets"] = [
+            {"source": f"organization/source-{index}", "type": dataset_type}
+            for index, dataset_type in enumerate(dataset_types)
+        ]
+        config["config"]["unsloth"]["loss"] = loss
+        config["config"]["unsloth"]["packing"] = packing
+        return config
+
+    def dependencies_for(self, datasets):
+        dependencies = example_train_dependencies(datasets[0])
+        dependencies.load_dataset.side_effect = list(datasets)
+
+        def concatenate(source_datasets):
+            return FunctionalDataset(
+                row
+                for source_dataset in source_datasets
+                for row in source_dataset
+            )
+
+        dependencies.concatenate_datasets.side_effect = concatenate
+        return dependencies
+
+    def test_rejects_mixed_groups_before_loading_or_model_allocation(self):
+        cases = (
+            (
+                ["alpaca", "prompt-completion"],
+                "all",
+                r"datasets\[1\] type prompt-completion.*incompatible.*datasets\[0\]",
+            ),
+            (
+                ["messages", "text"],
+                "response",
+                r"datasets\[1\] type text.*supported only for messages and sharegpt",
+            ),
+        )
+        for dataset_types, loss, error_pattern in cases:
+            with self.subTest(dataset_types=dataset_types, loss=loss):
+                dependencies = example_train_dependencies(mock.Mock())
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.train_model(
+                        self.config_for(dataset_types, loss=loss),
+                        dependencies=dependencies,
+                    )
+
+                dependencies.load_dataset.assert_not_called()
+                dependencies.fast_language_model.from_pretrained.assert_not_called()
+                dependencies.fast_language_model.get_peft_model.assert_not_called()
+                dependencies.concatenate_datasets.assert_not_called()
+                dependencies.sft_trainer.assert_not_called()
+
+    def test_second_source_schema_failure_is_indexed_redacted_and_pre_model(self):
+        config = self.config_for(["text", "text"])
+        signed_url = (
+            "https://example.test/private.json?token=private-value"
+            "#fragment-marker"
+        )
+        config["datasets"][1]["source"] = signed_url
+        dependencies = self.dependencies_for(
+            [
+                FunctionalDataset([{"text": "valid"}]),
+                FunctionalDataset([{"content": "missing text"}]),
+            ]
+        )
+        local_file = Path("/private/tmp/aikit-second-source.json")
+
+        with (
+            mock.patch.object(
+                target_unsloth,
+                "materialize_remote_dataset_file",
+                return_value=nullcontext(local_file),
+            ),
+            self.assertRaisesRegex(
+                ValueError,
+                r"datasets\[1\] text dataset remote JSON URL.*missing required columns",
+            ) as raised,
+        ):
+            target_unsloth.train_model(config, dependencies=dependencies)
+
+        for secret in (signed_url, "private-value", "fragment-marker"):
+            self.assertNotIn(secret, str(raised.exception))
+        self.assertEqual(dependencies.load_dataset.call_count, 2)
+        self.assertEqual(
+            dependencies.load_dataset.call_args_list[0],
+            mock.call("organization/source-0", split="train"),
+        )
+        self.assertEqual(
+            dependencies.load_dataset.call_args_list[1],
+            mock.call(
+                "json",
+                data_files={"train": str(local_file)},
+                split="train",
+            ),
+        )
+        dependencies.fast_language_model.from_pretrained.assert_not_called()
+        dependencies.fast_language_model.get_peft_model.assert_not_called()
+        dependencies.concatenate_datasets.assert_not_called()
+        dependencies.sft_trainer.assert_not_called()
+
+    def test_rejects_empty_later_source_before_model_allocation(self):
+        config = self.config_for(["text", "text"])
+        dependencies = self.dependencies_for(
+            [
+                FunctionalDataset([{"text": "valid"}]),
+                FunctionalDataset([]),
+            ]
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"datasets\[1\] text dataset source 'organization/source-1' "
+            r"must contain at least one record",
+        ):
+            target_unsloth.train_model(config, dependencies=dependencies)
+
+        self.assertEqual(dependencies.load_dataset.call_count, 2)
+        dependencies.fast_language_model.from_pretrained.assert_not_called()
+        dependencies.fast_language_model.get_peft_model.assert_not_called()
+        dependencies.concatenate_datasets.assert_not_called()
+        dependencies.sft_trainer.assert_not_called()
+
+    def test_full_sequence_sources_load_normalize_and_concatenate_in_order(self):
+        config = self.config_for(
+            ["alpaca", "text", "messages", "sharegpt"],
+            packing=True,
+        )
+        config["datasets"][1]["loader"] = {
+            "type": "huggingface",
+            "subset": "default",
+            "split": "train_sft",
+            "revision": "0123456789abcdef0123456789abcdef01234567",
+        }
+        alpaca_row = {
+            "instruction": "Summarize",
+            "input": "First source",
+            "output": "Summary",
+        }
+        text_row = {"text": "Domain text."}
+        messages = [
+            {"role": "user", "content": "Question?"},
+            {"role": "assistant", "content": "Answer."},
+        ]
+        sharegpt = [
+            {"from": "human", "value": "Other question?"},
+            {"from": "gpt", "value": "Other answer."},
+        ]
+        dependencies = self.dependencies_for(
+            [
+                FunctionalDataset([{**alpaca_row, "metadata": "first"}]),
+                FunctionalDataset([{**text_row, "metadata": "second"}]),
+                FunctionalDataset([{"messages": messages, "id": 3}]),
+                FunctionalDataset([{"conversations": sharegpt, "id": 4}]),
+            ]
+        )
+        # Use a tokenizer without a BOS token so every full-sequence source has
+        # the same rendered-text special-token policy. A separate regression
+        # test covers mixed policies that change token boundaries.
+        tokenizer = MessagesTokenizer(bos_token=None, bos_token_id=None)
+        base_model = dependencies.fast_language_model.from_pretrained.return_value[0]
+        dependencies.fast_language_model.from_pretrained.return_value = (
+            base_model,
+            tokenizer,
+        )
+        trainer = dependencies.sft_trainer.return_value
+        trainer.args = SimpleNamespace(
+            packing=True,
+            padding_free=True,
+            packing_strategy="bfd",
+            max_length=2048,
+            dataset_num_proc=2,
+        )
+
+        def construct_trainer(**kwargs):
+            texts = [row["text"] for row in kwargs["train_dataset"]]
+            add_special_tokens = target_unsloth.messages_unsloth_add_special_tokens(
+                tokenizer,
+                texts[0],
+            )
+            segments = tokenizer(
+                texts,
+                add_special_tokens=add_special_tokens,
+                truncation=True,
+                max_length=2048,
+            )["input_ids"]
+            reordered = list(reversed(segments))
+            trainer.train_dataset = [
+                {
+                    "input_ids": [
+                        token_id
+                        for segment in reordered
+                        for token_id in segment
+                    ],
+                    "seq_lengths": [len(segment) for segment in reordered],
+                }
+            ]
+            return trainer
+
+        def collate(records):
+            input_ids = list(records[0]["input_ids"])
+            return {"input_ids": [input_ids], "labels": [list(input_ids)]}
+
+        dependencies.sft_trainer.side_effect = construct_trainer
+        trainer.data_collator.side_effect = collate
+        events = []
+        load_dataset = dependencies.load_dataset
+        loaded_datasets = list(load_dataset.side_effect)
+
+        def load_in_order(source, **kwargs):
+            events.append(("load", source, kwargs))
+            return loaded_datasets.pop(0)
+
+        load_dataset.side_effect = load_in_order
+        concatenate = dependencies.concatenate_datasets.side_effect
+
+        def concatenate_in_order(source_datasets):
+            events.append(("concatenate", len(source_datasets)))
+            return concatenate(source_datasets)
+
+        dependencies.concatenate_datasets.side_effect = concatenate_in_order
+
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            mock.patch.object(target_unsloth, "verify_text_preprocessing"),
+        ):
+            target_unsloth.train_model(
+                config,
+                trained_model_directory=Path(temporary_directory) / "trained-model",
+                dependencies=dependencies,
+            )
+
+        self.assertEqual(
+            events,
+            [
+                ("load", "organization/source-0", {"split": "train"}),
+                (
+                    "load",
+                    "organization/source-1",
+                    {
+                        "name": "default",
+                        "split": "train_sft",
+                        "revision": (
+                            "0123456789abcdef0123456789abcdef01234567"
+                        ),
+                    },
+                ),
+                ("load", "organization/source-2", {"split": "train"}),
+                ("load", "organization/source-3", {"split": "train"}),
+                ("concatenate", 4),
+            ],
+        )
+        dependencies.concatenate_datasets.assert_called_once()
+        canonical_sources = dependencies.concatenate_datasets.call_args.args[0]
+        self.assertEqual(len(canonical_sources), 4)
+        self.assertTrue(
+            all(source.column_names == ["text"] for source in canonical_sources)
+        )
+        combined = dependencies.sft_trainer.call_args.kwargs["train_dataset"]
+        expected_texts = [
+            target_unsloth.ALPACA_PROMPT.format(
+                alpaca_row["instruction"],
+                alpaca_row["input"],
+                alpaca_row["output"],
+            )
+            + tokenizer.eos_token,
+            text_row["text"] + tokenizer.eos_token,
+            tokenizer.render(messages),
+            tokenizer.render(
+                [
+                    {"role": "user", "content": "Other question?"},
+                    {"role": "assistant", "content": "Other answer."},
+                ]
+            ),
+        ]
+        self.assertEqual([row["text"] for row in combined], expected_texts)
+        self.assertIs(
+            dependencies.sft_config.call_args.kwargs["completion_only_loss"],
+            False,
+        )
+        dependencies.train_on_responses_only.assert_not_called()
+        trainer.train.assert_called_once_with()
+
+    def test_rejects_mixed_full_sequence_special_token_boundary_changes(self):
+        alpaca_row = {
+            "instruction": "Summarize",
+            "input": "First source",
+            "output": "Summary",
+        }
+        messages_row = {
+            "messages": [
+                {"role": "user", "content": "Question?"},
+                {"role": "assistant", "content": "Answer."},
+            ]
+        }
+        cases = (
+            (
+                ["alpaca", "messages"],
+                [FunctionalDataset([alpaca_row]), FunctionalDataset([messages_row])],
+                r"datasets\[1\] messages dataset.*tokenizes differently.*"
+                r"source add_special_tokens=False.*"
+                r"combined full-sequence add_special_tokens=True",
+            ),
+            (
+                ["messages", "alpaca"],
+                [FunctionalDataset([messages_row]), FunctionalDataset([alpaca_row])],
+                r"datasets\[1\] alpaca dataset.*tokenizes differently.*"
+                r"source add_special_tokens=True.*"
+                r"combined full-sequence add_special_tokens=False",
+            ),
+        )
+
+        for dataset_types, datasets, error_pattern in cases:
+            with self.subTest(dataset_types=dataset_types):
+                dependencies = self.dependencies_for(datasets)
+                base_model = (
+                    dependencies.fast_language_model.from_pretrained.return_value[0]
+                )
+                dependencies.fast_language_model.from_pretrained.return_value = (
+                    base_model,
+                    MessagesTokenizer(),
+                )
+
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.train_model(
+                        self.config_for(dataset_types),
+                        dependencies=dependencies,
+                    )
+
+                dependencies.concatenate_datasets.assert_not_called()
+                dependencies.sft_trainer.assert_not_called()
+
+    def test_allows_noop_full_sequence_special_token_policy_difference(self):
+        tokenizer = TextPreprocessingTokenizer(auto_bos=False)
+        fingerprint = target_unsloth.validate_full_sequence_text_tokenization(
+            FunctionalDataset([{"text": "plain text"}]),
+            processing_class=tokenizer,
+            max_seq_length=128,
+            dataset_type="alpaca",
+            source="organization/source-0",
+            dataset_index=0,
+            add_special_tokens=False,
+        )
+
+        self.assertEqual(fingerprint.sequence_count, 1)
+        self.assertEqual(
+            [call["add_special_tokens"] for call in tokenizer.calls],
+            [False, True],
+        )
+
+    def test_rejects_prompt_completion_special_token_boundary_changes(self):
+        plain_row = {"prompt": "A", "completion": " C"}
+        explicit_bos_row = {"prompt": "<bos>B", "completion": " C"}
+        cases = (
+            (
+                [FunctionalDataset([plain_row]), FunctionalDataset([explicit_bos_row])],
+                r"datasets\[1\] prompt-completion preprocessing record 0.*"
+                r"source add_special_tokens=False.*"
+                r"combined dataset add_special_tokens=True",
+            ),
+            (
+                [FunctionalDataset([explicit_bos_row]), FunctionalDataset([plain_row])],
+                r"datasets\[1\] prompt-completion preprocessing record 0.*"
+                r"source add_special_tokens=True.*"
+                r"combined dataset add_special_tokens=False",
+            ),
+        )
+
+        for datasets, error_pattern in cases:
+            with self.subTest(first_prompt=datasets[0][0]["prompt"]):
+                dependencies = self.dependencies_for(datasets)
+                base_model = (
+                    dependencies.fast_language_model.from_pretrained.return_value[0]
+                )
+                dependencies.fast_language_model.from_pretrained.return_value = (
+                    base_model,
+                    TextPreprocessingTokenizer(auto_bos=True),
+                )
+
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.train_model(
+                        self.config_for(
+                            ["prompt-completion", "prompt-completion"]
+                        ),
+                        dependencies=dependencies,
+                    )
+
+                dependencies.fast_language_model.get_peft_model.assert_not_called()
+                dependencies.concatenate_datasets.assert_not_called()
+                dependencies.sft_trainer.assert_not_called()
+
+    def test_multiple_prompt_completion_sources_preserve_duplicates_through_bfd(self):
+        config = self.config_for(
+            ["prompt-completion", "prompt-completion"],
+            packing=True,
+        )
+        first_rows = [
+            {"prompt": "Duplicate", "completion": " completion."},
+            {"prompt": "Other", "completion": " completion."},
+        ]
+        second_rows = [
+            {"prompt": "<bos>Duplicate", "completion": " completion."},
+        ]
+        dependencies = self.dependencies_for(
+            [FunctionalDataset(first_rows), FunctionalDataset(second_rows)]
+        )
+        trainer = dependencies.sft_trainer.return_value
+        trainer.args = SimpleNamespace(
+            packing=True,
+            padding_free=True,
+            packing_strategy="bfd",
+            max_length=2048,
+            dataset_num_proc=2,
+        )
+        verification_record = {
+            "input_ids": [11, 12, 13, 2],
+            "completion_mask": [0, 0, 1, 1],
+        }
+        trainer._prepare_dataset.return_value = [verification_record]
+        segment = [11, 12, 13, 2]
+        trainer.train_dataset = [
+            {
+                "input_ids": segment * 3,
+                "completion_mask": [0, 0, 1, 1] * 3,
+                "seq_lengths": [4, 4, 4],
+            }
+        ]
+        trainer.data_collator.return_value = {
+            "input_ids": [verification_record["input_ids"]],
+            "labels": [[-100, -100, 13, 2]],
+        }
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            target_unsloth.train_model(
+                config,
+                trained_model_directory=Path(temporary_directory) / "trained-model",
+                dependencies=dependencies,
+            )
+
+        dependencies.concatenate_datasets.assert_called_once()
+        combined = dependencies.sft_trainer.call_args.kwargs["train_dataset"]
+        self.assertEqual(
+            list(combined),
+            [*first_rows, *second_rows],
+        )
+        self.assertIs(
+            dependencies.sft_config.call_args.kwargs["completion_only_loss"],
+            True,
+        )
+        dependencies.train_on_responses_only.assert_not_called()
+        tokenizer = dependencies.fast_language_model.from_pretrained.return_value[1]
+        second_source_tokenization_calls = [
+            call
+            for call in tokenizer.call_args_list
+            if call.args
+            and isinstance(call.args[0], list)
+            and "<bos>Duplicate" in call.args[0]
+        ]
+        self.assertTrue(second_source_tokenization_calls)
+        self.assertEqual(
+            {
+                call.kwargs["add_special_tokens"]
+                for call in second_source_tokenization_calls
+            },
+            {False, True},
+        )
+        trainer.train.assert_called_once_with()
+
+    def test_response_only_messages_and_sharegpt_apply_masking_once(self):
+        config = self.config_for(
+            ["messages", "sharegpt"],
+            loss="response",
+        )
+        messages = [
+            {"role": "user", "content": "Question?"},
+            {"role": "assistant", "content": "Answer."},
+        ]
+        conversations = [
+            {"from": "human", "value": "Other question?"},
+            {"from": "gpt", "value": "Other answer."},
+        ]
+        dependencies = self.dependencies_for(
+            [
+                FunctionalDataset([{"messages": messages}]),
+                FunctionalDataset([{"conversations": conversations}]),
+            ]
+        )
+        tokenizer = MessagesTokenizer()
+        base_model = dependencies.fast_language_model.from_pretrained.return_value[0]
+        dependencies.fast_language_model.from_pretrained.return_value = (
+            base_model,
+            tokenizer,
+        )
+        trainer = dependencies.sft_trainer.return_value
+        trainer.args = SimpleNamespace(
+            packing=False,
+            padding_free=False,
+            packing_strategy="bfd",
+            max_length=2048,
+            dataset_num_proc=2,
+        )
+
+        def apply_response_masking(actual_trainer, **kwargs):
+            markers = target_unsloth.ResponseMarkers(
+                instruction_part=kwargs["instruction_part"],
+                response_part=kwargs["response_part"],
+                instruction_token_ids=tuple(
+                    tokenizer.raw_token_ids(kwargs["instruction_part"])
+                ),
+                response_token_ids=tuple(
+                    tokenizer.raw_token_ids(kwargs["response_part"])
+                ),
+                use_tokenizer_parts=False,
+            )
+            prepared_rows = []
+            for row in dependencies.sft_trainer.call_args.kwargs["train_dataset"]:
+                input_ids = tokenizer.raw_token_ids(row["text"])
+                prepared_rows.append(
+                    {
+                        "input_ids": input_ids,
+                        "labels": target_unsloth.expected_response_only_labels(
+                            input_ids,
+                            markers=markers,
+                        ),
+                    }
+                )
+            actual_trainer.train_dataset = FunctionalDataset(prepared_rows)
+            return actual_trainer
+
+        dependencies.train_on_responses_only.side_effect = apply_response_masking
+        trainer.data_collator.side_effect = lambda records: {
+            "input_ids": [list(records[0]["input_ids"])],
+            "labels": [list(records[0]["labels"])],
+        }
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            target_unsloth.train_model(
+                config,
+                trained_model_directory=Path(temporary_directory) / "trained-model",
+                dependencies=dependencies,
+            )
+
+        dependencies.concatenate_datasets.assert_called_once()
+        combined = dependencies.sft_trainer.call_args.kwargs["train_dataset"]
+        self.assertEqual(
+            [row["text"] for row in combined],
+            [
+                tokenizer.render(messages),
+                tokenizer.render(
+                    [
+                        {"role": "user", "content": "Other question?"},
+                        {"role": "assistant", "content": "Other answer."},
+                    ]
+                ),
+            ],
+        )
+        dependencies.train_on_responses_only.assert_called_once_with(
+            trainer,
+            force_match=True,
+            instruction_part="<user>",
+            response_part="<assistant>",
+        )
+        self.assertIs(
+            dependencies.sft_config.call_args.kwargs["completion_only_loss"],
+            False,
+        )
+        trainer.train.assert_called_once_with()
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("datasets") is not None,
+        "datasets is not installed",
+    )
+    def test_datasets_430_normalizes_string_features_and_preserves_order(self):
+        import datasets
+
+        if datasets.__version__ != "4.3.0":
+            self.skipTest("requires datasets==4.3.0")
+
+        first = datasets.Dataset.from_dict(
+            {"text": ["first-0", "first-1"], "metadata": [1, 2]},
+            features=datasets.Features(
+                {
+                    "text": datasets.Value("large_string"),
+                    "metadata": datasets.Value("int64"),
+                }
+            ),
+        )
+        second = datasets.Dataset.from_dict(
+            {"text": ["second-0"]},
+            features=datasets.Features({"text": datasets.Value("string")}),
+        )
+        normalized = [
+            target_unsloth.normalize_canonical_string_dataset(
+                source,
+                fields=("text",),
+                dataset_type="text",
+                source=f"source-{index}",
+                dataset_index=index,
+            )
+            for index, source in enumerate((first, second))
+        ]
+
+        self.assertEqual(
+            normalized[0].features,
+            datasets.Features({"text": datasets.Value("string")}),
+        )
+        combined = datasets.concatenate_datasets(normalized)
+        self.assertEqual(
+            list(combined["text"]),
+            ["first-0", "first-1", "second-0"],
+        )
+        reversed_combined = datasets.concatenate_datasets(
+            list(reversed(normalized))
+        )
+        self.assertEqual(
+            list(reversed_combined["text"]),
+            ["second-0", "first-0", "first-1"],
+        )
+
+        prompt_source = datasets.Dataset.from_dict(
+            {
+                "prompt": ["p0", "p1"],
+                "completion": ["c0", "c1"],
+                "metadata": [1, 2],
+            },
+            features=datasets.Features(
+                {
+                    "prompt": datasets.Value("large_string"),
+                    "completion": datasets.Value("large_string"),
+                    "metadata": datasets.Value("int64"),
+                }
+            ),
+        )
+        normalized_prompt = target_unsloth.normalize_canonical_string_dataset(
+            prompt_source,
+            fields=("prompt", "completion"),
+            dataset_type="prompt-completion",
+            source="prompt-source",
+            dataset_index=0,
+        )
+        self.assertEqual(
+            normalized_prompt.features,
+            datasets.Features(
+                {
+                    "prompt": datasets.Value("string"),
+                    "completion": datasets.Value("string"),
+                }
+            ),
+        )
+        self.assertEqual(
+            list(normalized_prompt),
+            [
+                {"prompt": "p0", "completion": "c0"},
+                {"prompt": "p1", "completion": "c1"},
+            ],
+        )
 
 
 class ExportPhaseTest(unittest.TestCase):

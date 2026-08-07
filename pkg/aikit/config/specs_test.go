@@ -97,6 +97,7 @@ func TestNewFromBytesNormalizesFineTuneDefaults(t *testing.T) {
 		Seed:                      42,
 	}
 	wantOutput := FineTuneOutputSpec{Quantize: "q4_k_m", Name: "aikit-model"}
+	wantObjective := FineTuneObjectiveSpec{Type: utils.ObjectiveSFT}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -116,8 +117,118 @@ func TestNewFromBytesNormalizesFineTuneDefaults(t *testing.T) {
 			if !reflect.DeepEqual(fineTuneConfig.Config.Unsloth, wantUnsloth) {
 				t.Errorf("unsloth config = %#v, want %#v", fineTuneConfig.Config.Unsloth, wantUnsloth)
 			}
+			if fineTuneConfig.Objective != wantObjective {
+				t.Errorf("objective = %#v, want %#v", fineTuneConfig.Objective, wantObjective)
+			}
 			if !reflect.DeepEqual(fineTuneConfig.Output, wantOutput) {
 				t.Errorf("output config = %#v, want %#v", fineTuneConfig.Output, wantOutput)
+			}
+		})
+	}
+}
+
+func TestNewFromBytesNormalizesFineTuneObjectives(t *testing.T) {
+	tests := []struct {
+		name               string
+		objectiveYAML      string
+		learningRateYAML   string
+		wantObjective      FineTuneObjectiveSpec
+		wantLearningRate   float64
+		wantHasDPOSettings bool
+	}{
+		{
+			name:             "omitted defaults to SFT",
+			wantObjective:    FineTuneObjectiveSpec{Type: utils.ObjectiveSFT},
+			wantLearningRate: defaultSFTLearningRate,
+		},
+		{
+			name:             "null defaults to SFT",
+			objectiveYAML:    "objective: null\n",
+			wantObjective:    FineTuneObjectiveSpec{Type: utils.ObjectiveSFT},
+			wantLearningRate: defaultSFTLearningRate,
+		},
+		{
+			name:             "empty defaults to SFT",
+			objectiveYAML:    "objective: {}\n",
+			wantObjective:    FineTuneObjectiveSpec{Type: utils.ObjectiveSFT},
+			wantLearningRate: defaultSFTLearningRate,
+		},
+		{
+			name:             "explicit SFT",
+			objectiveYAML:    "objective:\n  type: sft\n",
+			wantObjective:    FineTuneObjectiveSpec{Type: utils.ObjectiveSFT},
+			wantLearningRate: defaultSFTLearningRate,
+		},
+		{
+			name:          "DPO defaults",
+			objectiveYAML: "objective:\n  type: dpo\n",
+			wantObjective: FineTuneObjectiveSpec{
+				Type: utils.ObjectiveDPO, Beta: defaultDPOBeta, LossType: defaultDPOLossType, MaxPromptLength: defaultDPOMaxPromptLength,
+			},
+			wantLearningRate:   defaultDPOLearningRate,
+			wantHasDPOSettings: true,
+		},
+		{
+			name:          "explicit DPO values",
+			objectiveYAML: "objective:\n  type: dpo\n  beta: 0.25\n  lossType: sigmoid\n  maxPromptLength: 128\n",
+			wantObjective: FineTuneObjectiveSpec{
+				Type: utils.ObjectiveDPO, Beta: 0.25, LossType: utils.DPOLossSigmoid, MaxPromptLength: 128,
+				betaConfigured: true, lossTypeConfigured: true, maxPromptLengthConfigured: true,
+			},
+			wantLearningRate:   defaultDPOLearningRate,
+			wantHasDPOSettings: true,
+		},
+		{
+			name:             "explicit DPO learning rate",
+			objectiveYAML:    "objective:\n  type: dpo\n",
+			learningRateYAML: "    learningRate: 0.00003\n",
+			wantObjective: FineTuneObjectiveSpec{
+				Type: utils.ObjectiveDPO, Beta: defaultDPOBeta, LossType: defaultDPOLossType, MaxPromptLength: defaultDPOMaxPromptLength,
+			},
+			wantLearningRate:   0.00003,
+			wantHasDPOSettings: true,
+		},
+		{
+			name:          "explicit invalid DPO zero values are preserved",
+			objectiveYAML: "objective:\n  type: dpo\n  beta: 0\n  lossType: \"\"\n  maxPromptLength: 0\n",
+			wantObjective: FineTuneObjectiveSpec{
+				Type: utils.ObjectiveDPO, betaConfigured: true, lossTypeConfigured: true, maxPromptLengthConfigured: true,
+			},
+			wantLearningRate:   defaultDPOLearningRate,
+			wantHasDPOSettings: true,
+		},
+		{
+			name:               "SFT DPO field presence is retained for validation",
+			objectiveYAML:      "objective:\n  type: sft\n  beta: 0\n",
+			wantObjective:      FineTuneObjectiveSpec{Type: utils.ObjectiveSFT, betaConfigured: true},
+			wantLearningRate:   defaultSFTLearningRate,
+			wantHasDPOSettings: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := "apiVersion: v1alpha1\n" +
+				"baseModel: test-model\n" +
+				tt.objectiveYAML +
+				"datasets:\n" +
+				"  - source: test-dataset\n" +
+				"    type: alpaca\n" +
+				"config:\n" +
+				"  unsloth:\n" +
+				tt.learningRateYAML
+			_, fineTuneConfig, err := NewFromBytes([]byte(input))
+			if err != nil {
+				t.Fatalf("NewFromBytes() error = %v", err)
+			}
+			if fineTuneConfig.Objective != tt.wantObjective {
+				t.Errorf("objective = %#v, want %#v", fineTuneConfig.Objective, tt.wantObjective)
+			}
+			if got := fineTuneConfig.Config.Unsloth.LearningRate; got != tt.wantLearningRate {
+				t.Errorf("learning rate = %g, want %g", got, tt.wantLearningRate)
+			}
+			if got := fineTuneConfig.Objective.HasDPOSettings(); got != tt.wantHasDPOSettings {
+				t.Errorf("HasDPOSettings() = %t, want %t", got, tt.wantHasDPOSettings)
 			}
 		})
 	}
@@ -391,5 +502,53 @@ datasets:
 	}
 	if got := fineTuneConfig.Datasets[0].Loader.Split; got != defaultDatasetSplit {
 		t.Fatalf("loader split = %q, want train", got)
+	}
+}
+
+func TestNewFromBytesPreservesMultipleDatasetOrderAndLoaders(t *testing.T) {
+	input := []byte(`
+apiVersion: v1alpha1
+baseModel: test-model
+datasets:
+  - source: organization/first
+    type: text
+    loader:
+      type: huggingface
+      split: train
+      revision: 0123456789abcdef0123456789abcdef01234567
+  - source: https://example.test/second.parquet
+    type: prompt-completion
+    loader:
+      type: parquet
+      split: validation
+      checksum: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+`)
+
+	_, fineTuneConfig, err := NewFromBytes(input)
+	if err != nil {
+		t.Fatalf("NewFromBytes() error = %v", err)
+	}
+	want := []Dataset{
+		{
+			Source: "organization/first",
+			Type:   utils.DatasetText,
+			Loader: &DatasetLoaderSpec{
+				Type:     utils.DatasetLoaderHuggingFace,
+				Split:    "train",
+				Revision: "0123456789abcdef0123456789abcdef01234567",
+			},
+		},
+		{
+			Source: "https://example.test/second.parquet",
+			Type:   utils.DatasetPromptCompletion,
+			Loader: &DatasetLoaderSpec{
+				Type:     utils.DatasetLoaderParquet,
+				Split:    "validation",
+				Checksum: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			},
+		},
+	}
+	if !reflect.DeepEqual(fineTuneConfig.Datasets, want) {
+		t.Fatalf("datasets = %#v, want %#v", fineTuneConfig.Datasets, want)
 	}
 }
