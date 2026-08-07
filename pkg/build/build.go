@@ -448,8 +448,12 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 	}
 
 	for datasetIndex, dataset := range c.Datasets {
-		if strings.TrimSpace(dataset.Source) == "" {
+		trimmedSource := strings.TrimSpace(dataset.Source)
+		if trimmedSource == "" {
 			return errors.Errorf("datasets[%d].source is not defined", datasetIndex)
+		}
+		if dataset.Source != trimmedSource {
+			return errors.Errorf("datasets[%d].source must not contain leading or trailing whitespace", datasetIndex)
 		}
 		switch dataset.Type {
 		case utils.DatasetAlpaca, utils.DatasetMessages, utils.DatasetPreference, utils.DatasetPromptCompletion, utils.DatasetShareGPT, utils.DatasetText:

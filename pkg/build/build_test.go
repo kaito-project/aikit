@@ -786,6 +786,100 @@ func Test_validateFineTuneConfig(t *testing.T) {
 	}
 }
 
+func Test_validateFineTuneConfigRejectsDatasetSourceWhitespace(t *testing.T) {
+	const (
+		hubID                     = "organization/private-dataset"
+		sourceWhitespaceTestSplit = "train"
+	)
+	secretURL := strings.Join([]string{
+		testHTTPSPrefix, "whitespace-user", ":", "whitespace-credential",
+		"@example.test/train.jsonl?", testURLToken, "=whitespace-value",
+		"#whitespace-fragment",
+	}, "")
+
+	tests := []struct {
+		name            string
+		datasetIndex    int
+		dataset         config.Dataset
+		dpo             bool
+		wantErr         string
+		sensitiveValues []string
+	}{
+		{
+			name:         "leading whitespace in credentialed HTTP URL",
+			datasetIndex: 0,
+			dataset: config.Dataset{
+				Source: " " + secretURL,
+				Type:   utils.DatasetPreference,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: sourceWhitespaceTestSplit},
+			},
+			dpo:             true,
+			wantErr:         "datasets[0].source must not contain leading or trailing whitespace",
+			sensitiveValues: []string{secretURL, "whitespace-user", "whitespace-credential", "whitespace-value", "whitespace-fragment"},
+		},
+		{
+			name:         "trailing whitespace in credentialed HTTP URL on later dataset",
+			datasetIndex: 1,
+			dataset: config.Dataset{
+				Source: secretURL + "\t",
+				Type:   utils.DatasetText,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: sourceWhitespaceTestSplit},
+			},
+			wantErr:         "datasets[1].source must not contain leading or trailing whitespace",
+			sensitiveValues: []string{secretURL, "whitespace-user", "whitespace-credential", "whitespace-value", "whitespace-fragment"},
+		},
+		{
+			name:         "leading whitespace in Hugging Face ID",
+			datasetIndex: 0,
+			dataset: config.Dataset{
+				Source: "\n" + hubID,
+				Type:   utils.DatasetAlpaca,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: sourceWhitespaceTestSplit},
+			},
+			wantErr:         "datasets[0].source must not contain leading or trailing whitespace",
+			sensitiveValues: []string{hubID},
+		},
+		{
+			name:         "trailing Unicode whitespace in Hugging Face ID on later dataset",
+			datasetIndex: 1,
+			dataset: config.Dataset{
+				Source: hubID + "\u00a0",
+				Type:   utils.DatasetText,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: sourceWhitespaceTestSplit},
+			},
+			wantErr:         "datasets[1].source must not contain leading or trailing whitespace",
+			sensitiveValues: []string{hubID},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fineTuneConfig := validFineTuneConfig()
+			if tt.dpo {
+				fineTuneConfig = validDPOFineTuneConfig()
+			}
+			if tt.datasetIndex == 0 {
+				fineTuneConfig.Datasets[0] = tt.dataset
+			} else {
+				fineTuneConfig.Datasets = append(fineTuneConfig.Datasets, tt.dataset)
+			}
+
+			err := validateFinetuneConfig(fineTuneConfig)
+			if err == nil {
+				t.Fatalf("validateFinetuneConfig() error = nil, want %q", tt.wantErr)
+			}
+			if err.Error() != tt.wantErr {
+				t.Fatalf("validateFinetuneConfig() error = %q, want %q", err, tt.wantErr)
+			}
+			for _, sensitiveValue := range tt.sensitiveValues {
+				if strings.Contains(err.Error(), sensitiveValue) {
+					t.Fatalf("validation error leaked dataset source detail %q: %q", sensitiveValue, err)
+				}
+			}
+		})
+	}
+}
+
 func Test_validateDPOFineTuneConfig(t *testing.T) {
 	const (
 		revision       = "0123456789abcdef0123456789abcdef01234567"
