@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/moby/buildkit/frontend/gateway/client"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -42,6 +44,9 @@ const (
 var (
 	nvidiaDriverVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+(?:\.[0-9]+)?$`)
 	nvidiaCDIDevicePattern     = regexp.MustCompile(`^nvidia\.com/gpu(?:=(?:all|[0-9]+(?::[0-9]+)?|gpu[0-9]+|mig[0-9]+:[0-9]+|(?:GPU|MIG)-` + nvidiaUUIDPattern + `))?$`)
+	datasetSplitPattern        = regexp.MustCompile(`^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$`)
+	datasetRevisionPattern     = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	datasetChecksumPattern     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
 func Build(ctx context.Context, c client.Client) (*client.Result, error) {
@@ -73,6 +78,9 @@ func buildFineTune(ctx context.Context, c client.Client, cfg *config.FineTuneCon
 	err := validateFinetuneConfig(cfg)
 	if err != nil {
 		return nil, errors.Wrap(err, "validating aikitfile")
+	}
+	for _, warning := range datasetReproducibilityWarnings(cfg) {
+		logrus.Warn(warning)
 	}
 
 	buildOpts := c.BuildOpts()
@@ -436,7 +444,7 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 		return errors.New("only one dataset is supported at this time")
 	}
 
-	for _, dataset := range c.Datasets {
+	for datasetIndex, dataset := range c.Datasets {
 		if strings.TrimSpace(dataset.Source) == "" {
 			return errors.New("dataset source is not defined")
 		}
@@ -444,6 +452,9 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 		case utils.DatasetAlpaca, utils.DatasetMessages, utils.DatasetPromptCompletion, utils.DatasetShareGPT, utils.DatasetText:
 		default:
 			return errors.Errorf("dataset type %s is not supported", dataset.Type)
+		}
+		if err := validateDatasetLoader(datasetIndex, dataset); err != nil {
+			return err
 		}
 	}
 
@@ -517,6 +528,94 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 	}
 
 	return nil
+}
+
+func validateDatasetLoader(datasetIndex int, dataset config.Dataset) error {
+	loader := dataset.Loader
+	if loader == nil {
+		return nil
+	}
+
+	path := fmt.Sprintf("datasets[%d].loader", datasetIndex)
+	if strings.TrimSpace(loader.Type) == "" {
+		return errors.Errorf("%s.type is not defined", path)
+	}
+	if strings.TrimSpace(loader.Split) == "" {
+		return errors.Errorf("%s.split is not defined", path)
+	}
+	if !datasetSplitPattern.MatchString(loader.Split) {
+		return errors.Errorf("%s.split must be a named split containing letters, numbers, or underscores in dot-separated segments", path)
+	}
+	if loader.Subset != "" && strings.TrimSpace(loader.Subset) == "" {
+		return errors.Errorf("%s.subset must not be empty", path)
+	}
+
+	switch loader.Type {
+	case utils.DatasetLoaderHuggingFace:
+		if isHTTPDatasetSource(dataset.Source) {
+			return errors.Errorf("%s type huggingface does not support an HTTP(S) source", path)
+		}
+		if loader.Checksum != "" {
+			return errors.Errorf("%s.checksum is not supported for type huggingface", path)
+		}
+		if loader.Revision != "" && !datasetRevisionPattern.MatchString(loader.Revision) {
+			return errors.Errorf("%s.revision must be a lowercase 40-character commit hash", path)
+		}
+	case utils.DatasetLoaderJSON, utils.DatasetLoaderCSV, utils.DatasetLoaderParquet, utils.DatasetLoaderText:
+		if !isHTTPDatasetSource(dataset.Source) {
+			return errors.Errorf("%s type %s requires an absolute HTTP(S) source", path, loader.Type)
+		}
+		if loader.Subset != "" {
+			return errors.Errorf("%s.subset is supported only for type huggingface", path)
+		}
+		if loader.Revision != "" {
+			return errors.Errorf("%s.revision is supported only for type huggingface", path)
+		}
+		if loader.Checksum != "" && !datasetChecksumPattern.MatchString(loader.Checksum) {
+			return errors.Errorf("%s.checksum must use lowercase sha256:<64 hex> format", path)
+		}
+	default:
+		return errors.Errorf("%s.type %s is not supported", path, loader.Type)
+	}
+
+	return nil
+}
+
+func isHTTPDatasetSource(source string) bool {
+	parsedSource, err := url.Parse(source)
+	if err != nil {
+		return false
+	}
+
+	scheme := strings.ToLower(parsedSource.Scheme)
+	return (scheme == "http" || scheme == "https") && parsedSource.IsAbs() && parsedSource.Host != ""
+}
+
+func datasetReproducibilityWarnings(c *config.FineTuneConfig) []string {
+	warnings := make([]string, 0, len(c.Datasets))
+	for datasetIndex, dataset := range c.Datasets {
+		if dataset.Loader == nil {
+			if isHTTPDatasetSource(dataset.Source) {
+				warnings = append(warnings, fmt.Sprintf("datasets[%d] remote JSON dataset has no checksum; its content is not reproducibly pinned", datasetIndex))
+			} else {
+				warnings = append(warnings, fmt.Sprintf("datasets[%d] Hugging Face dataset has no revision; its content is not reproducibly pinned", datasetIndex))
+			}
+			continue
+		}
+
+		switch dataset.Loader.Type {
+		case utils.DatasetLoaderHuggingFace:
+			if dataset.Loader.Revision == "" {
+				warnings = append(warnings, fmt.Sprintf("datasets[%d] Hugging Face dataset has no revision; its content is not reproducibly pinned", datasetIndex))
+			}
+		case utils.DatasetLoaderJSON, utils.DatasetLoaderCSV, utils.DatasetLoaderParquet, utils.DatasetLoaderText:
+			if dataset.Loader.Checksum == "" {
+				warnings = append(warnings, fmt.Sprintf("datasets[%d] remote %s dataset has no checksum; its content is not reproducibly pinned", datasetIndex, dataset.Loader.Type))
+			}
+		}
+	}
+
+	return warnings
 }
 
 // isSupportedUnslothOptimizer limits OptimizerNames to dependencies in the frozen environment.

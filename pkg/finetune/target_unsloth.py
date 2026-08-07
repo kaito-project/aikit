@@ -5,14 +5,18 @@ import copy
 import hashlib
 import json
 import operator
+import os
 import re
 import shutil
+import stat
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import Any, NamedTuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
+from urllib.request import urlopen
 
 TRAIN_CONFIG_PATH = Path("/aikit-config/train-config.yaml")
 EXPORT_CONFIG_PATH = Path("/aikit-config/export-config.yaml")
@@ -21,6 +25,48 @@ EXPORT_DIRECTORY = Path("/aikit-unsloth-export")
 ARTIFACT_DIRECTORY = Path("/model")
 ADAPTER_CONFIG_FILENAME = "adapter_config.json"
 HF_COMMIT_HASH_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+DATASET_CHECKSUM_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+DATASET_SPLIT_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$")
+DATASET_LOADER_HUGGINGFACE = "huggingface"
+DATASET_LOADER_JSON = "json"
+DATASET_LOADER_CSV = "csv"
+DATASET_LOADER_PARQUET = "parquet"
+DATASET_LOADER_TEXT = "text"
+SUPPORTED_DATASET_LOADERS = frozenset(
+    (
+        DATASET_LOADER_HUGGINGFACE,
+        DATASET_LOADER_JSON,
+        DATASET_LOADER_CSV,
+        DATASET_LOADER_PARQUET,
+        DATASET_LOADER_TEXT,
+    )
+)
+REMOTE_DATASET_LOADERS = frozenset(
+    (
+        DATASET_LOADER_JSON,
+        DATASET_LOADER_CSV,
+        DATASET_LOADER_PARQUET,
+        DATASET_LOADER_TEXT,
+    )
+)
+DEFAULT_DATASET_SPLIT = "train"
+REMOTE_DATASET_CACHE_SUBDIRECTORY = "aikit-remote-files"
+REMOTE_DATASET_DEFAULT_SUFFIX = {
+    DATASET_LOADER_JSON: ".json",
+    DATASET_LOADER_CSV: ".csv",
+    DATASET_LOADER_PARQUET: ".parquet",
+    DATASET_LOADER_TEXT: ".txt",
+}
+REMOTE_DATASET_DATA_SUFFIXES = {
+    DATASET_LOADER_JSON: frozenset((".json", ".jsonl", ".ndjson")),
+    DATASET_LOADER_CSV: frozenset((".csv",)),
+    DATASET_LOADER_PARQUET: frozenset((".parquet",)),
+    DATASET_LOADER_TEXT: frozenset((".txt", ".text")),
+}
+REMOTE_DATASET_COMPRESSION_SUFFIXES = frozenset(
+    (".bz2", ".gz", ".xz", ".zip", ".zst")
+)
+REMOTE_DATASET_CHUNK_SIZE = 1024 * 1024
 DATASET_TYPE_ALPACA = "alpaca"
 DATASET_TYPE_MESSAGES = "messages"
 DATASET_TYPE_PROMPT_COMPLETION = "prompt-completion"
@@ -131,9 +177,18 @@ class DatasetLoadSpec(NamedTuple):
     kwargs: dict[str, Any]
 
 
+class DatasetLoaderSpec(NamedTuple):
+    loader_type: str | None
+    subset: str | None
+    split: str
+    revision: str | None
+    checksum: str | None
+
+
 class TrainingDatasetSpec(NamedTuple):
     source: str
     dataset_type: str
+    loader: DatasetLoaderSpec
 
 
 class PromptPrefixFingerprint(NamedTuple):
@@ -302,27 +357,188 @@ def pin_adapter_base_model_snapshot(
     return snapshot_path
 
 
+def has_http_dataset_scheme(source: str) -> bool:
+    return source.lower().startswith(("http://", "https://"))
+
+
+def is_http_dataset_source(source: str) -> bool:
+    try:
+        parsed_source = urlparse(source)
+    except ValueError:
+        return False
+    return (
+        parsed_source.scheme.lower() in {"http", "https"}
+        and bool(parsed_source.netloc)
+    )
+
+
 def classify_dataset_source(source: str) -> DatasetSourceKind:
-    parsed_source = urlparse(source)
-    if parsed_source.scheme.lower() in {"http", "https"} and parsed_source.netloc:
+    if is_http_dataset_source(source):
         return DatasetSourceKind.JSON_URL
 
     return DatasetSourceKind.DATASET
 
 
-def dataset_load_spec(source: str) -> DatasetLoadSpec:
-    if classify_dataset_source(source) is DatasetSourceKind.JSON_URL:
-        return DatasetLoadSpec(
-            path="json",
-            kwargs={"data_files": {"train": source}, "split": "train"},
+def parse_dataset_loader_spec(
+    dataset: Mapping[str, Any],
+    *,
+    source: str,
+) -> DatasetLoaderSpec:
+    if "loader" not in dataset:
+        return DatasetLoaderSpec(
+            loader_type=None,
+            subset=None,
+            split=DEFAULT_DATASET_SPLIT,
+            revision=None,
+            checksum=None,
         )
 
-    return DatasetLoadSpec(path=source, kwargs={"split": "train"})
+    loader = dataset["loader"]
+    if not isinstance(loader, Mapping):
+        raise ValueError("training dataset loader must be a mapping")
+    if any(not isinstance(field, str) for field in loader):
+        raise ValueError("training dataset loader field names must be strings")
+
+    allowed_fields = frozenset(
+        ("type", "subset", "split", "revision", "checksum")
+    )
+    unknown_fields = sorted(set(loader) - allowed_fields)
+    if unknown_fields:
+        quoted_fields = ", ".join(repr(field) for field in unknown_fields)
+        raise ValueError(
+            f"training dataset loader contains unknown fields: {quoted_fields}"
+        )
+
+    for field, value in loader.items():
+        if not isinstance(value, str):
+            raise ValueError(
+                f"training dataset loader field {field!r} must be a string"
+            )
+        if field in {"subset", "revision", "checksum"} and not value.strip():
+            raise ValueError(
+                f"training dataset loader field {field!r} must not be empty"
+            )
+
+    loader_type = loader.get("type")
+    if not isinstance(loader_type, str) or not loader_type.strip():
+        raise ValueError("training dataset loader type must be a non-empty string")
+    if loader_type not in SUPPORTED_DATASET_LOADERS:
+        raise ValueError(f"unsupported training dataset loader {loader_type!r}")
+
+    split = loader.get("split", DEFAULT_DATASET_SPLIT)
+    if not isinstance(split, str) or not DATASET_SPLIT_PATTERN.fullmatch(split):
+        raise ValueError(
+            "training dataset loader split must be a named split containing "
+            "letters, numbers, or underscores in dot-separated segments"
+        )
+
+    subset = loader.get("subset")
+    revision = loader.get("revision")
+    checksum = loader.get("checksum")
+    if loader_type == DATASET_LOADER_HUGGINGFACE:
+        if is_http_dataset_source(source):
+            raise ValueError(
+                "huggingface dataset loader does not support an HTTP(S) source"
+            )
+        if checksum is not None:
+            raise ValueError(
+                "huggingface dataset loader does not support checksum"
+            )
+        if revision is not None and not HF_COMMIT_HASH_PATTERN.fullmatch(
+            revision
+        ):
+            raise ValueError(
+                "huggingface dataset loader revision must be a lowercase "
+                "40-character commit hash"
+            )
+    else:
+        if not is_http_dataset_source(source):
+            raise ValueError(
+                f"{loader_type} dataset loader requires an absolute HTTP(S) "
+                "source"
+            )
+        if subset is not None:
+            raise ValueError(
+                "remote-file dataset loaders do not support subset"
+            )
+        if revision is not None:
+            raise ValueError(
+                "remote-file dataset loaders do not support revision"
+            )
+        if checksum is not None and not DATASET_CHECKSUM_PATTERN.fullmatch(
+            checksum
+        ):
+            raise ValueError(
+                "remote-file dataset loader checksum must use lowercase "
+                "sha256:<64 hex> format"
+            )
+
+    return DatasetLoaderSpec(
+        loader_type=loader_type,
+        subset=subset,
+        split=split,
+        revision=revision,
+        checksum=checksum,
+    )
 
 
-def dataset_source_description(source: str) -> str:
-    if classify_dataset_source(source) is DatasetSourceKind.JSON_URL:
-        return "remote JSON URL"
+def dataset_load_spec(
+    dataset_spec: TrainingDatasetSpec,
+    *,
+    local_file: Path | None = None,
+) -> DatasetLoadSpec:
+    loader = dataset_spec.loader
+    if loader.loader_type is None:
+        if classify_dataset_source(dataset_spec.source) is DatasetSourceKind.JSON_URL:
+            if local_file is None:
+                raise ValueError(
+                    "remote dataset must be materialized before loading"
+                )
+            return DatasetLoadSpec(
+                path=DATASET_LOADER_JSON,
+                kwargs={
+                    "data_files": {DEFAULT_DATASET_SPLIT: str(local_file)},
+                    "split": DEFAULT_DATASET_SPLIT,
+                },
+            )
+        return DatasetLoadSpec(
+            path=dataset_spec.source,
+            kwargs={"split": DEFAULT_DATASET_SPLIT},
+        )
+
+    if loader.loader_type == DATASET_LOADER_HUGGINGFACE:
+        kwargs: dict[str, Any] = {"split": loader.split}
+        if loader.subset is not None:
+            kwargs["name"] = loader.subset
+        if loader.revision is not None:
+            kwargs["revision"] = loader.revision
+        return DatasetLoadSpec(path=dataset_spec.source, kwargs=kwargs)
+
+    if local_file is None:
+        raise ValueError("remote dataset must be materialized before loading")
+    return DatasetLoadSpec(
+        path=loader.loader_type,
+        kwargs={
+            "data_files": {loader.split: str(local_file)},
+            "split": loader.split,
+        },
+    )
+
+
+def dataset_source_description(
+    source: str,
+    *,
+    loader_type: str | None = None,
+) -> str:
+    if is_http_dataset_source(source) or has_http_dataset_scheme(source):
+        effective_loader = loader_type or DATASET_LOADER_JSON
+        loader_label = {
+            DATASET_LOADER_JSON: "JSON",
+            DATASET_LOADER_CSV: "CSV",
+            DATASET_LOADER_PARQUET: "Parquet",
+            DATASET_LOADER_TEXT: "text",
+        }.get(effective_loader, "remote")
+        return f"remote {loader_label} URL"
 
     return f"source {source!r}"
 
@@ -352,8 +568,182 @@ def training_dataset_spec(
     source = dataset.get("source")
     if not isinstance(source, str) or not source.strip():
         raise ValueError("training dataset source must be a non-empty string")
+    if has_http_dataset_scheme(source) and not is_http_dataset_source(source):
+        raise ValueError(
+            "training dataset HTTP(S) source must be an absolute URL with a host"
+        )
 
-    return TrainingDatasetSpec(source=source, dataset_type=dataset_type)
+    return TrainingDatasetSpec(
+        source=source,
+        dataset_type=dataset_type,
+        loader=parse_dataset_loader_spec(dataset, source=source),
+    )
+
+
+def dataset_cache_directory() -> Path:
+    configured_cache = os.environ.get("HF_DATASETS_CACHE")
+    if configured_cache:
+        base_cache = Path(configured_cache)
+    else:
+        base_cache = Path.home() / ".cache" / "huggingface" / "datasets"
+    return base_cache / REMOTE_DATASET_CACHE_SUBDIRECTORY
+
+
+def remote_dataset_file_suffix(source: str, loader_type: str) -> str:
+    suffixes = [suffix.lower() for suffix in Path(urlparse(source).path).suffixes]
+    compression_suffix = ""
+    if suffixes and suffixes[-1] in REMOTE_DATASET_COMPRESSION_SUFFIXES:
+        compression_suffix = suffixes.pop()
+
+    data_suffix = REMOTE_DATASET_DEFAULT_SUFFIX[loader_type]
+    if suffixes and suffixes[-1] in REMOTE_DATASET_DATA_SUFFIXES[loader_type]:
+        data_suffix = suffixes[-1]
+    return data_suffix + compression_suffix
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as cached_file:
+        while chunk := cached_file.read(REMOTE_DATASET_CHUNK_SIZE):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verified_cached_dataset_file(path: Path, expected_digest: str) -> bool:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(mode):
+        return False
+    return file_sha256(path) == expected_digest
+
+
+def materialize_remote_dataset_file(
+    source: str,
+    *,
+    loader_type: str,
+    checksum: str | None,
+    cache_directory: Path | str | None = None,
+    open_url: Callable[..., Any] = urlopen,
+) -> Path:
+    if loader_type not in REMOTE_DATASET_LOADERS:
+        raise ValueError(f"unsupported remote dataset loader {loader_type!r}")
+    if not is_http_dataset_source(source):
+        raise ValueError(
+            f"{loader_type} dataset loader requires an absolute HTTP(S) source"
+        )
+    if checksum is not None and not DATASET_CHECKSUM_PATTERN.fullmatch(checksum):
+        raise ValueError(
+            "remote-file dataset loader checksum must use lowercase "
+            "sha256:<64 hex> format"
+        )
+
+    cache_path = (
+        Path(cache_directory)
+        if cache_directory is not None
+        else dataset_cache_directory()
+    )
+    cache_path.mkdir(parents=True, exist_ok=True)
+    suffix = remote_dataset_file_suffix(source, loader_type)
+    expected_digest = checksum.removeprefix("sha256:") if checksum else None
+    if expected_digest is not None:
+        cached_path = cache_path / f"{expected_digest}{suffix}"
+        if verified_cached_dataset_file(cached_path, expected_digest):
+            return cached_path
+        try:
+            cached_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    parsed_source = urlparse(source)
+    request_url = urlunparse(parsed_source._replace(fragment=""))
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=cache_path,
+            prefix=".download-",
+            suffix=suffix,
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            digest = hashlib.sha256()
+            try:
+                with open_url(request_url) as response:
+                    while chunk := response.read(REMOTE_DATASET_CHUNK_SIZE):
+                        temporary_file.write(chunk)
+                        digest.update(chunk)
+            except Exception:
+                raise RuntimeError(
+                    f"remote {loader_type} dataset could not be downloaded"
+                ) from None
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+
+        actual_digest = digest.hexdigest()
+        if expected_digest is not None and actual_digest != expected_digest:
+            raise RuntimeError(
+                f"remote {loader_type} dataset checksum does not match the "
+                "configured sha256 digest"
+            ) from None
+
+        cached_path = cache_path / f"{actual_digest}{suffix}"
+        if verified_cached_dataset_file(cached_path, actual_digest):
+            temporary_path.unlink()
+            temporary_path = None
+            return cached_path
+
+        os.replace(temporary_path, cached_path)
+        temporary_path = None
+        if not verified_cached_dataset_file(cached_path, actual_digest):
+            raise RuntimeError(
+                f"remote {loader_type} dataset cache verification failed"
+            ) from None
+        return cached_path
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def load_training_dataset(
+    dataset_spec: TrainingDatasetSpec,
+    *,
+    load_dataset: Callable[..., Any],
+    cache_directory: Path | str | None = None,
+) -> Any:
+    loader_type = dataset_spec.loader.loader_type
+    is_remote = is_http_dataset_source(dataset_spec.source) and (
+        loader_type is None or loader_type in REMOTE_DATASET_LOADERS
+    )
+    local_file = None
+    if is_remote:
+        effective_loader = loader_type or DATASET_LOADER_JSON
+        local_file = materialize_remote_dataset_file(
+            dataset_spec.source,
+            loader_type=effective_loader,
+            checksum=dataset_spec.loader.checksum,
+            cache_directory=cache_directory,
+        )
+
+    load_spec = dataset_load_spec(dataset_spec, local_file=local_file)
+    try:
+        return load_dataset(load_spec.path, **load_spec.kwargs)
+    except Exception:
+        if is_remote or dataset_spec.dataset_type in (
+            *CHAT_DATASET_TYPES,
+            DATASET_TYPE_TEXT,
+        ):
+            subject = dataset_error_subject(
+                dataset_spec.dataset_type,
+                source=dataset_spec.source,
+                loader_type=loader_type,
+            )
+            raise RuntimeError(f"{subject} could not be loaded") from None
+        raise
 
 
 def training_loss(
@@ -384,6 +774,7 @@ def dataset_error_subject(
     *,
     source: str | None = None,
     record_index: int | None = None,
+    loader_type: str | None = None,
 ) -> str:
     if source is None:
         subject = f"{dataset_type} dataset"
@@ -391,7 +782,10 @@ def dataset_error_subject(
             subject += f" record {record_index}"
         return subject
 
-    subject = f"{dataset_type} dataset {dataset_source_description(source)}"
+    subject = (
+        f"{dataset_type} dataset "
+        f"{dataset_source_description(source, loader_type=loader_type)}"
+    )
     if record_index is not None:
         subject += f" row {record_index}"
     return subject
@@ -2957,17 +3351,10 @@ def train_model(
     cfg = unsloth_config(train_config)
     max_seq_length = cfg["maxSeqLength"]
 
-    load_spec = dataset_load_spec(dataset_spec.source)
-    try:
-        dataset = dependencies.load_dataset(load_spec.path, **load_spec.kwargs)
-    except Exception:
-        if dataset_spec.dataset_type in CHAT_DATASET_TYPES:
-            subject = dataset_error_subject(
-                dataset_spec.dataset_type,
-                source=dataset_spec.source,
-            )
-            raise RuntimeError(f"{subject} could not be loaded") from None
-        raise
+    dataset = load_training_dataset(
+        dataset_spec,
+        load_dataset=dependencies.load_dataset,
+    )
     validation_source = None
     if (
         dataset_spec.dataset_type in CHAT_DATASET_TYPES

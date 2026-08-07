@@ -15,6 +15,7 @@ on:
           - sharegpt-response-smoke
           - prompt-completion-smoke
           - text-smoke
+          - loader-smoke
           - full
 
 permissions: read-all
@@ -57,6 +58,9 @@ jobs:
               ;;
             text-smoke)
               smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/text-smoke.jsonl"
+              ;;
+            loader-smoke)
+              smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/prompt-completion-loader-smoke.parquet"
               ;;
             full) ;;
             *)
@@ -234,6 +238,11 @@ jobs:
               source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-text-smoke.yaml"
               dataset_url="${SMOKE_DATASET_URL:?text smoke dataset URL is required}"
               ;;
+            loader-smoke)
+              source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-loader-smoke.yaml"
+              dataset_url="${SMOKE_DATASET_URL:?loader smoke dataset URL is required}"
+              dataset_checksum="sha256:$(sha256sum "$SMOKE_DATASET_FILE" | awk '{print $1}')"
+              ;;
             full)
               source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth.yaml"
               dataset_url=""
@@ -241,7 +250,9 @@ jobs:
           esac
 
           dataset_placeholder="__AIKIT_SMOKE_DATASET_URL__"
+          dataset_checksum_placeholder="__AIKIT_SMOKE_DATASET_CHECKSUM__"
           gguf_placeholder="__AIKIT_GGUF_OUTPUT__"
+          dataset_checksum="${dataset_checksum:-}"
 
           placeholder_count() {
             local source_path=$1
@@ -359,12 +370,25 @@ jobs:
           if [[ -n "$dataset_url" ]]; then
             dataset_placeholder_count=1
           fi
+          intermediate_config="${FINETUNE_CONFIG}.dataset"
           render_config \
             "$source_config" \
-            "$FINETUNE_CONFIG" \
+            "$intermediate_config" \
             "$dataset_placeholder" \
             "$dataset_url" \
             "$dataset_placeholder_count"
+
+          dataset_checksum_placeholder_count=0
+          if [[ -n "$dataset_checksum" ]]; then
+            dataset_checksum_placeholder_count=1
+          fi
+          render_config \
+            "$intermediate_config" \
+            "$FINETUNE_CONFIG" \
+            "$dataset_checksum_placeholder" \
+            "$dataset_checksum" \
+            "$dataset_checksum_placeholder_count"
+          rm -f -- "$intermediate_config"
 
           output_name=$(output_scalar "$FINETUNE_CONFIG" "name")
           output_quantize=$(output_scalar "$FINETUNE_CONFIG" "quantize")
@@ -505,7 +529,7 @@ jobs:
           docker image rm --force "$CUSTOM_IMAGE" > /dev/null 2>&1 || true
           docker image rm --force "$AIKIT_IMAGE" > /dev/null 2>&1 || true
 
-          for generated_path in "$OUTPUT_DIR" "$FINETUNE_CONFIG" "$CUSTOM_CONFIG"; do
+          for generated_path in "$OUTPUT_DIR" "$FINETUNE_CONFIG" "${FINETUNE_CONFIG}.dataset" "$CUSTOM_CONFIG"; do
             case "$generated_path" in
               "$RUNNER_TEMP"/*) rm -rf -- "$generated_path" || true ;;
               *) echo "refusing to remove path outside runner temp: $generated_path" >&2 ;;

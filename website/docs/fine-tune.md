@@ -52,13 +52,50 @@ Create a YAML file with your configuration. For example, minimum config looks li
 apiVersion: v1alpha1
 baseModel: "unsloth/llama-2-7b-bnb-4bit" # base model to be fine tuned. this can be any model from Huggingface. For unsloth optimized base models, see https://huggingface.co/unsloth
 datasets:
-  - source: "yahma/alpaca-cleaned" # data set to be used for fine tuning. This can be a Huggingface dataset or a URL pointing to a JSON or JSON Lines file
-    type: "alpaca" # supported types are alpaca, messages, sharegpt, prompt-completion, and text
+  - source: "yahma/alpaca-cleaned" # Hugging Face dataset identifier or an HTTP(S) URL
+    type: "alpaca" # record schema: alpaca, messages, sharegpt, prompt-completion, or text
 config:
   unsloth:
 ```
 
 For full configuration, please refer to [Fine Tune API Specifications](./specs-finetune.md).
+
+#### Dataset Loading
+
+`datasets[].type` describes the records and training loss behavior. The optional `datasets[].loader.type` independently describes how AIKit obtains and parses those records. For example, a Parquet file can contain `prompt-completion` records, while a Hugging Face dataset can contain `messages` records.
+
+When `loader` is omitted, AIKit preserves the original behavior: HTTP(S) sources use the JSON builder with the `train` split, and every other source is passed to Hugging Face Datasets with the `train` split. These mutable sources remain supported, but AIKit emits a reproducibility warning because their bytes are not pinned.
+
+Use the `huggingface` loader to select a Hub subset, split, and immutable revision:
+
+```yaml
+datasets:
+  - source: HuggingFaceH4/ultrachat_200k
+    type: messages
+    loader:
+      type: huggingface
+      subset: default
+      split: train_sft
+      revision: 0123456789abcdef0123456789abcdef01234567
+```
+
+A supplied `revision` must be a lowercase 40-character commit hash. Branches, tags, and short hashes are rejected because they are mutable. Omitting `revision` is allowed and emits a warning.
+
+Use `json`, `csv`, `parquet`, or `text` for an HTTP(S) file. A checksum pins the raw downloaded bytes before parsing or decompression:
+
+```yaml
+datasets:
+  - source: https://datasets.example.com/train.parquet
+    type: prompt-completion
+    loader:
+      type: parquet
+      split: train
+      checksum: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
+
+Remote files are downloaded into an AIKit-owned content-addressed cache under the persistent Hugging Face Datasets cache. AIKit verifies cached and newly downloaded bytes before invoking the selected Datasets builder or allocating the model. A missing checksum remains allowed but emits a warning and cannot make a BuildKit cache entry immutable. URL credentials, query values, and fragments are not included in AIKit-generated errors or warning logs, cache filenames, or cache metadata. The configured source URL is still part of the training configuration and BuildKit definition, so credential-bearing URLs are not a supported secret mechanism; private-dataset secret mounts remain out of scope.
+
+The loader `split` defaults to `train` and must contain letters, numbers, or underscores in one or more dot-separated segments. It selects the training split only; it does not configure evaluation data or metrics. The `text` loader turns each input line into a `text` record. JSON, CSV, and Parquet loaders can provide any supported record schema whose required columns and values are present. Unknown fields inside `loader` fail instead of being silently ignored.
 
 #### Dataset Types
 
@@ -178,6 +215,7 @@ Please make sure to change syntax to `#syntax=ghcr.io/kaito-project/aikit/aikit:
 - [Response-only ShareGPT smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-sharegpt-response-smoke.yaml)
 - [Prompt-completion smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-prompt-completion-smoke.yaml)
 - [Text smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-text-smoke.yaml)
+- [Checksummed Parquet loader smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-loader-smoke.yaml)
 
 
 ## Build

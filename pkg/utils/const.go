@@ -19,6 +19,12 @@ const (
 	DatasetShareGPT         = "sharegpt"
 	DatasetText             = "text"
 
+	DatasetLoaderHuggingFace = "huggingface"
+	DatasetLoaderJSON        = "json"
+	DatasetLoaderCSV         = "csv"
+	DatasetLoaderParquet     = "parquet"
+	DatasetLoaderText        = "text"
+
 	SFTLossAll      = "all"
 	SFTLossResponse = "response"
 

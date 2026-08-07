@@ -2,6 +2,7 @@ package finetune
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -22,6 +23,8 @@ const (
 	testSessionA            = "session-a"
 	testSessionB            = "session-b"
 	testDatasetSource       = "test-dataset"
+	testHubDatasetSource    = "organization/dataset"
+	testDatasetLoaderSplit  = "train"
 )
 
 type fineTuneDefinitionOp struct {
@@ -701,4 +704,184 @@ func cloneFineTuneDefinition(definition [][]byte) [][]byte {
 		cloned[i] = slices.Clone(data)
 	}
 	return cloned
+}
+
+func TestAikit2LLBPropagatesDatasetLoader(t *testing.T) {
+	const revision = "0123456789abcdef0123456789abcdef01234567"
+	cfg := fineTuneTestConfig()
+	cfg.Datasets = []config.Dataset{{
+		Source: testHubDatasetSource,
+		Type:   utils.DatasetMessages,
+		Loader: &config.DatasetLoaderSpec{
+			Type:     utils.DatasetLoaderHuggingFace,
+			Subset:   "default",
+			Split:    "train_sft",
+			Revision: revision,
+		},
+	}}
+
+	ops := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, cfg))
+	_, trainingConfigFile := findFineTuneFile(t, ops, "/train-config.yaml")
+	wantTrainingConfig := mustMarshalYAML(unslothTrainingConfig{
+		BaseModel: cfg.BaseModel,
+		Datasets:  cfg.Datasets,
+		Config:    cfg.Config,
+	})
+	if !slices.Equal(trainingConfigFile.Data, wantTrainingConfig) {
+		t.Fatalf("training config = %q, want %q", string(trainingConfigFile.Data), string(wantTrainingConfig))
+	}
+	for _, fragment := range []string{
+		"  loader:\n",
+		"    type: huggingface\n",
+		"    subset: default\n",
+		"    split: train_sft\n",
+		"    revision: " + revision + "\n",
+	} {
+		if !strings.Contains(string(trainingConfigFile.Data), fragment) {
+			t.Errorf("training config does not contain %q: %q", fragment, trainingConfigFile.Data)
+		}
+	}
+
+	legacyCfg := fineTuneTestConfig()
+	legacyOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, legacyCfg))
+	_, legacyTrainingConfig := findFineTuneFile(t, legacyOps, "/train-config.yaml")
+	if strings.Contains(string(legacyTrainingConfig.Data), "loader:") {
+		t.Fatalf("loader-omitted training config unexpectedly contains loader: %q", legacyTrainingConfig.Data)
+	}
+}
+
+func TestAikit2LLBDatasetLoaderChangesInvalidateTrainingOnlyAfterDependencies(t *testing.T) {
+	const (
+		revisionA = "0123456789abcdef0123456789abcdef01234567"
+		revisionB = "89abcdef0123456789abcdef0123456789abcdef"
+		checksumA = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		checksumB = "sha256:89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+	)
+
+	tests := []struct {
+		name   string
+		before config.Dataset
+		after  config.Dataset
+	}{
+		{
+			name: "type",
+			before: config.Dataset{
+				Source: "https://example.test/train.json", Type: utils.DatasetText,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: testDatasetLoaderSplit, Checksum: checksumA},
+			},
+			after: config.Dataset{
+				Source: "https://example.test/train.json", Type: utils.DatasetText,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderCSV, Split: testDatasetLoaderSplit, Checksum: checksumA},
+			},
+		},
+		{
+			name: "split",
+			before: config.Dataset{
+				Source: testHubDatasetSource, Type: utils.DatasetMessages,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testDatasetLoaderSplit, Revision: revisionA},
+			},
+			after: config.Dataset{
+				Source: testHubDatasetSource, Type: utils.DatasetMessages,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: "validation", Revision: revisionA},
+			},
+		},
+		{
+			name: "subset",
+			before: config.Dataset{
+				Source: testHubDatasetSource, Type: utils.DatasetMessages,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Subset: "default", Split: testDatasetLoaderSplit, Revision: revisionA},
+			},
+			after: config.Dataset{
+				Source: testHubDatasetSource, Type: utils.DatasetMessages,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Subset: "alternate", Split: testDatasetLoaderSplit, Revision: revisionA},
+			},
+		},
+		{
+			name: "revision",
+			before: config.Dataset{
+				Source: testHubDatasetSource, Type: utils.DatasetMessages,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testDatasetLoaderSplit, Revision: revisionA},
+			},
+			after: config.Dataset{
+				Source: testHubDatasetSource, Type: utils.DatasetMessages,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testDatasetLoaderSplit, Revision: revisionB},
+			},
+		},
+		{
+			name: "checksum",
+			before: config.Dataset{
+				Source: "https://example.test/train.parquet", Type: utils.DatasetPromptCompletion,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderParquet, Split: testDatasetLoaderSplit, Checksum: checksumA},
+			},
+			after: config.Dataset{
+				Source: "https://example.test/train.parquet", Type: utils.DatasetPromptCompletion,
+				Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderParquet, Split: testDatasetLoaderSplit, Checksum: checksumB},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			beforeCfg := fineTuneTestConfig()
+			beforeCfg.Datasets = []config.Dataset{tt.before}
+			beforeOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, beforeCfg))
+
+			afterCfg := fineTuneTestConfig()
+			afterCfg.Datasets = []config.Dataset{tt.after}
+			afterOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, afterCfg))
+
+			if got, want := findFineTuneExec(t, beforeOps, "uv pip sync").digest, findFineTuneExec(t, afterOps, "uv pip sync").digest; got != want {
+				t.Fatalf("loader %s change invalidated dependency installation: got %s, want %s", tt.name, got, want)
+			}
+			if got, want := findFineTuneExec(t, beforeOps, "target_unsloth.py train").digest, findFineTuneExec(t, afterOps, "target_unsloth.py train").digest; got == want {
+				t.Fatalf("loader %s change did not invalidate training: %s", tt.name, got)
+			}
+			if got, want := findFineTuneExec(t, beforeOps, "target_unsloth.py export").digest, findFineTuneExec(t, afterOps, "target_unsloth.py export").digest; got == want {
+				t.Fatalf("loader %s change did not invalidate export: %s", tt.name, got)
+			}
+		})
+	}
+}
+
+func TestAikit2LLBDefaultAndExplicitTrainDatasetSplitMatch(t *testing.T) {
+	configTemplate := `
+apiVersion: v1alpha1
+baseModel: unsloth/test-model
+datasets:
+  - source: organization/dataset
+    type: text
+    loader:
+      type: huggingface
+%sconfig:
+  unsloth:
+    maxSteps: 1
+output:
+  quantize: q4_k_m
+  name: model
+`
+	parseConfig := func(t *testing.T, splitLine string) *config.FineTuneConfig {
+		t.Helper()
+		_, parsed, err := config.NewFromBytes([]byte(fmt.Sprintf(configTemplate, splitLine)))
+		if err != nil {
+			t.Fatalf("config.NewFromBytes() error = %v", err)
+		}
+		parsed.Target = utils.TargetUnsloth
+		return parsed
+	}
+
+	defaultCfg := parseConfig(t, "")
+	explicitCfg := parseConfig(t, "      split: train\n")
+	defaultOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, defaultCfg))
+	explicitOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, explicitCfg))
+
+	_, defaultTrainingConfig := findFineTuneFile(t, defaultOps, "/train-config.yaml")
+	_, explicitTrainingConfig := findFineTuneFile(t, explicitOps, "/train-config.yaml")
+	if !slices.Equal(defaultTrainingConfig.Data, explicitTrainingConfig.Data) {
+		t.Fatalf("default training config = %q, explicit training config = %q", defaultTrainingConfig.Data, explicitTrainingConfig.Data)
+	}
+	for _, phase := range []string{"uv pip sync", "target_unsloth.py train", "target_unsloth.py export"} {
+		if got, want := findFineTuneExec(t, defaultOps, phase).digest, findFineTuneExec(t, explicitOps, phase).digest; got != want {
+			t.Fatalf("omitted loader split and explicit train split produced different %s digests: got %s, want %s", phase, got, want)
+		}
+	}
 }

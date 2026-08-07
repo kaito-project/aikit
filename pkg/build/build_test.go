@@ -2,6 +2,8 @@ package build
 
 import (
 	"math"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
@@ -833,6 +835,220 @@ func Test_parseFineTuneBuildOptions(t *testing.T) {
 			}
 			if options.CDIDevice != tt.wantDevice {
 				t.Fatalf("CDI device = %q, want %q", options.CDIDevice, tt.wantDevice)
+			}
+		})
+	}
+}
+
+func Test_validateDatasetLoader(t *testing.T) {
+	const (
+		testHubDatasetSource = "organization/dataset"
+		testRemoteJSONSource = "https://example.test/train.json"
+		testLoaderSplit      = "train"
+		revision             = "0123456789abcdef0123456789abcdef01234567"
+		checksum             = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		revisionError        = "revision must be a lowercase 40-character commit hash"
+		checksumError        = "checksum must use lowercase sha256:<64 hex> format"
+	)
+
+	tests := []struct {
+		name    string
+		source  string
+		loader  *config.DatasetLoaderSpec
+		wantErr string
+	}{
+		{name: "omitted loader", source: testHubDatasetSource},
+		{
+			name:   "pinned huggingface",
+			source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Subset: "default", Split: "train_sft", Revision: revision},
+		},
+		{
+			name:   "mutable huggingface",
+			source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit},
+		},
+		{
+			name:   "json",
+			source: testRemoteJSONSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: "validation", Checksum: checksum},
+		},
+		{
+			name:   "csv",
+			source: "http://example.test/train.csv",
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderCSV, Split: testLoaderSplit, Checksum: checksum},
+		},
+		{
+			name:   "parquet",
+			source: "HTTPS://example.test/train.parquet",
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderParquet, Split: testLoaderSplit, Checksum: checksum},
+		},
+		{
+			name:   "text",
+			source: "https://example.test/train.txt",
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderText, Split: testLoaderSplit, Checksum: checksum},
+		},
+		{
+			name: "missing type", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Split: testLoaderSplit}, wantErr: "datasets[0].loader.type is not defined",
+		},
+		{
+			name: "unknown type", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: "arrow", Split: testLoaderSplit}, wantErr: "datasets[0].loader.type arrow is not supported",
+		},
+		{
+			name: "missing split", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace}, wantErr: "datasets[0].loader.split is not defined",
+		},
+		{
+			name: "split expression", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: "train[:10%]"}, wantErr: "datasets[0].loader.split must be a named split",
+		},
+		{
+			name: "hyphenated split", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: "train-sft"}, wantErr: "datasets[0].loader.split must be a named split",
+		},
+		{
+			name: "empty subset", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit, Subset: " \t"}, wantErr: "datasets[0].loader.subset must not be empty",
+		},
+		{
+			name: "huggingface URL", source: strings.Join([]string{"https://", "user-one", ":", "credential-one", "@example.test/data?token=", "value", "#fragment"}, ""),
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit}, wantErr: "type huggingface does not support an HTTP(S) source",
+		},
+		{
+			name: "huggingface checksum", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit, Checksum: checksum}, wantErr: "checksum is not supported for type huggingface",
+		},
+		{
+			name: "branch revision", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit, Revision: "main"}, wantErr: revisionError,
+		},
+		{
+			name: "short revision", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit, Revision: "01234567"}, wantErr: revisionError,
+		},
+		{
+			name: "uppercase revision", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit, Revision: strings.ToUpper(revision)}, wantErr: revisionError,
+		},
+		{
+			name: "remote loader non-URL", source: testHubDatasetSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: testLoaderSplit}, wantErr: "type json requires an absolute HTTP(S) source",
+		},
+		{
+			name: "remote loader relative URL", source: "/train.json",
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: testLoaderSplit}, wantErr: "type json requires an absolute HTTP(S) source",
+		},
+		{
+			name: "remote subset", source: testRemoteJSONSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: testLoaderSplit, Subset: "default"}, wantErr: "subset is supported only for type huggingface",
+		},
+		{
+			name: "remote revision", source: testRemoteJSONSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: testLoaderSplit, Revision: revision}, wantErr: "revision is supported only for type huggingface",
+		},
+		{
+			name: "checksum algorithm", source: testRemoteJSONSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: testLoaderSplit, Checksum: "md5:0123"}, wantErr: checksumError,
+		},
+		{
+			name: "checksum length", source: testRemoteJSONSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: testLoaderSplit, Checksum: "sha256:0123"}, wantErr: checksumError,
+		},
+		{
+			name: "uppercase checksum", source: testRemoteJSONSource,
+			loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderJSON, Split: testLoaderSplit, Checksum: strings.ToUpper(checksum)}, wantErr: checksumError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fineTuneConfig := validFineTuneConfig()
+			fineTuneConfig.Datasets[0].Source = tt.source
+			fineTuneConfig.Datasets[0].Loader = tt.loader
+			err := validateFinetuneConfig(fineTuneConfig)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateFinetuneConfig() error = %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateFinetuneConfig() error = nil, want %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("validateFinetuneConfig() error = %q, want substring %q", err, tt.wantErr)
+			}
+			for _, secret := range []string{"user-one", "credential-one", "token", "value", "fragment"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("validation error leaked URL detail %q: %q", secret, err)
+				}
+			}
+		})
+	}
+}
+
+func Test_datasetReproducibilityWarnings(t *testing.T) {
+	const (
+		privateDatasetSource = "organization/private-dataset"
+		testLoaderSplit      = "train"
+		revision             = "0123456789abcdef0123456789abcdef01234567"
+		checksum             = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	)
+	secretURL := strings.Join([]string{"https://", "user-two", ":", "credential-two", "@example.test/train.parquet?token=", "private-value", "#fragment"}, "")
+
+	tests := []struct {
+		name         string
+		dataset      config.Dataset
+		wantWarnings []string
+	}{
+		{
+			name:         "legacy hub",
+			dataset:      config.Dataset{Source: privateDatasetSource, Type: utils.DatasetAlpaca},
+			wantWarnings: []string{"datasets[0] Hugging Face dataset has no revision; its content is not reproducibly pinned"},
+		},
+		{
+			name:         "legacy URL",
+			dataset:      config.Dataset{Source: secretURL, Type: utils.DatasetPromptCompletion},
+			wantWarnings: []string{"datasets[0] remote JSON dataset has no checksum; its content is not reproducibly pinned"},
+		},
+		{
+			name:         "mutable hub loader",
+			dataset:      config.Dataset{Source: privateDatasetSource, Type: utils.DatasetMessages, Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit}},
+			wantWarnings: []string{"datasets[0] Hugging Face dataset has no revision; its content is not reproducibly pinned"},
+		},
+		{
+			name:         "mutable remote loader",
+			dataset:      config.Dataset{Source: secretURL, Type: utils.DatasetPromptCompletion, Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderParquet, Split: testLoaderSplit}},
+			wantWarnings: []string{"datasets[0] remote parquet dataset has no checksum; its content is not reproducibly pinned"},
+		},
+		{
+			name:         "pinned hub",
+			dataset:      config.Dataset{Source: privateDatasetSource, Type: utils.DatasetMessages, Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderHuggingFace, Split: testLoaderSplit, Revision: revision}},
+			wantWarnings: []string{},
+		},
+		{
+			name:         "checksummed remote",
+			dataset:      config.Dataset{Source: secretURL, Type: utils.DatasetPromptCompletion, Loader: &config.DatasetLoaderSpec{Type: utils.DatasetLoaderParquet, Split: testLoaderSplit, Checksum: checksum}},
+			wantWarnings: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fineTuneConfig := validFineTuneConfig()
+			fineTuneConfig.Datasets = []config.Dataset{tt.dataset}
+			warnings := datasetReproducibilityWarnings(fineTuneConfig)
+			if !reflect.DeepEqual(warnings, tt.wantWarnings) {
+				t.Fatalf("warnings = %#v, want %#v", warnings, tt.wantWarnings)
+			}
+			for _, warning := range warnings {
+				for _, secret := range []string{privateDatasetSource, "example.test", "user-two", "credential-two", "token", "private-value", "fragment"} {
+					if strings.Contains(warning, secret) {
+						t.Fatalf("warning leaked source detail %q: %q", secret, warning)
+					}
+				}
 			}
 		})
 	}

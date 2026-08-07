@@ -1,6 +1,12 @@
 package config
 
-import "github.com/kaito-project/aikit/pkg/utils"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/kaito-project/aikit/pkg/utils"
+	yaml "gopkg.in/yaml.v2"
+)
 
 const (
 	defaultMaxSeqLength              = 2048
@@ -18,6 +24,12 @@ const (
 	defaultSeed                      = 42
 	defaultOutputQuantize            = "q4_k_m"
 	defaultOutputName                = "aikit-model"
+	defaultDatasetSplit              = "train"
+	datasetLoaderFieldType           = "type"
+	datasetLoaderFieldSubset         = "subset"
+	datasetLoaderFieldSplit          = "split"
+	datasetLoaderFieldRevision       = "revision"
+	datasetLoaderFieldChecksum       = "checksum"
 )
 
 type FineTuneConfig struct {
@@ -45,8 +57,105 @@ type FineTuneConfigSpec struct {
 }
 
 type Dataset struct {
-	Source string `yaml:"source"`
-	Type   string `yaml:"type"`
+	Source string             `yaml:"source"`
+	Type   string             `yaml:"type"`
+	Loader *DatasetLoaderSpec `yaml:"loader,omitempty"`
+}
+
+// DatasetLoaderSpec separates source loading from the training record schema.
+type DatasetLoaderSpec struct {
+	Type     string `yaml:"type"`
+	Subset   string `yaml:"subset,omitempty"`
+	Split    string `yaml:"split"`
+	Revision string `yaml:"revision,omitempty"`
+	Checksum string `yaml:"checksum,omitempty"`
+}
+
+// UnmarshalYAML applies loader defaults while rejecting unknown or non-string nested fields.
+func (d *Dataset) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type rawDataset struct {
+		Source string `yaml:"source"`
+		Type   string `yaml:"type"`
+	}
+
+	var raw rawDataset
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+
+	var fields yaml.MapSlice
+	if err := unmarshal(&fields); err != nil {
+		return err
+	}
+
+	*d = Dataset{Source: raw.Source, Type: raw.Type}
+	loaderFound := false
+	for _, field := range fields {
+		fieldName, ok := field.Key.(string)
+		if !ok || fieldName != "loader" {
+			continue
+		}
+		if loaderFound {
+			return fmt.Errorf("datasets[].loader is defined more than once")
+		}
+		loaderFound = true
+
+		loaderFields, ok := field.Value.(yaml.MapSlice)
+		if !ok {
+			return fmt.Errorf("datasets[].loader must be a mapping")
+		}
+		loader, err := decodeDatasetLoaderSpec(loaderFields)
+		if err != nil {
+			return err
+		}
+		d.Loader = loader
+	}
+
+	return nil
+}
+
+func decodeDatasetLoaderSpec(fields yaml.MapSlice) (*DatasetLoaderSpec, error) {
+	loader := &DatasetLoaderSpec{Split: defaultDatasetSplit}
+	seen := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		fieldName, ok := field.Key.(string)
+		if !ok {
+			return nil, fmt.Errorf("datasets[].loader field names must be strings")
+		}
+		if _, ok := seen[fieldName]; ok {
+			return nil, fmt.Errorf("datasets[].loader.%s is defined more than once", fieldName)
+		}
+		seen[fieldName] = struct{}{}
+
+		switch fieldName {
+		case datasetLoaderFieldType, datasetLoaderFieldSubset, datasetLoaderFieldSplit, datasetLoaderFieldRevision, datasetLoaderFieldChecksum:
+		default:
+			return nil, fmt.Errorf("datasets[].loader contains unknown field %q", fieldName)
+		}
+
+		value, ok := field.Value.(string)
+		if !ok {
+			return nil, fmt.Errorf("datasets[].loader.%s must be a string", fieldName)
+		}
+		switch fieldName {
+		case datasetLoaderFieldType:
+			loader.Type = value
+		case datasetLoaderFieldSubset:
+			loader.Subset = value
+		case datasetLoaderFieldSplit:
+			loader.Split = value
+		case datasetLoaderFieldRevision:
+			loader.Revision = value
+		case datasetLoaderFieldChecksum:
+			loader.Checksum = value
+		}
+
+		if fieldName != datasetLoaderFieldType && fieldName != datasetLoaderFieldSplit && strings.TrimSpace(value) == "" {
+			return nil, fmt.Errorf("datasets[].loader.%s must not be empty", fieldName)
+		}
+	}
+
+	return loader, nil
 }
 
 type FineTuneConfigUnslothSpec struct {

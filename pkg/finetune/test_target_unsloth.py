@@ -1,9 +1,12 @@
+import hashlib
 import importlib.util
 import io
 import json
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stdout
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -12,6 +15,48 @@ MODULE_PATH = Path(__file__).with_name("target_unsloth.py")
 MODULE_SPEC = importlib.util.spec_from_file_location("target_unsloth", MODULE_PATH)
 target_unsloth = importlib.util.module_from_spec(MODULE_SPEC)
 MODULE_SPEC.loader.exec_module(target_unsloth)
+
+
+
+
+class LocalDatasetServer:
+    def __init__(self, responses):
+        self.responses = dict(responses)
+        self.requests = []
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                outer.requests.append(self.path)
+                path = self.path.split("?", 1)[0]
+                body = outer.responses.get(path)
+                if body is None:
+                    self.send_error(404)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format, *args):
+                del args
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever)
+        self.thread.daemon = True
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+
+    def url(self, path):
+        host, port = self.server.server_address
+        return f"http://{host}:{port}{path}"
 
 
 def example_train_config():
@@ -627,6 +672,19 @@ class CLITest(unittest.TestCase):
 
 
 class DatasetSourceTest(unittest.TestCase):
+    def legacy_spec(self, source):
+        return target_unsloth.TrainingDatasetSpec(
+            source=source,
+            dataset_type=target_unsloth.DATASET_TYPE_TEXT,
+            loader=target_unsloth.DatasetLoaderSpec(
+                loader_type=None,
+                subset=None,
+                split="train",
+                revision=None,
+                checksum=None,
+            ),
+        )
+
     def test_classifies_http_and_https_urls_as_json(self):
         for source in (
             "http://example.test/train.json",
@@ -652,14 +710,21 @@ class DatasetSourceTest(unittest.TestCase):
                     target_unsloth.DatasetSourceKind.DATASET,
                 )
 
-    def test_builds_remote_json_load_spec_without_altering_url(self):
+    def test_builds_legacy_remote_json_load_spec_from_local_file(self):
         source = "https://example.test/train.json?query=opaque-marker"
+        local_file = Path("/cache/content.json")
 
         self.assertEqual(
-            target_unsloth.dataset_load_spec(source),
+            target_unsloth.dataset_load_spec(
+                self.legacy_spec(source),
+                local_file=local_file,
+            ),
             target_unsloth.DatasetLoadSpec(
                 path="json",
-                kwargs={"data_files": {"train": source}, "split": "train"},
+                kwargs={
+                    "data_files": {"train": str(local_file)},
+                    "split": "train",
+                },
             ),
         )
 
@@ -691,12 +756,432 @@ class DatasetSourceTest(unittest.TestCase):
 
     def test_builds_hub_dataset_load_spec(self):
         self.assertEqual(
-            target_unsloth.dataset_load_spec("organization/dataset"),
+            target_unsloth.dataset_load_spec(
+                self.legacy_spec("organization/dataset")
+            ),
             target_unsloth.DatasetLoadSpec(
                 path="organization/dataset",
                 kwargs={"split": "train"},
             ),
         )
+
+
+class DatasetLoaderTest(unittest.TestCase):
+    revision = "0123456789abcdef0123456789abcdef01234567"
+
+    def training_spec(self, *, source, loader, dataset_type="text"):
+        return target_unsloth.training_dataset_spec(
+            {
+                "datasets": [
+                    {
+                        "source": source,
+                        "type": dataset_type,
+                        "loader": loader,
+                    }
+                ]
+            }
+        )
+
+    def test_loader_omission_preserves_legacy_defaults(self):
+        spec = target_unsloth.training_dataset_spec(
+            {
+                "datasets": [
+                    {
+                        "source": "organization/dataset",
+                        "type": "alpaca",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(
+            spec.loader,
+            target_unsloth.DatasetLoaderSpec(
+                loader_type=None,
+                subset=None,
+                split="train",
+                revision=None,
+                checksum=None,
+            ),
+        )
+
+    def test_legacy_url_still_uses_json_and_train_via_local_file(self):
+        body = b'{"text":"legacy"}\n'
+        with LocalDatasetServer({"/train.jsonl": body}) as server:
+            spec = target_unsloth.training_dataset_spec(
+                {
+                    "datasets": [
+                        {
+                            "source": server.url("/train.jsonl"),
+                            "type": "text",
+                        }
+                    ]
+                }
+            )
+            load_dataset = mock.Mock(return_value="dataset")
+            with tempfile.TemporaryDirectory() as cache_directory:
+                result = target_unsloth.load_training_dataset(
+                    spec,
+                    load_dataset=load_dataset,
+                    cache_directory=cache_directory,
+                )
+                local_path = Path(
+                    load_dataset.call_args.kwargs["data_files"]["train"]
+                )
+                self.assertEqual(local_path.read_bytes(), body)
+
+        self.assertEqual(result, "dataset")
+        load_dataset.assert_called_once_with(
+            "json",
+            data_files={"train": str(local_path)},
+            split="train",
+        )
+
+    def test_huggingface_loader_reaches_exact_datasets_api(self):
+        spec = self.training_spec(
+            source="HuggingFaceH4/ultrachat_200k",
+            dataset_type="messages",
+            loader={
+                "type": "huggingface",
+                "subset": "default",
+                "split": "train_sft",
+                "revision": self.revision,
+            },
+        )
+        load_dataset = mock.Mock(return_value="dataset")
+
+        result = target_unsloth.load_training_dataset(
+            spec,
+            load_dataset=load_dataset,
+        )
+
+        self.assertEqual(result, "dataset")
+        load_dataset.assert_called_once_with(
+            "HuggingFaceH4/ultrachat_200k",
+            split="train_sft",
+            name="default",
+            revision=self.revision,
+        )
+
+    def test_loader_validation_rejects_invalid_shapes_and_combinations(self):
+        cases = (
+            (None, "loader must be a mapping"),
+            ([], "loader must be a mapping"),
+            ({"type": "json", "splti": "train"}, "unknown fields"),
+            ({"type": 1}, "field 'type' must be a string"),
+            ({"type": ""}, "loader type must be a non-empty string"),
+            ({"type": "arrow"}, "unsupported training dataset loader"),
+            (
+                {"type": "huggingface", "split": "train[:10%]"},
+                "split must be a named split",
+            ),
+            (
+                {"type": "huggingface", "split": "train-sft"},
+                "split must be a named split",
+            ),
+            (
+                {"type": "huggingface", "revision": "main"},
+                "revision must be a lowercase 40-character commit hash",
+            ),
+            (
+                {"type": "huggingface", "checksum": "sha256:" + "0" * 64},
+                "does not support checksum",
+            ),
+            (
+                {"type": "json", "subset": "default"},
+                "do not support subset",
+            ),
+            (
+                {"type": "json", "revision": self.revision},
+                "do not support revision",
+            ),
+            (
+                {"type": "json", "checksum": "sha256:0123"},
+                "checksum must use lowercase",
+            ),
+        )
+        for loader, error_pattern in cases:
+            with self.subTest(loader=loader):
+                source = (
+                    "organization/dataset"
+                    if loader and loader.get("type") == "huggingface"
+                    else "https://example.test/train.json"
+                )
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    self.training_spec(source=source, loader=loader)
+
+    def test_malformed_http_source_fails_without_leaking_details(self):
+        source = (
+            "https://user:password@[invalid-host/train.json?"
+            "token=private#fragment"
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "HTTP\\(S\\) source must be an absolute URL with a host",
+        ) as raised:
+            target_unsloth.training_dataset_spec(
+                {"datasets": [{"source": source, "type": "text"}]}
+            )
+
+        for secret in (
+            "user",
+            "password",
+            "invalid-host",
+            "token",
+            "private",
+            "fragment",
+        ):
+            self.assertNotIn(secret, str(raised.exception))
+
+    def test_loader_validation_rejects_transport_source_mismatches(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "huggingface dataset loader does not support an HTTP",
+        ):
+            self.training_spec(
+                source="https://example.test/train.json",
+                loader={"type": "huggingface"},
+            )
+        with self.assertRaisesRegex(
+            ValueError,
+            "json dataset loader requires an absolute HTTP",
+        ):
+            self.training_spec(
+                source="organization/dataset",
+                loader={"type": "json"},
+            )
+
+    def test_remote_builders_download_verify_and_use_local_paths(self):
+        cases = (
+            ("json", "/train.jsonl", b'{"text":"json"}\n', ".jsonl"),
+            ("csv", "/train.csv", b"text\ncsv\n", ".csv"),
+            ("parquet", "/train.parquet", b"PAR1fixturePAR1", ".parquet"),
+            ("text", "/train.txt", b"text fixture\n", ".txt"),
+        )
+        for loader_type, path, body, suffix in cases:
+            with self.subTest(loader_type=loader_type):
+                checksum = "sha256:" + hashlib.sha256(body).hexdigest()
+                with LocalDatasetServer({path: body}) as server:
+                    source = server.url(path) + "?token=opaque#fragment-marker"
+                    spec = self.training_spec(
+                        source=source,
+                        loader={
+                            "type": loader_type,
+                            "split": "validation",
+                            "checksum": checksum,
+                        },
+                    )
+                    load_dataset = mock.Mock(return_value="dataset")
+                    with tempfile.TemporaryDirectory() as cache_directory:
+                        result = target_unsloth.load_training_dataset(
+                            spec,
+                            load_dataset=load_dataset,
+                            cache_directory=cache_directory,
+                        )
+                        local_path = Path(
+                            load_dataset.call_args.kwargs["data_files"][
+                                "validation"
+                            ]
+                        )
+                        self.assertEqual(local_path.read_bytes(), body)
+                        self.assertEqual(local_path.suffix, suffix)
+                        self.assertEqual(
+                            local_path.parent,
+                            Path(cache_directory),
+                        )
+                        self.assertNotIn("token", str(local_path))
+                        self.assertNotIn("fragment-marker", str(local_path))
+
+                self.assertEqual(result, "dataset")
+                load_dataset.assert_called_once_with(
+                    loader_type,
+                    data_files={"validation": str(local_path)},
+                    split="validation",
+                )
+                self.assertEqual(
+                    server.requests,
+                    [path + "?token=opaque"],
+                )
+
+    def test_checksum_mismatch_fails_before_parser(self):
+        body = b'{"text":"changed"}\n'
+        with LocalDatasetServer({"/train.json": body}) as server:
+            source = server.url("/train.json")
+            spec = self.training_spec(
+                source=source,
+                loader={
+                    "type": "json",
+                    "checksum": "sha256:" + "0" * 64,
+                },
+            )
+            load_dataset = mock.Mock()
+            with tempfile.TemporaryDirectory() as cache_directory:
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "checksum does not match",
+                ):
+                    target_unsloth.load_training_dataset(
+                        spec,
+                        load_dataset=load_dataset,
+                        cache_directory=cache_directory,
+                    )
+                self.assertEqual(list(Path(cache_directory).iterdir()), [])
+
+        load_dataset.assert_not_called()
+
+    def test_mutated_cached_bytes_are_reverified_before_parser(self):
+        body = b"prompt,completion\nQuestion?,Answer.\n"
+        checksum = "sha256:" + hashlib.sha256(body).hexdigest()
+        with LocalDatasetServer({"/train.csv": body}) as server:
+            source = server.url("/train.csv")
+            spec = self.training_spec(
+                source=source,
+                dataset_type="prompt-completion",
+                loader={"type": "csv", "checksum": checksum},
+            )
+            load_dataset = mock.Mock(return_value="dataset")
+            with tempfile.TemporaryDirectory() as cache_directory:
+                first = target_unsloth.load_training_dataset(
+                    spec,
+                    load_dataset=load_dataset,
+                    cache_directory=cache_directory,
+                )
+                cached_path = Path(
+                    load_dataset.call_args.kwargs["data_files"]["train"]
+                )
+                cached_path.write_bytes(b"corrupt cached bytes")
+                load_dataset.reset_mock()
+
+                second = target_unsloth.load_training_dataset(
+                    spec,
+                    load_dataset=load_dataset,
+                    cache_directory=cache_directory,
+                )
+
+                self.assertEqual(cached_path.read_bytes(), body)
+                load_dataset.assert_called_once_with(
+                    "csv",
+                    data_files={"train": str(cached_path)},
+                    split="train",
+                )
+
+        self.assertEqual(first, "dataset")
+        self.assertEqual(second, "dataset")
+        self.assertEqual(server.requests, ["/train.csv", "/train.csv"])
+
+    def test_unchecksummed_download_uses_actual_content_digest(self):
+        body = b"line one\nline two\n"
+        digest = hashlib.sha256(body).hexdigest()
+        with LocalDatasetServer({"/download": body}) as server:
+            with tempfile.TemporaryDirectory() as cache_directory:
+                path = target_unsloth.materialize_remote_dataset_file(
+                    server.url("/download"),
+                    loader_type="text",
+                    checksum=None,
+                    cache_directory=cache_directory,
+                )
+
+                self.assertEqual(path.name, digest + ".txt")
+                self.assertEqual(path.read_bytes(), body)
+
+    def test_default_cache_directory_uses_aikit_namespace(self):
+        with tempfile.TemporaryDirectory() as cache_root:
+            with mock.patch.dict(
+                target_unsloth.os.environ,
+                {"HF_DATASETS_CACHE": cache_root},
+            ):
+                self.assertEqual(
+                    target_unsloth.dataset_cache_directory(),
+                    Path(cache_root) / "aikit-remote-files",
+                )
+
+    def test_corrupt_cached_file_and_changed_download_never_reach_parser(self):
+        original = b'{"text":"original"}\n'
+        changed = b'{"text":"changed"}\n'
+        checksum = "sha256:" + hashlib.sha256(original).hexdigest()
+        with LocalDatasetServer({"/train.json": original}) as server:
+            source = server.url("/train.json")
+            spec = self.training_spec(
+                source=source,
+                loader={"type": "json", "checksum": checksum},
+            )
+            with tempfile.TemporaryDirectory() as cache_directory:
+                initial_loader = mock.Mock(return_value="dataset")
+                target_unsloth.load_training_dataset(
+                    spec,
+                    load_dataset=initial_loader,
+                    cache_directory=cache_directory,
+                )
+                cached_path = Path(
+                    initial_loader.call_args.kwargs["data_files"]["train"]
+                )
+                cached_path.write_bytes(b"corrupt")
+                server.responses["/train.json"] = changed
+                parser = mock.Mock()
+
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "checksum does not match",
+                ):
+                    target_unsloth.load_training_dataset(
+                        spec,
+                        load_dataset=parser,
+                        cache_directory=cache_directory,
+                    )
+
+                parser.assert_not_called()
+                self.assertFalse(cached_path.exists())
+
+    def test_preserves_data_and_compression_suffixes(self):
+        self.assertEqual(
+            target_unsloth.remote_dataset_file_suffix(
+                "https://example.test/train.jsonl.gz?token=value",
+                "json",
+            ),
+            ".jsonl.gz",
+        )
+        self.assertEqual(
+            target_unsloth.remote_dataset_file_suffix(
+                "https://example.test/download.gz",
+                "parquet",
+            ),
+            ".parquet.gz",
+        )
+
+    def test_download_exception_redacts_url_and_suppresses_cause(self):
+        source = (
+            "https://user:password@example.test/train.json?"
+            "token=secret#fragment-marker"
+        )
+
+        def fail_with_url(_url):
+            raise RuntimeError(f"failed to download {source}")
+
+        with tempfile.TemporaryDirectory() as cache_directory:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "remote json dataset could not be downloaded",
+            ) as raised:
+                target_unsloth.materialize_remote_dataset_file(
+                    source,
+                    loader_type="json",
+                    checksum=None,
+                    cache_directory=cache_directory,
+                    open_url=fail_with_url,
+                )
+
+        message = str(raised.exception)
+        for secret in (
+            "user",
+            "password",
+            "example.test",
+            "token",
+            "secret",
+            "fragment-marker",
+        ):
+            self.assertNotIn(secret, message)
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
 
 
 class MessagesSchemaTest(unittest.TestCase):
@@ -3760,14 +4245,20 @@ class TrainingPhaseTest(unittest.TestCase):
             f"failed to load {signed_url}"
         )
 
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "messages dataset remote JSON URL could not be loaded",
-        ) as raised:
-            target_unsloth.train_model(
-                train_config,
-                dependencies=dependencies,
-            )
+        local_file = Path("/cache/content.jsonl")
+        with mock.patch.object(
+            target_unsloth,
+            "materialize_remote_dataset_file",
+            return_value=local_file,
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "messages dataset remote JSON URL could not be loaded",
+            ) as raised:
+                target_unsloth.train_model(
+                    train_config,
+                    dependencies=dependencies,
+                )
 
         message = str(raised.exception)
         self.assertNotIn("user", message)
@@ -3778,11 +4269,58 @@ class TrainingPhaseTest(unittest.TestCase):
         self.assertTrue(raised.exception.__suppress_context__)
         dependencies.load_dataset.assert_called_once_with(
             "json",
-            data_files={"train": signed_url},
+            data_files={"train": str(local_file)},
             split="train",
         )
         dependencies.fast_language_model.from_pretrained.assert_not_called()
         dependencies.fast_language_model.get_peft_model.assert_not_called()
+
+    def test_checksum_failure_prevents_parser_and_model_allocation(self):
+        body = b'{"messages":[{"role":"user","content":"Q"}]}\n'
+        with LocalDatasetServer({"/messages.jsonl": body}) as server:
+            signed_url = (
+                server.url("/messages.jsonl")
+                + "?token=private-value#fragment-marker"
+            )
+            train_config = example_train_config()
+            train_config["datasets"][0].update(
+                {
+                    "type": "messages",
+                    "source": signed_url,
+                    "loader": {
+                        "type": "json",
+                        "checksum": "sha256:" + "0" * 64,
+                    },
+                }
+            )
+            dependencies = example_train_dependencies(mock.Mock())
+
+            with tempfile.TemporaryDirectory() as cache_directory:
+                with mock.patch.dict(
+                    target_unsloth.os.environ,
+                    {"HF_DATASETS_CACHE": cache_directory},
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "checksum does not match",
+                    ) as raised:
+                        target_unsloth.train_model(
+                            train_config,
+                            dependencies=dependencies,
+                        )
+
+        for secret in (
+            "token",
+            "private-value",
+            "fragment-marker",
+        ):
+            self.assertNotIn(secret, str(raised.exception))
+        dependencies.load_dataset.assert_not_called()
+        dependencies.fast_language_model.from_pretrained.assert_not_called()
+        dependencies.fast_language_model.get_peft_model.assert_not_called()
+        dependencies.resolve_model_name.assert_not_called()
+        dependencies.model_info.assert_not_called()
+        dependencies.sft_trainer.assert_not_called()
 
     def test_prompt_completion_dataset_is_passed_through_with_completion_loss(self):
         train_config = example_train_config()

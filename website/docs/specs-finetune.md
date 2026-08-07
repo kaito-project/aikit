@@ -9,8 +9,14 @@ title: Fine Tuning API Specifications
 apiVersion: # required. only v1alpha1 is supported at the moment
 baseModel: # required. any base model from Huggingface. for unsloth, see for 4bit pre-quantized models: https://huggingface.co/unsloth
 datasets:
-  - source: # required. this can be a Huggingface dataset repo or a URL pointing to a JSON or JSON Lines file
-    type: # required. can be "alpaca", "messages", "sharegpt", "prompt-completion", or "text"
+  - source: # required. a Hugging Face dataset identifier or an absolute HTTP(S) URL
+    type: # required record schema. can be "alpaca", "messages", "sharegpt", "prompt-completion", or "text"
+    loader: # optional. omission preserves automatic legacy loading and the train split
+      type: # required when loader is present. huggingface, json, csv, parquet, or text
+      subset: # optional. Hugging Face loader only
+      split: # optional. defaults to train; selects training data, not evaluation data
+      revision: # optional. Hugging Face loader only; lowercase 40-character commit hash
+      checksum: # optional. remote-file loaders only; sha256:<64 lowercase hex> of raw downloaded bytes
 config:
   unsloth:
     loss: # optional. omitted or null defaults to all. response is supported only for messages and sharegpt
@@ -30,6 +36,48 @@ config:
 output:
   quantize: # optional. defaults to q4_k_m. for unsloth, see for allowed quantization methods: https://github.com/unslothai/unsloth/wiki#saving-to-gguf.
   name: # optional. defaults to "aikit-model"
+```
+
+### Dataset Loaders
+
+The record `type` and `loader.type` are independent. The record type defines required columns and SFT loss behavior; the loader defines source transport and parsing. Loader options are included in the serialized training configuration, so changing `type`, `subset`, `split`, `revision`, or `checksum` invalidates training and downstream export without invalidating dependency installation.
+
+| Loader | Source | Loader-specific fields | Reproducibility |
+| --- | --- | --- | --- |
+| omitted | Existing automatic behavior: HTTP(S) uses JSON; other sources go to Hugging Face Datasets | None | Mutable-source warning |
+| `huggingface` | Hugging Face dataset identifier | Optional `subset`, `split`, `revision` | Warns when `revision` is omitted |
+| `json` | Absolute HTTP(S) URL | Optional `split`, `checksum` | Warns when `checksum` is omitted |
+| `csv` | Absolute HTTP(S) URL | Optional `split`, `checksum` | Warns when `checksum` is omitted |
+| `parquet` | Absolute HTTP(S) URL | Optional `split`, `checksum` | Warns when `checksum` is omitted |
+| `text` | Absolute HTTP(S) URL | Optional `split`, `checksum` | Warns when `checksum` is omitted |
+
+`split` defaults to `train` and must contain letters, numbers, or underscores in one or more dot-separated segments. Hyphenated names and split expressions such as `train-sft` or `train[:10%]` are not supported by the pinned Datasets API. Split selection configures only the training dataset; evaluation datasets and metrics remain unsupported.
+
+A Hugging Face `revision`, when present, must be a lowercase 40-character immutable commit hash. The Hugging Face loader rejects `checksum`. Remote-file loaders reject `subset` and `revision`; their optional checksum must use `sha256:<64 lowercase hex>` and covers the raw downloaded bytes before parsing or decompression. AIKit verifies both cached and newly downloaded bytes before invoking Hugging Face Datasets or allocating the model. Files are stored by content digest in an AIKit-owned namespace under `HF_DATASETS_CACHE`, with data and compression suffixes retained for parser detection.
+
+Unknown fields, non-mapping values, nulls, and non-string values inside `loader` fail during parsing. Unknown fields elsewhere retain the existing permissive behavior. URL credentials, queries, and fragments are redacted from AIKit-generated warning logs and errors and are not written into cache filenames or cache metadata. The configured URL remains part of the serialized training configuration and BuildKit definition. This redaction therefore does not turn signed URLs into a supported secret channel; private dataset secret mounts are not supported.
+
+The `text` file loader yields one `text` record per line. JSON, CSV, and Parquet files may contain any supported record schema. For example:
+
+```yaml
+datasets:
+  - source: HuggingFaceH4/ultrachat_200k
+    type: messages
+    loader:
+      type: huggingface
+      subset: default
+      split: train_sft
+      revision: 0123456789abcdef0123456789abcdef01234567
+```
+
+```yaml
+datasets:
+  - source: https://datasets.example.com/train.parquet
+    type: prompt-completion
+    loader:
+      type: parquet
+      split: train
+      checksum: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ```
 
 ### Dataset Types
