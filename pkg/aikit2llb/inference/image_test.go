@@ -12,8 +12,10 @@ import (
 )
 
 const (
-	imageTestInferenceModel  = "test"
-	imageTestInferenceSource = "http://test"
+	imageTestDebugArgument     = "--debug"
+	imageTestInferenceModel    = "test"
+	imageTestInferenceSource   = "http://test"
+	imageTestLoadToMemoryModel = "model"
 )
 
 func TestNewImageConfigEntrypoint(t *testing.T) {
@@ -133,11 +135,27 @@ func TestNewImageConfigEnvironment(t *testing.T) {
 			wantEnv: append([]string{}, defaultEnv...),
 		},
 		{
+			name: "standard image loads configured models at startup",
+			config: &config.InferenceConfig{
+				Models:       []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
+				LoadToMemory: []string{"chat", "embeddings"},
+			},
+			wantEnv: append(append([]string{}, defaultEnv...), localAILoadToMemoryEnv+"chat,embeddings"),
+		},
+		{
 			name: "CPU runner adds Hugging Face cache on models volume",
 			config: &config.InferenceConfig{
 				Backends: []string{utils.BackendLlamaCpp},
 			},
 			wantEnv: append(append([]string{}, defaultEnv...), runnerHFHomeEnv),
+		},
+		{
+			name: "runner loads configured model at startup",
+			config: &config.InferenceConfig{
+				Backends:     []string{utils.BackendLlamaCpp},
+				LoadToMemory: []string{imageTestLoadToMemoryModel},
+			},
+			wantEnv: append(append(append([]string{}, defaultEnv...), localAILoadToMemoryEnv+imageTestLoadToMemoryModel), runnerHFHomeEnv),
 		},
 	}
 
@@ -152,6 +170,44 @@ func TestNewImageConfigEnvironment(t *testing.T) {
 				if strings.Contains(env, "/usr/local/cuda") || strings.HasPrefix(env, "CUDA_HOME=") {
 					t.Errorf("environment should not assume a system CUDA installation: %q", env)
 				}
+			}
+		})
+	}
+}
+
+func TestNewImageConfigCommandWithLoadToMemory(t *testing.T) {
+	platform := &specs.Platform{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux}
+
+	tests := []struct {
+		name    string
+		config  *config.InferenceConfig
+		wantCmd []string
+	}{
+		{
+			name: "standard image command is unchanged",
+			config: &config.InferenceConfig{
+				Debug:        true,
+				Config:       "config",
+				Models:       []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
+				LoadToMemory: []string{imageTestLoadToMemoryModel},
+			},
+			wantCmd: []string{imageTestDebugArgument, "--config-file=/config.yaml"},
+		},
+		{
+			name: "runner command remains empty",
+			config: &config.InferenceConfig{
+				Backends:     []string{utils.BackendLlamaCpp},
+				LoadToMemory: []string{imageTestLoadToMemoryModel},
+			},
+			wantCmd: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			img := NewImageConfig(tt.config, platform)
+			if !reflect.DeepEqual(img.Config.Cmd, tt.wantCmd) {
+				t.Errorf("command = %v, want %v", img.Config.Cmd, tt.wantCmd)
 			}
 		})
 	}

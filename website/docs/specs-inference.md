@@ -9,6 +9,8 @@ apiVersion: # required. only v1alpha1 is supported at the moment
 debug: # optional. if set to true, debug logs will be printed
 runtime: # optional. omit for the default CPU runtime. can be "cuda", "rocm", or "applesilicon"
 backends: # optional. list of additional backends. can be "llama-cpp" (default), "diffusers", "vllm"
+loadToMemory: # optional. list of LocalAI model config names to load when the container starts
+  - model-name
 models: # optional. list of models to build. omit for runner mode (see runners.md)
   - name: # required. name of the model
     source: # required. source of the model. can be a url or a local file
@@ -27,6 +29,21 @@ If omitted, `runtime` uses the default CPU runtime. `rocm` currently supports on
 When `backends` is specified without `models`, a **runner image** is created that downloads models at container startup. See [Runner Images](runners.md) for details.
 :::
 
+### Loading models at startup
+
+`loadToMemory` opts models into loading before LocalAI starts serving requests:
+
+```yaml
+loadToMemory:
+  - llama
+```
+
+Each item is an exact, case-sensitive LocalAI model-config name. For a baked `config`, use its `config[].name`; configs discovered or generated at runtime use the name declared in that config. Do not use a filename from the top-level `models` list. Names must be non-empty and unique, and cannot contain commas or backslashes. A model composed of several files, such as weight shards or a model plus an `mmproj` file, still has one logical name and needs one entry. Multiple names are loaded in the listed order.
+
+Runner images generate their LocalAI config after resolving the runtime model argument. The `llama-cpp` runner derives the name from the selected GGUF filename without the `.gguf` extension; Diffusers and vLLM runners use the normalized final component of the model source. Avoid a baked `loadToMemory` setting when a runner source can resolve to several GGUF files because the selected name is ambiguous.
+
+Loading blocks server startup and can fail if the model does not exist or there is insufficient memory, so health probes must allow enough startup time. It warms the model but does not prevent LocalAI from unloading it later, and LocalAI skips startup loading when `LOCALAI_SINGLE_ACTIVE_BACKEND=true`. The setting is disabled when omitted. At runtime, `LOCALAI_LOAD_TO_MEMORY` can replace the image default; set it to an empty value to disable startup loading.
+
 Example:
 
 ```yaml
@@ -34,6 +51,8 @@ Example:
 apiVersion: v1alpha1
 debug: true
 runtime: cuda
+loadToMemory:
+  - llama-2-7b-chat
 models:
   - name: llama-2-7b-chat
     source: https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGUF/resolve/main/llama-2-7b-chat.Q4_K_M.gguf

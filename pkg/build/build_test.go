@@ -5,8 +5,11 @@ import (
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/utils"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
+
+const loadToMemoryTestModelName = "model"
 
 func Test_validateConfig(t *testing.T) {
 	type args struct {
@@ -127,8 +130,9 @@ func Test_validateConfig(t *testing.T) {
 		{
 			name: "valid runner mode - backends with no models (llama-cpp cpu)",
 			args: args{c: &config.InferenceConfig{
-				APIVersion: "v1alpha1",
-				Backends:   []string{"llama-cpp"},
+				APIVersion:   "v1alpha1",
+				Backends:     []string{utils.BackendLlamaCpp},
+				LoadToMemory: []string{loadToMemoryTestModelName},
 			}},
 			wantErr: false,
 		},
@@ -165,6 +169,54 @@ func Test_validateConfig(t *testing.T) {
 				APIVersion: "v1alpha1",
 				Runtime:    "applesilicon",
 				Backends:   []string{"llama-cpp"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "loadToMemory rejects an empty model name",
+			args: args{c: &config.InferenceConfig{
+				APIVersion:   "v1alpha1",
+				LoadToMemory: []string{""},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "loadToMemory rejects a whitespace-only model name",
+			args: args{c: &config.InferenceConfig{
+				APIVersion:   "v1alpha1",
+				LoadToMemory: []string{" \t"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "loadToMemory rejects a null character",
+			args: args{c: &config.InferenceConfig{
+				APIVersion:   "v1alpha1",
+				LoadToMemory: []string{"model\x00name"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "loadToMemory rejects a comma",
+			args: args{c: &config.InferenceConfig{
+				APIVersion:   "v1alpha1",
+				LoadToMemory: []string{"chat,embeddings"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "loadToMemory rejects a backslash",
+			args: args{c: &config.InferenceConfig{
+				APIVersion:   "v1alpha1",
+				LoadToMemory: []string{`model\`, "embeddings"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "loadToMemory rejects duplicate model names",
+			args: args{c: &config.InferenceConfig{
+				APIVersion:   "v1alpha1",
+				LoadToMemory: []string{loadToMemoryTestModelName, loadToMemoryTestModelName},
 			}},
 			wantErr: true,
 		},
