@@ -53,16 +53,45 @@ apiVersion: v1alpha1
 baseModel: "unsloth/llama-2-7b-bnb-4bit" # base model to be fine tuned. this can be any model from Huggingface. For unsloth optimized base models, see https://huggingface.co/unsloth
 datasets:
   - source: "yahma/alpaca-cleaned" # Hugging Face dataset identifier or an HTTP(S) URL
-    type: "alpaca" # record schema: alpaca, messages, sharegpt, prompt-completion, or text
+    type: "alpaca" # record schema: alpaca, messages, sharegpt, prompt-completion, text, or preference
 config:
   unsloth:
 ```
 
 For full configuration, please refer to [Fine Tune API Specifications](./specs-finetune.md).
 
+#### Training Objectives
+
+AIKit separates the training objective from the dataset record schema and loader. If `objective` is omitted, null, or explicitly set to `sft`, AIKit uses the existing supervised fine-tuning path without changing its serialized training definition. The SFT learning-rate default remains `0.0002`.
+
+Set `objective.type: dpo` for Direct Preference Optimization:
+
+```yaml
+objective:
+  type: dpo
+  beta: 0.1
+  lossType: sigmoid
+  maxPromptLength: 512
+datasets:
+  - source: organization/preferences
+    type: preference
+    loader:
+      type: huggingface
+      split: train
+      revision: 0123456789abcdef0123456789abcdef01234567
+config:
+  unsloth:
+    packing: false
+    maxSeqLength: 2048
+```
+
+DPO defaults to `beta: 0.1`, `lossType: sigmoid`, `maxPromptLength: 512`, and `learningRate: 0.000001`. `beta` must be finite and positive, `maxPromptLength` must not exceed `maxSeqLength`, and the initial implementation supports only sigmoid loss. DPO requires exactly one `preference` dataset, rejects every SFT dataset type, requires `packing: false`, and rejects the SFT-only `loss: response` setting.
+
+AIKit constructs a separate DPO trainer with the LoRA policy and `ref_model=None`. The same PEFT model with its adapter disabled supplies reference log probabilities; this is not reference-free DPO. Preference columns are validated before model allocation and bypass Alpaca, prompt-completion, text, messages, and ShareGPT formatting. The trained adapter and tokenizer use the same save, GGUF export, and inference path as SFT.
+
 #### Dataset Loading
 
-`datasets[].type` describes the records and training loss behavior. The optional `datasets[].loader.type` independently describes how AIKit obtains and parses those records. For example, a Parquet file can contain `prompt-completion` records, while a Hugging Face dataset can contain `messages` records.
+`datasets[].type` describes the records, the top-level objective selects SFT or DPO, and the optional `datasets[].loader.type` independently describes how AIKit obtains and parses those records. For example, a Parquet file can contain `prompt-completion` records, while a checksummed JSON file can contain `preference` records.
 
 When `loader` is omitted, AIKit preserves the original behavior: HTTP(S) sources use the JSON builder with the `train` split, and every other source is passed to Hugging Face Datasets with the `train` split. These mutable sources remain supported, but AIKit emits a reproducibility warning because their bytes are not pinned.
 
@@ -95,11 +124,11 @@ datasets:
 
 Remote files are downloaded into an AIKit-owned content-addressed cache under the persistent Hugging Face Datasets cache. AIKit verifies cached and newly downloaded bytes before invoking the selected Datasets builder or allocating the model. A missing checksum remains allowed but emits a warning and cannot make a BuildKit cache entry immutable. URL credentials, query values, and fragments are not included in AIKit-generated errors or warning logs, cache filenames, or cache metadata. The configured source URL is still part of the training configuration and BuildKit definition, so credential-bearing URLs are not a supported secret mechanism; private-dataset secret mounts remain out of scope.
 
-The loader `split` defaults to `train` and must contain letters, numbers, or underscores in one or more dot-separated segments. It selects the training split only; it does not configure evaluation data or metrics. The `text` loader turns each input line into a `text` record. JSON, CSV, and Parquet loaders can provide any supported record schema whose required columns and values are present. Unknown fields inside `loader` fail instead of being silently ignored.
+The loader `split` defaults to `train` and must contain letters, numbers, or underscores in one or more dot-separated segments. It selects the training split only; it does not configure evaluation data or metrics. The `text` loader turns each input line into a `text` record and therefore cannot provide DPO preference columns. JSON, CSV, and Parquet loaders can provide any compatible record schema whose required columns and values are present. Unknown fields inside `loader` fail instead of being silently ignored.
 
 #### Dataset Types
 
-AIKit supports one dataset per fine-tuning configuration. The configured `type` selects the record schema and training loss behavior; unknown types fail instead of falling back to another formatter.
+AIKit supports one dataset per fine-tuning configuration. The configured `type` selects the record schema and must be compatible with the selected objective; unknown types fail instead of falling back to another formatter.
 
 For the chat dataset types `messages` and `sharegpt`, `config.unsloth.loss` controls which tokens are supervised:
 
@@ -199,6 +228,35 @@ An expected JSON Lines record is:
 The `text` type performs full-sequence supervised fine-tuning (SFT). It is not continued pretraining: AIKit retains the standard LoRA targets and optimizer configuration and does not train embedding or language-model-head parameters.
 :::
 
+##### Preference (DPO)
+
+The `preference` type is valid only with `objective.type: dpo`. Every record must contain explicit, non-empty string `prompt`, `chosen`, and `rejected` values, and the chosen and rejected responses must differ. AIKit does not infer a prompt from response prefixes, accept conversational message arrays, or normalize preference text.
+
+```yaml
+objective:
+  type: dpo
+  maxPromptLength: 96
+datasets:
+  - source: https://datasets.example.com/preferences.jsonl
+    type: preference
+    loader:
+      type: json
+      split: train
+      checksum: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+config:
+  unsloth:
+    packing: false
+    maxSeqLength: 256
+```
+
+An expected JSON Lines record is:
+
+```json
+{"prompt":"How should I rotate an API key?","chosen":"Deploy a replacement before revoking the old key.","rejected":"Revoke the old key before creating a replacement."}
+```
+
+Unrelated metadata columns are dropped, while the three preference strings reach DPO trainer construction unchanged. The locked DPO tokenizer handles sequence tokenization and truncation according to `maxPromptLength`, `maxSeqLength`, and the pinned `keep_end` behavior; AIKit does not append SFT EOS text. Multiple preference datasets, additional or combined DPO losses, custom reference models, reference-free DPO, evaluation data, and preference-quality metrics are not supported initially.
+
 :::note
 Please refer to [Unsloth documentation](https://github.com/unslothai/unsloth) for more information about Unsloth configuration.
 :::
@@ -216,6 +274,7 @@ Please make sure to change syntax to `#syntax=ghcr.io/kaito-project/aikit/aikit:
 - [Prompt-completion smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-prompt-completion-smoke.yaml)
 - [Text smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-text-smoke.yaml)
 - [Checksummed Parquet loader smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-loader-smoke.yaml)
+- [Checksummed DPO preference smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-dpo-smoke.yaml)
 
 
 ## Build

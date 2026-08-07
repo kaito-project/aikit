@@ -16,7 +16,8 @@ const (
 	defaultGradientAccumulationSteps = 4
 	defaultWarmupSteps               = 10
 	defaultMaxSteps                  = 60
-	defaultLearningRate              = 0.0002
+	defaultSFTLearningRate           = 0.0002
+	defaultDPOLearningRate           = 0.000001
 	defaultLoggingSteps              = 1
 	defaultOptimizer                 = "adamw_8bit"
 	defaultWeightDecay               = 0.01
@@ -30,15 +31,19 @@ const (
 	datasetLoaderFieldSplit          = "split"
 	datasetLoaderFieldRevision       = "revision"
 	datasetLoaderFieldChecksum       = "checksum"
+	defaultDPOBeta                   = 0.1
+	defaultDPOLossType               = utils.DPOLossSigmoid
+	defaultDPOMaxPromptLength        = 512
 )
 
 type FineTuneConfig struct {
-	APIVersion string             `yaml:"apiVersion"`
-	Target     string             `yaml:"target"`
-	BaseModel  string             `yaml:"baseModel"`
-	Datasets   []Dataset          `yaml:"datasets"`
-	Config     FineTuneConfigSpec `yaml:"config"`
-	Output     FineTuneOutputSpec `yaml:"output"`
+	APIVersion string                `yaml:"apiVersion"`
+	Target     string                `yaml:"target"`
+	BaseModel  string                `yaml:"baseModel"`
+	Objective  FineTuneObjectiveSpec `yaml:"objective,omitempty"`
+	Datasets   []Dataset             `yaml:"datasets"`
+	Config     FineTuneConfigSpec    `yaml:"config"`
+	Output     FineTuneOutputSpec    `yaml:"output"`
 }
 
 // UnmarshalYAML normalizes fine-tuning defaults while preserving explicitly configured zero values.
@@ -54,6 +59,24 @@ func (c *FineTuneConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 
 type FineTuneConfigSpec struct {
 	Unsloth FineTuneConfigUnslothSpec `yaml:"unsloth"`
+}
+
+// FineTuneObjectiveSpec selects the training objective independently of the dataset record schema.
+type FineTuneObjectiveSpec struct {
+	Type            string  `yaml:"type"`
+	Beta            float64 `yaml:"beta,omitempty"`
+	LossType        string  `yaml:"lossType,omitempty"`
+	MaxPromptLength int     `yaml:"maxPromptLength,omitempty"`
+
+	betaConfigured            bool
+	lossTypeConfigured        bool
+	maxPromptLengthConfigured bool
+}
+
+// HasDPOSettings reports whether DPO-only settings were explicitly configured or populated.
+func (o FineTuneObjectiveSpec) HasDPOSettings() bool {
+	return o.betaConfigured || o.lossTypeConfigured || o.maxPromptLengthConfigured ||
+		o.Beta != 0 || o.LossType != "" || o.MaxPromptLength != 0
 }
 
 type Dataset struct {
@@ -181,12 +204,20 @@ type FineTuneOutputSpec struct {
 }
 
 type rawFineTuneConfig struct {
-	APIVersion string                 `yaml:"apiVersion"`
-	Target     string                 `yaml:"target"`
-	BaseModel  string                 `yaml:"baseModel"`
-	Datasets   []Dataset              `yaml:"datasets"`
-	Config     *rawFineTuneConfigSpec `yaml:"config"`
-	Output     *rawFineTuneOutputSpec `yaml:"output"`
+	APIVersion string                    `yaml:"apiVersion"`
+	Target     string                    `yaml:"target"`
+	BaseModel  string                    `yaml:"baseModel"`
+	Objective  *rawFineTuneObjectiveSpec `yaml:"objective"`
+	Datasets   []Dataset                 `yaml:"datasets"`
+	Config     *rawFineTuneConfigSpec    `yaml:"config"`
+	Output     *rawFineTuneOutputSpec    `yaml:"output"`
+}
+
+type rawFineTuneObjectiveSpec struct {
+	Type            *string  `yaml:"type"`
+	Beta            *float64 `yaml:"beta"`
+	LossType        *string  `yaml:"lossType"`
+	MaxPromptLength *int     `yaml:"maxPromptLength"`
 }
 
 type rawFineTuneConfigSpec struct {
@@ -220,22 +251,51 @@ func (c rawFineTuneConfig) normalize() FineTuneConfig {
 	if c.Config != nil {
 		rawUnsloth = c.Config.Unsloth
 	}
+	objective := normalizeFineTuneObjective(c.Objective)
 
 	return FineTuneConfig{
 		APIVersion: c.APIVersion,
 		Target:     c.Target,
 		BaseModel:  c.BaseModel,
+		Objective:  objective,
 		Datasets:   c.Datasets,
 		Config: FineTuneConfigSpec{
-			Unsloth: normalizeUnslothConfig(rawUnsloth),
+			Unsloth: normalizeUnslothConfig(rawUnsloth, objective.Type),
 		},
 		Output: normalizeFineTuneOutput(c.Output),
 	}
 }
 
-func normalizeUnslothConfig(c *rawFineTuneConfigUnslothSpec) FineTuneConfigUnslothSpec {
+func normalizeFineTuneObjective(c *rawFineTuneObjectiveSpec) FineTuneObjectiveSpec {
+	if c == nil {
+		return FineTuneObjectiveSpec{Type: utils.ObjectiveSFT}
+	}
+
+	objectiveType := valueOrDefault(c.Type, utils.ObjectiveSFT)
+	objective := FineTuneObjectiveSpec{
+		Type:                      objectiveType,
+		Beta:                      valueOrDefault(c.Beta, 0),
+		LossType:                  valueOrDefault(c.LossType, ""),
+		MaxPromptLength:           valueOrDefault(c.MaxPromptLength, 0),
+		betaConfigured:            c.Beta != nil,
+		lossTypeConfigured:        c.LossType != nil,
+		maxPromptLengthConfigured: c.MaxPromptLength != nil,
+	}
+	if objectiveType == utils.ObjectiveDPO {
+		objective.Beta = valueOrDefault(c.Beta, defaultDPOBeta)
+		objective.LossType = valueOrDefault(c.LossType, defaultDPOLossType)
+		objective.MaxPromptLength = valueOrDefault(c.MaxPromptLength, defaultDPOMaxPromptLength)
+	}
+	return objective
+}
+
+func normalizeUnslothConfig(c *rawFineTuneConfigUnslothSpec, objectiveType string) FineTuneConfigUnslothSpec {
 	if c == nil {
 		c = &rawFineTuneConfigUnslothSpec{}
+	}
+	learningRate := defaultSFTLearningRate
+	if objectiveType == utils.ObjectiveDPO {
+		learningRate = defaultDPOLearningRate
 	}
 	return FineTuneConfigUnslothSpec{
 		Packing:                   valueOrDefault(c.Packing, false),
@@ -246,7 +306,7 @@ func normalizeUnslothConfig(c *rawFineTuneConfigUnslothSpec) FineTuneConfigUnslo
 		GradientAccumulationSteps: valueOrDefault(c.GradientAccumulationSteps, defaultGradientAccumulationSteps),
 		WarmupSteps:               valueOrDefault(c.WarmupSteps, defaultWarmupSteps),
 		MaxSteps:                  valueOrDefault(c.MaxSteps, defaultMaxSteps),
-		LearningRate:              valueOrDefault(c.LearningRate, defaultLearningRate),
+		LearningRate:              valueOrDefault(c.LearningRate, learningRate),
 		LoggingSteps:              valueOrDefault(c.LoggingSteps, defaultLoggingSteps),
 		Optimizer:                 valueOrDefault(c.Optimizer, defaultOptimizer),
 		WeightDecay:               valueOrDefault(c.WeightDecay, defaultWeightDecay),

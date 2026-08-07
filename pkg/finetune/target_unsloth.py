@@ -6,6 +6,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import math
 import operator
 import os
 import re
@@ -73,6 +74,7 @@ REMOTE_DATASET_COMPRESSION_SUFFIXES = frozenset(
 REMOTE_DATASET_CHUNK_SIZE = 1024 * 1024
 DATASET_TYPE_ALPACA = "alpaca"
 DATASET_TYPE_MESSAGES = "messages"
+DATASET_TYPE_PREFERENCE = "preference"
 DATASET_TYPE_PROMPT_COMPLETION = "prompt-completion"
 DATASET_TYPE_SHAREGPT = "sharegpt"
 DATASET_TYPE_TEXT = "text"
@@ -80,6 +82,7 @@ SUPPORTED_DATASET_TYPES = frozenset(
     (
         DATASET_TYPE_ALPACA,
         DATASET_TYPE_MESSAGES,
+        DATASET_TYPE_PREFERENCE,
         DATASET_TYPE_PROMPT_COMPLETION,
         DATASET_TYPE_SHAREGPT,
         DATASET_TYPE_TEXT,
@@ -88,6 +91,7 @@ SUPPORTED_DATASET_TYPES = frozenset(
 DATASET_REQUIRED_FIELDS = {
     DATASET_TYPE_ALPACA: ("instruction", "input", "output"),
     DATASET_TYPE_MESSAGES: ("messages",),
+    DATASET_TYPE_PREFERENCE: ("prompt", "chosen", "rejected"),
     DATASET_TYPE_PROMPT_COMPLETION: ("prompt", "completion"),
     DATASET_TYPE_SHAREGPT: ("conversations",),
     DATASET_TYPE_TEXT: ("text",),
@@ -106,6 +110,12 @@ CHAT_DATASET_TYPES = frozenset((DATASET_TYPE_MESSAGES, DATASET_TYPE_SHAREGPT))
 LOSS_ALL = "all"
 LOSS_RESPONSE = "response"
 SUPPORTED_LOSSES = frozenset((LOSS_ALL, LOSS_RESPONSE))
+OBJECTIVE_TYPE_SFT = "sft"
+OBJECTIVE_TYPE_DPO = "dpo"
+SUPPORTED_OBJECTIVE_TYPES = frozenset((OBJECTIVE_TYPE_SFT, OBJECTIVE_TYPE_DPO))
+DPO_LOSS_SIGMOID = "sigmoid"
+DEFAULT_DPO_BETA = 0.1
+DEFAULT_DPO_MAX_PROMPT_LENGTH = 512
 UNSUPPORTED_MESSAGES_TOP_LEVEL_FIELDS = frozenset(
     (
         "add_generation_prompt",
@@ -195,6 +205,13 @@ class TrainingDatasetSpec(NamedTuple):
     loader: DatasetLoaderSpec
 
 
+class TrainingObjectiveSpec(NamedTuple):
+    objective_type: str
+    beta: float | None
+    loss_type: str | None
+    max_prompt_length: int | None
+
+
 class PromptPrefixFingerprint(NamedTuple):
     sequence_count: int
     first_digest_sum: int
@@ -241,6 +258,8 @@ class TrainDependencies(NamedTuple):
     resolve_model_name: Callable[..., str]
     sft_config: Callable[..., Any]
     sft_trainer: Callable[..., Any]
+    dpo_config: Callable[..., Any]
+    dpo_trainer: Callable[..., Any]
     get_chat_template_parts: Callable[..., tuple[str, str]]
     train_on_responses_only: Callable[..., Any]
 
@@ -284,6 +303,101 @@ def unsloth_config(train_config: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def output_config(export_config: Mapping[str, Any]) -> Mapping[str, Any]:
     return export_config["output"]
+
+
+def training_objective_spec(
+    train_config: Mapping[str, Any],
+) -> TrainingObjectiveSpec:
+    objective = train_config.get("objective")
+    if objective is None:
+        objective = {}
+    if not isinstance(objective, Mapping):
+        raise ValueError("training objective must be a mapping")
+    if any(not isinstance(field, str) for field in objective):
+        raise ValueError("training objective field names must be strings")
+
+    allowed_fields = frozenset(
+        ("type", "beta", "lossType", "maxPromptLength")
+    )
+    unknown_fields = sorted(set(objective) - allowed_fields)
+    if unknown_fields:
+        quoted_fields = ", ".join(repr(field) for field in unknown_fields)
+        raise ValueError(
+            f"training objective contains unknown fields: {quoted_fields}"
+        )
+
+    configured_type = objective.get("type", OBJECTIVE_TYPE_SFT)
+    objective_type = (
+        OBJECTIVE_TYPE_SFT if configured_type is None else configured_type
+    )
+    if (
+        not isinstance(objective_type, str)
+        or objective_type not in SUPPORTED_OBJECTIVE_TYPES
+    ):
+        raise ValueError(f"unsupported training objective {objective_type!r}")
+
+    if objective_type == OBJECTIVE_TYPE_SFT:
+        dpo_fields = sorted(
+            field
+            for field in ("beta", "lossType", "maxPromptLength")
+            if field in objective
+        )
+        if dpo_fields:
+            quoted_fields = ", ".join(repr(field) for field in dpo_fields)
+            raise ValueError(
+                "SFT objective does not support DPO fields: "
+                f"{quoted_fields}"
+            )
+        return TrainingObjectiveSpec(
+            objective_type=OBJECTIVE_TYPE_SFT,
+            beta=None,
+            loss_type=None,
+            max_prompt_length=None,
+        )
+
+    configured_beta = objective.get("beta", DEFAULT_DPO_BETA)
+    beta = DEFAULT_DPO_BETA if configured_beta is None else configured_beta
+    if (
+        isinstance(beta, bool)
+        or not isinstance(beta, (int, float))
+        or not math.isfinite(beta)
+        or beta <= 0
+    ):
+        raise ValueError("DPO objective beta must be a finite value greater than zero")
+
+    configured_loss_type = objective.get("lossType", DPO_LOSS_SIGMOID)
+    loss_type = (
+        DPO_LOSS_SIGMOID
+        if configured_loss_type is None
+        else configured_loss_type
+    )
+    if not isinstance(loss_type, str) or loss_type != DPO_LOSS_SIGMOID:
+        raise ValueError(f"unsupported DPO objective loss type {loss_type!r}")
+
+    configured_max_prompt_length = objective.get(
+        "maxPromptLength",
+        DEFAULT_DPO_MAX_PROMPT_LENGTH,
+    )
+    max_prompt_length = (
+        DEFAULT_DPO_MAX_PROMPT_LENGTH
+        if configured_max_prompt_length is None
+        else configured_max_prompt_length
+    )
+    if (
+        isinstance(max_prompt_length, bool)
+        or not isinstance(max_prompt_length, int)
+        or max_prompt_length <= 0
+    ):
+        raise ValueError(
+            "DPO objective maxPromptLength must be an integer greater than zero"
+        )
+
+    return TrainingObjectiveSpec(
+        objective_type=OBJECTIVE_TYPE_DPO,
+        beta=float(beta),
+        loss_type=loss_type,
+        max_prompt_length=max_prompt_length,
+    )
 
 
 def require_hf_commit_hash(revision: Any, *, description: str) -> str:
@@ -1014,6 +1128,7 @@ def load_training_dataset(
         except Exception:
             if is_remote or dataset_spec.dataset_type in (
                 *CHAT_DATASET_TYPES,
+                DATASET_TYPE_PREFERENCE,
                 DATASET_TYPE_TEXT,
             ):
                 subject = dataset_error_subject(
@@ -1058,6 +1173,71 @@ def training_loss(
             "to false"
         )
     return loss
+
+
+def validate_training_objective(
+    train_config: Mapping[str, Any],
+    *,
+    objective: TrainingObjectiveSpec,
+    dataset_spec: TrainingDatasetSpec,
+) -> str:
+    if objective.objective_type == OBJECTIVE_TYPE_SFT:
+        if dataset_spec.dataset_type == DATASET_TYPE_PREFERENCE:
+            raise ValueError(
+                "preference datasets are supported only for the DPO objective"
+            )
+        return training_loss(
+            train_config,
+            dataset_type=dataset_spec.dataset_type,
+        )
+
+    if dataset_spec.dataset_type != DATASET_TYPE_PREFERENCE:
+        raise ValueError(
+            "DPO objective requires a preference dataset with prompt, chosen, "
+            "and rejected fields"
+        )
+    if (
+        dataset_spec.loader.loader_type == DATASET_LOADER_TEXT
+    ):
+        raise ValueError(
+            "preference datasets do not support the text loader because DPO "
+            "requires prompt, chosen, and rejected columns"
+        )
+
+    cfg = unsloth_config(train_config)
+    packing = cfg.get("packing", False)
+    if not isinstance(packing, bool):
+        raise ValueError("config.unsloth.packing must be a boolean")
+    if packing:
+        raise ValueError("DPO objective does not support packing")
+
+    configured_loss = cfg.get("loss", LOSS_ALL)
+    loss = LOSS_ALL if configured_loss is None else configured_loss
+    if not isinstance(loss, str) or loss not in SUPPORTED_LOSSES:
+        raise ValueError(f"unsupported SFT loss {loss!r}")
+    if loss == LOSS_RESPONSE:
+        raise ValueError(
+            "response SFT loss is not supported for the DPO objective"
+        )
+
+    max_seq_length = cfg.get("maxSeqLength")
+    if (
+        isinstance(max_seq_length, bool)
+        or not isinstance(max_seq_length, int)
+        or max_seq_length <= 0
+    ):
+        raise ValueError(
+            "config.unsloth.maxSeqLength must be an integer greater than zero"
+        )
+    if (
+        objective.max_prompt_length is None
+        or objective.max_prompt_length > max_seq_length
+    ):
+        raise ValueError(
+            "DPO objective maxPromptLength must not exceed "
+            "config.unsloth.maxSeqLength"
+        )
+    return LOSS_ALL
 
 
 def dataset_error_subject(
@@ -1270,6 +1450,16 @@ def validate_training_dataset(
             raise ValueError(
                 f'{dataset_type} dataset record {record_index} field "completion" must be a non-empty string'
             )
+        if dataset_type == DATASET_TYPE_PREFERENCE:
+            for field in DATASET_REQUIRED_FIELDS[DATASET_TYPE_PREFERENCE]:
+                if not record[field].strip():
+                    raise ValueError(
+                        f'{subject} field "{field}" must be a non-empty string'
+                    )
+            if record["chosen"] == record["rejected"]:
+                raise ValueError(
+                    f'{subject} fields "chosen" and "rejected" must be distinct'
+                )
         if dataset_type == DATASET_TYPE_TEXT and record["text"] == "":
             raise ValueError(
                 f'{subject} field "text" must be a non-empty string'
@@ -3593,6 +3783,77 @@ def cleanup_gguf_export(export_directory: Path | str) -> None:
     shutil.rmtree(Path(f"{export_path}_gguf"), ignore_errors=True)
 
 
+def require_dpo_tokenizer(processing_class: Any) -> None:
+    tokenizer = getattr(processing_class, "tokenizer", processing_class)
+    eos_token = getattr(tokenizer, "eos_token", None)
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if not isinstance(eos_token, str) or not eos_token:
+        raise RuntimeError("DPO training requires a tokenizer EOS token")
+    if isinstance(eos_token_id, bool) or not isinstance(eos_token_id, int):
+        raise RuntimeError("DPO training requires a tokenizer EOS token ID")
+
+
+def validate_dpo_trainer_contract(
+    trainer: Any,
+    *,
+    policy_model: Any,
+    objective: TrainingObjectiveSpec,
+    max_seq_length: int,
+) -> None:
+    if getattr(trainer, "ref_model", object()) is not None:
+        raise RuntimeError(
+            "DPO trainer must use ref_model=None so the disabled policy "
+            "adapter supplies reference behavior"
+        )
+    if getattr(trainer, "is_peft_model", False) is not True:
+        raise RuntimeError("DPO trainer did not recognize the policy as a PEFT model")
+    if getattr(trainer, "reference_free", True) is not False:
+        raise RuntimeError("DPO trainer must not use reference-free training")
+    if getattr(trainer, "model", None) is not policy_model:
+        raise RuntimeError(
+            "DPO trainer replaced the policy model that AIKit saves after training"
+        )
+
+    accelerator = getattr(trainer, "accelerator", None)
+    unwrap_model = getattr(accelerator, "unwrap_model", None)
+    if not callable(unwrap_model):
+        raise RuntimeError("DPO trainer does not expose model unwrapping")
+    try:
+        effective_model = unwrap_model(trainer.model)
+    except Exception:
+        raise RuntimeError("DPO trainer policy model could not be unwrapped") from None
+    if not callable(getattr(effective_model, "disable_adapter", None)):
+        raise RuntimeError(
+            "DPO trainer policy model does not support disabling its PEFT adapter"
+        )
+
+    if getattr(trainer, "beta", None) != objective.beta:
+        raise RuntimeError("DPO trainer beta does not match the configured objective")
+    effective_loss_types = getattr(trainer, "loss_type", None)
+    if isinstance(effective_loss_types, str):
+        effective_loss_types = [effective_loss_types]
+    if effective_loss_types != [objective.loss_type]:
+        raise RuntimeError(
+            "DPO trainer loss type does not match the configured objective"
+        )
+    if getattr(trainer, "max_prompt_length", None) != objective.max_prompt_length:
+        raise RuntimeError(
+            "DPO trainer max prompt length does not match the configured objective"
+        )
+    if getattr(trainer, "max_length", None) != max_seq_length:
+        raise RuntimeError(
+            "DPO trainer max length does not match config.unsloth.maxSeqLength"
+        )
+
+    train_dataset = getattr(trainer, "train_dataset", None)
+    try:
+        record_count = len(train_dataset)
+    except (TypeError, AttributeError):
+        raise RuntimeError("DPO trainer does not expose a sized training dataset") from None
+    if record_count == 0:
+        raise RuntimeError("DPO trainer prepared an empty training dataset")
+
+
 def load_train_dependencies() -> TrainDependencies:
     # Unsloth must be imported before Transformers-based training dependencies.
     from unsloth import FastLanguageModel, is_bfloat16_supported
@@ -3601,7 +3862,7 @@ def load_train_dependencies() -> TrainDependencies:
     from unsloth_zoo.dataset_utils import get_chat_template_parts
     from datasets import Dataset, load_dataset
     from huggingface_hub import model_info
-    from trl import SFTConfig, SFTTrainer
+    from trl import DPOConfig, DPOTrainer, SFTConfig, SFTTrainer
 
     return TrainDependencies(
         fast_language_model=FastLanguageModel,
@@ -3612,6 +3873,8 @@ def load_train_dependencies() -> TrainDependencies:
         resolve_model_name=get_model_name,
         sft_config=SFTConfig,
         sft_trainer=SFTTrainer,
+        dpo_config=DPOConfig,
+        dpo_trainer=DPOTrainer,
         get_chat_template_parts=get_chat_template_parts,
         train_on_responses_only=train_on_responses_only,
     )
@@ -3627,14 +3890,31 @@ def load_export_dependencies() -> ExportDependencies:
     )
 
 
+def save_trained_model(
+    model: Any,
+    tokenizer: Any,
+    trained_model_directory: Path | str,
+) -> Path:
+    trained_model_path = Path(trained_model_directory)
+    trained_model_path.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(trained_model_path)
+    tokenizer.save_pretrained(trained_model_path)
+    return trained_model_path
+
+
 def train_model(
     train_config: Mapping[str, Any],
     *,
     trained_model_directory: Path | str = TRAINED_MODEL_DIRECTORY,
     dependencies: TrainDependencies | None = None,
 ) -> Path:
+    objective = training_objective_spec(train_config)
     dataset_spec = training_dataset_spec(train_config)
-    loss = training_loss(train_config, dataset_type=dataset_spec.dataset_type)
+    loss = validate_training_objective(
+        train_config,
+        objective=objective,
+        dataset_spec=dataset_spec,
+    )
 
     if dependencies is None:
         dependencies = load_train_dependencies()
@@ -3649,6 +3929,7 @@ def train_model(
     validation_source = None
     if (
         dataset_spec.dataset_type in CHAT_DATASET_TYPES
+        or dataset_spec.dataset_type == DATASET_TYPE_PREFERENCE
         or dataset_spec.dataset_type == DATASET_TYPE_TEXT
     ):
         validation_source = dataset_spec.source
@@ -3680,6 +3961,8 @@ def train_model(
         dtype=None,
         load_in_4bit=cfg["loadIn4bit"],
     )
+    if objective.objective_type == OBJECTIVE_TYPE_DPO:
+        require_dpo_tokenizer(tokenizer)
     messages_token_fingerprint = None
     response_markers = None
     if dataset_spec.dataset_type in CHAT_DATASET_TYPES:
@@ -3757,6 +4040,58 @@ def train_model(
         base_model_name=base_model_name,
         revision=base_model_revision,
     )
+
+    if objective.objective_type == OBJECTIVE_TYPE_DPO:
+        if not callable(getattr(model, "disable_adapter", None)):
+            raise RuntimeError(
+                "DPO policy model does not support disabling its PEFT adapter"
+            )
+        bfloat16_supported = dependencies.is_bfloat16_supported()
+        trainer = dependencies.dpo_trainer(
+            model=model,
+            ref_model=None,
+            train_dataset=dataset,
+            processing_class=tokenizer,
+            args=dependencies.dpo_config(
+                output_dir="outputs",
+                dataset_num_proc=2,
+                max_length=max_seq_length,
+                max_prompt_length=objective.max_prompt_length,
+                max_completion_length=None,
+                truncation_mode="keep_end",
+                beta=objective.beta,
+                loss_type=objective.loss_type,
+                reference_free=False,
+                per_device_train_batch_size=cfg["batchSize"],
+                gradient_accumulation_steps=cfg[
+                    "gradientAccumulationSteps"
+                ],
+                warmup_steps=cfg["warmupSteps"],
+                max_steps=cfg["maxSteps"],
+                learning_rate=cfg["learningRate"],
+                fp16=not bfloat16_supported,
+                bf16=bfloat16_supported,
+                logging_steps=cfg["loggingSteps"],
+                optim=cfg["optimizer"],
+                weight_decay=cfg["weightDecay"],
+                lr_scheduler_type=cfg["lrSchedulerType"],
+                seed=cfg["seed"],
+                save_strategy="no",
+                report_to="none",
+            ),
+        )
+        validate_dpo_trainer_contract(
+            trainer,
+            policy_model=model,
+            objective=objective,
+            max_seq_length=max_seq_length,
+        )
+        trainer.train()
+        return save_trained_model(
+            model,
+            tokenizer,
+            trained_model_directory,
+        )
 
     dataset = prepare_training_dataset(
         dataset,
@@ -3864,12 +4199,7 @@ def train_model(
             policy=text_policy,
         )
     trainer.train()
-
-    trained_model_path = Path(trained_model_directory)
-    trained_model_path.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(trained_model_path)
-    tokenizer.save_pretrained(trained_model_path)
-    return trained_model_path
+    return save_trained_model(model, tokenizer, trained_model_directory)
 
 
 def export_model(

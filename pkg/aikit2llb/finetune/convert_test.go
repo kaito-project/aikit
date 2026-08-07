@@ -569,6 +569,7 @@ func fineTuneTestConfig() *config.FineTuneConfig {
 		APIVersion: utils.APIv1alpha1,
 		Target:     utils.TargetUnsloth,
 		BaseModel:  "base-model",
+		Objective:  config.FineTuneObjectiveSpec{Type: utils.ObjectiveSFT},
 		Config: config.FineTuneConfigSpec{
 			Unsloth: config.FineTuneConfigUnslothSpec{
 				MaxSeqLength:              2048,
@@ -582,6 +583,22 @@ func fineTuneTestConfig() *config.FineTuneConfig {
 		},
 		Output: config.FineTuneOutputSpec{Name: "output", Quantize: "q4_k_m"},
 	}
+}
+
+func fineTuneDPOTestConfig() *config.FineTuneConfig {
+	cfg := fineTuneTestConfig()
+	cfg.Objective = config.FineTuneObjectiveSpec{
+		Type:            utils.ObjectiveDPO,
+		Beta:            0.1,
+		LossType:        utils.DPOLossSigmoid,
+		MaxPromptLength: 512,
+	}
+	cfg.Datasets = []config.Dataset{{
+		Source: "organization/preferences",
+		Type:   utils.DatasetPreference,
+	}}
+	cfg.Config.Unsloth.LearningRate = 0.000001
+	return cfg
 }
 
 func marshalFineTuneDefinition(t *testing.T, cfg *config.FineTuneConfig) *llb.Definition {
@@ -704,6 +721,115 @@ func cloneFineTuneDefinition(definition [][]byte) [][]byte {
 		cloned[i] = slices.Clone(data)
 	}
 	return cloned
+}
+
+func TestAikit2LLBPropagatesDPOObjective(t *testing.T) {
+	cfg := fineTuneDPOTestConfig()
+	ops := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, cfg))
+	_, trainingConfigFile := findFineTuneFile(t, ops, "/train-config.yaml")
+	wantTrainingConfig := mustMarshalYAML(unslothTrainingConfig{
+		BaseModel: cfg.BaseModel,
+		Objective: trainingObjective(cfg.Objective),
+		Datasets:  cfg.Datasets,
+		Config:    cfg.Config,
+	})
+	if !slices.Equal(trainingConfigFile.Data, wantTrainingConfig) {
+		t.Fatalf("training config = %q, want %q", string(trainingConfigFile.Data), string(wantTrainingConfig))
+	}
+	for _, fragment := range []string{
+		"objective:\n",
+		"  type: dpo\n",
+		"  beta: 0.1\n",
+		"  lossType: sigmoid\n",
+		"  maxPromptLength: 512\n",
+		"  type: preference\n",
+	} {
+		if !strings.Contains(string(trainingConfigFile.Data), fragment) {
+			t.Errorf("training config does not contain %q: %q", fragment, trainingConfigFile.Data)
+		}
+	}
+
+	_, exportConfigFile := findFineTuneFile(t, ops, "/export-config.yaml")
+	if strings.Contains(string(exportConfigFile.Data), "objective:") || strings.Contains(string(exportConfigFile.Data), "beta:") {
+		t.Fatalf("export config unexpectedly contains DPO objective settings: %q", exportConfigFile.Data)
+	}
+}
+
+func TestAikit2LLBDPOObjectiveChangesInvalidateTrainingOnlyAfterDependencies(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*config.FineTuneConfig)
+	}{
+		{
+			name: "type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective = config.FineTuneObjectiveSpec{Type: utils.ObjectiveSFT}
+			},
+		},
+		{
+			name: "beta",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.Beta = 0.2
+			},
+		},
+		{
+			name: "loss type",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.LossType = "future-loss"
+			},
+		},
+		{
+			name: "max prompt length",
+			mutate: func(c *config.FineTuneConfig) {
+				c.Objective.MaxPromptLength = 256
+			},
+		},
+	}
+
+	baseCfg := fineTuneDPOTestConfig()
+	baseOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, baseCfg))
+	baseDependency := findFineTuneExec(t, baseOps, "uv pip sync")
+	baseTraining := findFineTuneExec(t, baseOps, "target_unsloth.py train")
+	baseExport := findFineTuneExec(t, baseOps, "target_unsloth.py export")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			changedCfg := fineTuneDPOTestConfig()
+			tt.mutate(changedCfg)
+			changedOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, changedCfg))
+			if got := findFineTuneExec(t, changedOps, "uv pip sync").digest; got != baseDependency.digest {
+				t.Fatalf("objective change invalidated dependency installation: got %s, want %s", got, baseDependency.digest)
+			}
+			if got := findFineTuneExec(t, changedOps, "target_unsloth.py train").digest; got == baseTraining.digest {
+				t.Fatalf("objective change did not invalidate training: %s", got)
+			}
+			if got := findFineTuneExec(t, changedOps, "target_unsloth.py export").digest; got == baseExport.digest {
+				t.Fatalf("objective change did not invalidate export: %s", got)
+			}
+		})
+	}
+}
+
+func TestAikit2LLBOmittedAndExplicitSFTObjectivesShareCacheDefinition(t *testing.T) {
+	explicitCfg := fineTuneTestConfig()
+	omittedCfg := fineTuneTestConfig()
+	omittedCfg.Objective = config.FineTuneObjectiveSpec{}
+
+	explicitOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, explicitCfg))
+	omittedOps := decodeFineTuneDefinition(t, marshalFineTuneDefinition(t, omittedCfg))
+	_, explicitTrainingConfig := findFineTuneFile(t, explicitOps, "/train-config.yaml")
+	_, omittedTrainingConfig := findFineTuneFile(t, omittedOps, "/train-config.yaml")
+	if !slices.Equal(explicitTrainingConfig.Data, omittedTrainingConfig.Data) {
+		t.Fatalf("omitted and explicit SFT training configs differ: %q != %q", omittedTrainingConfig.Data, explicitTrainingConfig.Data)
+	}
+	if strings.Contains(string(explicitTrainingConfig.Data), "objective:") {
+		t.Fatalf("default SFT training config unexpectedly contains objective: %q", explicitTrainingConfig.Data)
+	}
+	for _, phase := range []string{"uv pip sync", "target_unsloth.py train", "target_unsloth.py export"} {
+		if got, want := findFineTuneExec(t, omittedOps, phase).digest, findFineTuneExec(t, explicitOps, phase).digest; got != want {
+			t.Fatalf("omitted and explicit SFT produced different %s digests: got %s, want %s", phase, got, want)
+		}
+	}
 }
 
 func TestAikit2LLBPropagatesDatasetLoader(t *testing.T) {

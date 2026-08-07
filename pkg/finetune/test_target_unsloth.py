@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import math
 import tempfile
 import threading
 import unittest
@@ -81,6 +82,21 @@ def example_train_config():
             }
         },
     }
+
+
+def example_dpo_train_config():
+    train_config = example_train_config()
+    train_config["objective"] = {
+        "type": "dpo",
+        "beta": 0.1,
+        "lossType": "sigmoid",
+        "maxPromptLength": 512,
+    }
+    train_config["datasets"] = [
+        {"source": "organization/preferences", "type": "preference"}
+    ]
+    train_config["config"]["unsloth"]["learningRate"] = 0.000001
+    return train_config
 
 
 def in_memory_dataset(rows):
@@ -478,11 +494,41 @@ def example_train_dependencies(dataset):
         resolve_model_name=mock.Mock(return_value="example/resolved-model"),
         sft_config=mock.Mock(return_value="sft-config"),
         sft_trainer=mock.Mock(return_value=trainer),
+        dpo_config=mock.Mock(return_value="dpo-config"),
+        dpo_trainer=mock.Mock(),
         get_chat_template_parts=mock.Mock(
             return_value=("<user>", "<assistant>")
         ),
         train_on_responses_only=mock.Mock(side_effect=lambda trainer, **_: trainer),
     )
+    return dependencies
+
+
+def example_dpo_train_dependencies(dataset, *, train_config=None):
+    if train_config is None:
+        train_config = example_dpo_train_config()
+    dependencies = example_train_dependencies(dataset)
+    tokenizer = dependencies.fast_language_model.from_pretrained.return_value[1]
+    tokenizer.tokenizer = tokenizer
+    trainer = mock.Mock()
+    trainer.ref_model = None
+    trainer.is_peft_model = True
+    trainer.reference_free = False
+    trainer.beta = train_config["objective"]["beta"]
+    trainer.loss_type = [train_config["objective"]["lossType"]]
+    trainer.max_prompt_length = train_config["objective"]["maxPromptLength"]
+    trainer.max_length = train_config["config"]["unsloth"]["maxSeqLength"]
+    trainer.model = dependencies.fast_language_model.get_peft_model.return_value
+    trainer.accelerator = mock.Mock()
+    trainer.accelerator.unwrap_model.side_effect = lambda model: model
+
+    def construct_trainer(**kwargs):
+        trainer.train_dataset = kwargs["train_dataset"]
+        return trainer
+
+    dependencies.dpo_config.return_value = "dpo-config"
+    dependencies.dpo_trainer.side_effect = construct_trainer
+    dependencies.dpo_trainer.runtime_trainer = trainer
     return dependencies
 
 
@@ -669,6 +715,170 @@ class CLITest(unittest.TestCase):
         export_model.assert_called_once_with(export_config)
         self.assertEqual(output.getvalue(), "Loaded export configuration.\n")
         self.assertNotIn("must-not-log", output.getvalue())
+
+
+class TrainingObjectiveTest(unittest.TestCase):
+    def test_defaults_to_sft_when_omitted_null_or_empty(self):
+        for objective in (mock.sentinel.omitted, None, {}):
+            with self.subTest(objective=objective):
+                train_config = example_train_config()
+                if objective is not mock.sentinel.omitted:
+                    train_config["objective"] = objective
+                self.assertEqual(
+                    target_unsloth.training_objective_spec(train_config),
+                    target_unsloth.TrainingObjectiveSpec(
+                        objective_type="sft",
+                        beta=None,
+                        loss_type=None,
+                        max_prompt_length=None,
+                    ),
+                )
+
+    def test_parses_dpo_defaults_and_explicit_values(self):
+        train_config = example_train_config()
+        train_config["objective"] = {"type": "dpo"}
+        self.assertEqual(
+            target_unsloth.training_objective_spec(train_config),
+            target_unsloth.TrainingObjectiveSpec(
+                objective_type="dpo",
+                beta=0.1,
+                loss_type="sigmoid",
+                max_prompt_length=512,
+            ),
+        )
+
+        train_config["objective"] = {
+            "type": "dpo",
+            "beta": 0.25,
+            "lossType": "sigmoid",
+            "maxPromptLength": 128,
+        }
+        self.assertEqual(
+            target_unsloth.training_objective_spec(train_config),
+            target_unsloth.TrainingObjectiveSpec(
+                objective_type="dpo",
+                beta=0.25,
+                loss_type="sigmoid",
+                max_prompt_length=128,
+            ),
+        )
+
+    def test_rejects_invalid_objective_shapes_and_fields(self):
+        cases = (
+            ([], "must be a mapping"),
+            ({1: "dpo"}, "field names must be strings"),
+            ({"type": "dpo", "future": True}, "unknown fields"),
+            ({"type": ""}, "unsupported training objective"),
+            ({"type": "orpo"}, "unsupported training objective"),
+            ({"type": "sft", "beta": 0.1}, "does not support DPO fields"),
+            ({"type": "sft", "lossType": None}, "does not support DPO fields"),
+        )
+        for objective, error_pattern in cases:
+            with self.subTest(objective=objective):
+                train_config = example_train_config()
+                train_config["objective"] = objective
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.training_objective_spec(train_config)
+
+    def test_rejects_invalid_dpo_values(self):
+        cases = (
+            ("beta", False, "beta.*finite"),
+            ("beta", "0.1", "beta.*finite"),
+            ("beta", 0, "beta.*finite"),
+            ("beta", -0.1, "beta.*finite"),
+            ("beta", math.nan, "beta.*finite"),
+            ("beta", math.inf, "beta.*finite"),
+            ("lossType", "", "unsupported DPO.*loss"),
+            ("lossType", "hinge", "unsupported DPO.*loss"),
+            ("maxPromptLength", False, "maxPromptLength.*integer"),
+            ("maxPromptLength", 1.5, "maxPromptLength.*integer"),
+            ("maxPromptLength", 0, "maxPromptLength.*integer"),
+            ("maxPromptLength", -1, "maxPromptLength.*integer"),
+        )
+        for field, value, error_pattern in cases:
+            with self.subTest(field=field, value=value):
+                train_config = example_train_config()
+                train_config["objective"] = {"type": "dpo", field: value}
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.training_objective_spec(train_config)
+
+    def test_validates_objective_dataset_and_sft_settings(self):
+        train_config = example_dpo_train_config()
+        objective = target_unsloth.training_objective_spec(train_config)
+        dataset_spec = target_unsloth.training_dataset_spec(train_config)
+        self.assertEqual(
+            target_unsloth.validate_training_objective(
+                train_config,
+                objective=objective,
+                dataset_spec=dataset_spec,
+            ),
+            "all",
+        )
+
+        cases = (
+            (
+                "SFT preference",
+                lambda config: config.pop("objective"),
+                "preference datasets.*DPO",
+            ),
+            (
+                "DPO Alpaca",
+                lambda config: config["datasets"][0].update(type="alpaca"),
+                "DPO objective requires a preference dataset",
+            ),
+            (
+                "DPO packing",
+                lambda config: config["config"]["unsloth"].update(
+                    packing=True
+                ),
+                "DPO objective does not support packing",
+            ),
+            (
+                "DPO non-boolean packing",
+                lambda config: config["config"]["unsloth"].update(
+                    packing="false"
+                ),
+                "packing must be a boolean",
+            ),
+            (
+                "DPO response loss",
+                lambda config: config["config"]["unsloth"].update(
+                    loss="response"
+                ),
+                "response SFT loss.*DPO",
+            ),
+            (
+                "DPO prompt too long",
+                lambda config: config["objective"].update(
+                    maxPromptLength=4096
+                ),
+                "maxPromptLength must not exceed",
+            ),
+            (
+                "DPO text loader",
+                lambda config: config["datasets"][0].update(
+                    source="https://example.test/preferences.txt",
+                    loader={"type": "text"},
+                ),
+                "do not support the text loader",
+            ),
+        )
+        for name, mutate, error_pattern in cases:
+            with self.subTest(name=name):
+                invalid_config = example_dpo_train_config()
+                mutate(invalid_config)
+                invalid_objective = target_unsloth.training_objective_spec(
+                    invalid_config
+                )
+                invalid_dataset = target_unsloth.training_dataset_spec(
+                    invalid_config
+                )
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.validate_training_objective(
+                        invalid_config,
+                        objective=invalid_objective,
+                        dataset_spec=invalid_dataset,
+                    )
 
 
 class DatasetSourceTest(unittest.TestCase):
@@ -3693,8 +3903,11 @@ class TrainingPhaseTest(unittest.TestCase):
         rows,
         error_pattern,
     ):
-        train_config = example_train_config()
-        train_config["datasets"][0]["type"] = dataset_type
+        if dataset_type == target_unsloth.DATASET_TYPE_PREFERENCE:
+            train_config = example_dpo_train_config()
+        else:
+            train_config = example_train_config()
+            train_config["datasets"][0]["type"] = dataset_type
         dataset = in_memory_dataset(rows)
         dependencies = example_train_dependencies(dataset)
 
@@ -3713,9 +3926,10 @@ class TrainingPhaseTest(unittest.TestCase):
             dependencies.resolve_model_name.assert_not_called()
             dependencies.model_info.assert_not_called()
             dependencies.sft_trainer.assert_not_called()
+            dependencies.dpo_trainer.assert_not_called()
 
         dependencies.load_dataset.assert_called_once_with(
-            "organization/dataset",
+            train_config["datasets"][0]["source"],
             split="train",
         )
 
@@ -3821,6 +4035,8 @@ class TrainingPhaseTest(unittest.TestCase):
             dependencies.sft_config.call_args.kwargs.get("completion_only_loss"),
             False,
         )
+        dependencies.dpo_config.assert_not_called()
+        dependencies.dpo_trainer.assert_not_called()
 
     def test_messages_dataset_renders_to_text_and_verifies_actual_full_loss(self):
         train_config = example_train_config()
@@ -4982,6 +5198,11 @@ class TrainingPhaseTest(unittest.TestCase):
             ]
         }
         valid_text = {"text": "A complete preformatted sequence."}
+        valid_preference = {
+            "prompt": "Question?",
+            "chosen": "A careful answer.",
+            "rejected": "An unsafe answer.",
+        }
         cases = (
             (
                 "empty messages dataset",
@@ -5081,6 +5302,60 @@ class TrainingPhaseTest(unittest.TestCase):
                 "source 'organization/dataset' row 1.*text.*non-empty string",
             ),
             (
+                "empty preference dataset",
+                "preference",
+                [],
+                "preference dataset source 'organization/preferences'.*at least one",
+            ),
+            (
+                "missing preference column",
+                "preference",
+                [{"prompt": "Question?", "chosen": "Answer."}],
+                "missing required columns.*rejected",
+            ),
+            (
+                "null preference prompt",
+                "preference",
+                [{**valid_preference, "prompt": None}],
+                "prompt.*string",
+            ),
+            (
+                "non-string preference chosen",
+                "preference",
+                [{**valid_preference, "chosen": ["Answer"]}],
+                "chosen.*string",
+            ),
+            (
+                "null preference rejected",
+                "preference",
+                [{**valid_preference, "rejected": None}],
+                "rejected.*string",
+            ),
+            (
+                "empty preference prompt",
+                "preference",
+                [{**valid_preference, "prompt": ""}],
+                "prompt.*non-empty string",
+            ),
+            (
+                "whitespace preference chosen",
+                "preference",
+                [{**valid_preference, "chosen": " \t"}],
+                "chosen.*non-empty string",
+            ),
+            (
+                "empty preference rejected",
+                "preference",
+                [{**valid_preference, "rejected": ""}],
+                "rejected.*non-empty string",
+            ),
+            (
+                "identical preference choices",
+                "preference",
+                [{**valid_preference, "rejected": valid_preference["chosen"]}],
+                "chosen.*rejected.*distinct",
+            ),
+            (
                 "missing Alpaca column",
                 "alpaca",
                 [{"instruction": "Summarize", "input": "Passage"}],
@@ -5134,6 +5409,8 @@ class TrainingPhaseTest(unittest.TestCase):
             resolve_model_name=mock.Mock(return_value="example/resolved-model"),
             sft_config=mock.Mock(),
             sft_trainer=mock.Mock(),
+            dpo_config=mock.Mock(),
+            dpo_trainer=mock.Mock(),
             get_chat_template_parts=mock.Mock(),
             train_on_responses_only=mock.Mock(),
         )
@@ -5155,6 +5432,389 @@ class TrainingPhaseTest(unittest.TestCase):
         dataset.map.assert_not_called()
         dataset.projected_dataset.map.assert_not_called()
 
+
+class DPOTrainingPhaseTest(unittest.TestCase):
+    def preference_rows(self):
+        return [
+            {
+                "prompt": "How should I rotate an API key?",
+                "chosen": "Deploy a replacement before revoking the old key.",
+                "rejected": "Revoke the old key before creating a replacement.",
+                "metadata": "must be removed",
+            },
+            {
+                "prompt": "How should I store a secret?",
+                "chosen": "Use a dedicated secret manager.",
+                "rejected": "Commit it to source control.",
+                "metadata": "must also be removed",
+            },
+        ]
+
+    def test_trains_dpo_without_sft_formatting_and_preserves_preferences(self):
+        train_config = example_dpo_train_config()
+        train_config["objective"].update(beta=0.25, maxPromptLength=128)
+        train_config["config"]["unsloth"].update(
+            maxSeqLength=1024,
+            batchSize=1,
+            gradientAccumulationSteps=2,
+            warmupSteps=3,
+            maxSteps=4,
+            learningRate=0.000001,
+            loggingSteps=5,
+            optimizer="adamw_8bit",
+            weightDecay=0.02,
+            lrSchedulerType="cosine",
+            seed=7,
+        )
+        dataset = FunctionalDataset(self.preference_rows())
+        dependencies = example_dpo_train_dependencies(
+            dataset,
+            train_config=train_config,
+        )
+        base_model, tokenizer = (
+            dependencies.fast_language_model.from_pretrained.return_value
+        )
+        adapter_model = (
+            dependencies.fast_language_model.get_peft_model.return_value
+        )
+        runtime_trainer = dependencies.dpo_trainer.runtime_trainer
+
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            mock.patch.object(
+                target_unsloth,
+                "prepare_training_dataset",
+            ) as prepare_training_dataset,
+            mock.patch.object(
+                target_unsloth,
+                "format_alpaca_examples",
+            ) as format_alpaca_examples,
+        ):
+            trained_model_directory = (
+                Path(temporary_directory) / "trained-model"
+            )
+            result = target_unsloth.train_model(
+                train_config,
+                trained_model_directory=trained_model_directory,
+                dependencies=dependencies,
+            )
+
+        self.assertEqual(result, trained_model_directory)
+        dependencies.load_dataset.assert_called_once_with(
+            "organization/preferences",
+            split="train",
+        )
+        dataset.select_columns.assert_called_once_with(
+            ["prompt", "chosen", "rejected"]
+        )
+        projected_dataset = dataset.projected_dataset
+        self.assertEqual(
+            projected_dataset.column_names,
+            ["prompt", "chosen", "rejected"],
+        )
+        self.assertEqual(
+            list(projected_dataset),
+            [
+                {
+                    "prompt": row["prompt"],
+                    "chosen": row["chosen"],
+                    "rejected": row["rejected"],
+                }
+                for row in self.preference_rows()
+            ],
+        )
+        projected_dataset.map.assert_not_called()
+        prepare_training_dataset.assert_not_called()
+        format_alpaca_examples.assert_not_called()
+        dependencies.sft_config.assert_not_called()
+        dependencies.sft_trainer.assert_not_called()
+        dependencies.get_chat_template_parts.assert_not_called()
+        dependencies.train_on_responses_only.assert_not_called()
+
+        dependencies.dpo_config.assert_called_once_with(
+            output_dir="outputs",
+            dataset_num_proc=2,
+            max_length=1024,
+            max_prompt_length=128,
+            max_completion_length=None,
+            truncation_mode="keep_end",
+            beta=0.25,
+            loss_type="sigmoid",
+            reference_free=False,
+            per_device_train_batch_size=1,
+            gradient_accumulation_steps=2,
+            warmup_steps=3,
+            max_steps=4,
+            learning_rate=0.000001,
+            fp16=False,
+            bf16=True,
+            logging_steps=5,
+            optim="adamw_8bit",
+            weight_decay=0.02,
+            lr_scheduler_type="cosine",
+            seed=7,
+            save_strategy="no",
+            report_to="none",
+        )
+        dependencies.dpo_trainer.assert_called_once_with(
+            model=adapter_model,
+            ref_model=None,
+            train_dataset=projected_dataset,
+            processing_class=tokenizer,
+            args="dpo-config",
+        )
+        dpo_kwargs = dependencies.dpo_config.call_args.kwargs
+        for sft_only_field in (
+            "packing",
+            "dataset_text_field",
+            "assistant_only_loss",
+            "completion_only_loss",
+            "peft_config",
+        ):
+            self.assertNotIn(sft_only_field, dpo_kwargs)
+            self.assertNotIn(
+                sft_only_field,
+                dependencies.dpo_trainer.call_args.kwargs,
+            )
+
+        runtime_trainer.train.assert_called_once_with()
+        dependencies.fast_language_model.from_pretrained.assert_called_once_with(
+            model_name="example/model",
+            max_seq_length=1024,
+            dtype=None,
+            load_in_4bit=True,
+        )
+        dependencies.fast_language_model.get_peft_model.assert_called_once()
+        adapter_model.save_pretrained.assert_called_once_with(
+            trained_model_directory
+        )
+        tokenizer.save_pretrained.assert_called_once_with(
+            trained_model_directory
+        )
+        self.assertIs(
+            base_model,
+            dependencies.fast_language_model.from_pretrained.return_value[0],
+        )
+
+    def test_rejects_dpo_configuration_before_loading_or_model_allocation(self):
+        cases = (
+            (
+                "SFT dataset",
+                lambda config: config["datasets"][0].update(type="alpaca"),
+                "DPO objective requires a preference dataset",
+            ),
+            (
+                "packing",
+                lambda config: config["config"]["unsloth"].update(
+                    packing=True
+                ),
+                "does not support packing",
+            ),
+            (
+                "response loss",
+                lambda config: config["config"]["unsloth"].update(
+                    loss="response"
+                ),
+                "response SFT loss",
+            ),
+        )
+        for name, mutate, error_pattern in cases:
+            with self.subTest(name=name):
+                train_config = example_dpo_train_config()
+                mutate(train_config)
+                dependencies = example_train_dependencies(mock.Mock())
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.train_model(
+                        train_config,
+                        dependencies=dependencies,
+                    )
+                dependencies.load_dataset.assert_not_called()
+                dependencies.fast_language_model.from_pretrained.assert_not_called()
+                dependencies.fast_language_model.get_peft_model.assert_not_called()
+                dependencies.sft_trainer.assert_not_called()
+                dependencies.dpo_trainer.assert_not_called()
+
+    def test_rejects_invalid_dpo_runtime_contract_before_training(self):
+        cases = (
+            (
+                "reference model",
+                lambda trainer, _model: setattr(trainer, "ref_model", object()),
+                "must use ref_model=None",
+            ),
+            (
+                "not PEFT",
+                lambda trainer, _model: setattr(
+                    trainer, "is_peft_model", False
+                ),
+                "did not recognize.*PEFT",
+            ),
+            (
+                "reference free",
+                lambda trainer, _model: setattr(
+                    trainer, "reference_free", True
+                ),
+                "must not use reference-free",
+            ),
+            (
+                "policy model replaced",
+                lambda trainer, _model: setattr(trainer, "model", mock.Mock()),
+                "replaced the policy model",
+            ),
+            (
+                "adapter cannot be disabled",
+                lambda _trainer, model: setattr(model, "disable_adapter", None),
+                "does not support disabling.*PEFT adapter",
+            ),
+            (
+                "beta mismatch",
+                lambda trainer, _model: setattr(trainer, "beta", 0.2),
+                "beta does not match",
+            ),
+            (
+                "loss mismatch",
+                lambda trainer, _model: setattr(
+                    trainer, "loss_type", ["hinge"]
+                ),
+                "loss type does not match",
+            ),
+            (
+                "prompt length mismatch",
+                lambda trainer, _model: setattr(
+                    trainer, "max_prompt_length", 128
+                ),
+                "max prompt length does not match",
+            ),
+            (
+                "sequence length mismatch",
+                lambda trainer, _model: setattr(
+                    trainer, "max_length", 1024
+                ),
+                "max length does not match",
+            ),
+        )
+        for name, mutate, error_pattern in cases:
+            with self.subTest(name=name):
+                train_config = example_dpo_train_config()
+                dataset = in_memory_dataset(self.preference_rows())
+                dependencies = example_dpo_train_dependencies(dataset)
+                runtime_trainer = mock.Mock()
+                runtime_trainer.ref_model = None
+                runtime_trainer.is_peft_model = True
+                runtime_trainer.reference_free = False
+                runtime_trainer.beta = 0.1
+                runtime_trainer.loss_type = ["sigmoid"]
+                runtime_trainer.max_prompt_length = 512
+                runtime_trainer.max_length = 2048
+                runtime_trainer.model = (
+                    dependencies.fast_language_model.get_peft_model.return_value
+                )
+                runtime_trainer.accelerator = mock.Mock()
+                runtime_trainer.accelerator.unwrap_model.side_effect = (
+                    lambda model: model
+                )
+
+                def construct_trainer(**kwargs):
+                    runtime_trainer.train_dataset = kwargs["train_dataset"]
+                    return runtime_trainer
+
+                dependencies.dpo_trainer.side_effect = construct_trainer
+                mutate(runtime_trainer, runtime_trainer.model)
+                with self.assertRaisesRegex(RuntimeError, error_pattern):
+                    target_unsloth.train_model(
+                        train_config,
+                        dependencies=dependencies,
+                    )
+                runtime_trainer.train.assert_not_called()
+                runtime_trainer.model.save_pretrained.assert_not_called()
+
+    def test_rejects_empty_dataset_after_dpo_trainer_preprocessing(self):
+        train_config = example_dpo_train_config()
+        dataset = in_memory_dataset(self.preference_rows())
+        dependencies = example_dpo_train_dependencies(dataset)
+        runtime_trainer = dependencies.dpo_trainer.runtime_trainer
+
+        def construct_empty_trainer(**_kwargs):
+            runtime_trainer.train_dataset = []
+            return runtime_trainer
+
+        dependencies.dpo_trainer.side_effect = construct_empty_trainer
+        with self.assertRaisesRegex(RuntimeError, "prepared an empty"):
+            target_unsloth.train_model(
+                train_config,
+                dependencies=dependencies,
+            )
+
+        runtime_trainer.train.assert_not_called()
+        runtime_trainer.model.save_pretrained.assert_not_called()
+
+    def test_dpo_checksum_failure_prevents_parser_and_model_allocation(self):
+        body = (
+            b'{"prompt":"Question?","chosen":"Safe",'
+            b'"rejected":"Unsafe"}\n'
+        )
+        with LocalDatasetServer({"/preferences.jsonl": body}) as server:
+            signed_url = (
+                server.url("/preferences.jsonl")
+                + "?token=private-value#fragment-marker"
+            )
+            train_config = example_dpo_train_config()
+            train_config["datasets"][0].update(
+                source=signed_url,
+                loader={
+                    "type": "json",
+                    "checksum": "sha256:" + "0" * 64,
+                },
+            )
+            dependencies = example_dpo_train_dependencies(mock.Mock())
+
+            with tempfile.TemporaryDirectory() as cache_directory:
+                with mock.patch.dict(
+                    target_unsloth.os.environ,
+                    {"HF_DATASETS_CACHE": cache_directory},
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "checksum does not match",
+                    ) as raised:
+                        target_unsloth.train_model(
+                            train_config,
+                            dependencies=dependencies,
+                        )
+
+        for secret in ("token", "private-value", "fragment-marker"):
+            self.assertNotIn(secret, str(raised.exception))
+        dependencies.load_dataset.assert_not_called()
+        dependencies.fast_language_model.from_pretrained.assert_not_called()
+        dependencies.fast_language_model.get_peft_model.assert_not_called()
+        dependencies.dpo_trainer.assert_not_called()
+
+    def test_rejects_missing_dpo_tokenizer_eos_before_lora_allocation(self):
+        train_config = example_dpo_train_config()
+        dataset = in_memory_dataset(self.preference_rows())
+        dependencies = example_dpo_train_dependencies(dataset)
+        tokenizer = dependencies.fast_language_model.from_pretrained.return_value[1]
+        tokenizer.eos_token = None
+
+        with self.assertRaisesRegex(RuntimeError, "tokenizer EOS token"):
+            target_unsloth.train_model(
+                train_config,
+                dependencies=dependencies,
+            )
+
+        dependencies.fast_language_model.get_peft_model.assert_not_called()
+        dependencies.dpo_trainer.assert_not_called()
+
+    def test_imports_unsloth_before_trl_dpo_dependencies(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        function_start = source.index("def load_train_dependencies()")
+        function_end = source.index("\ndef load_export_dependencies()", function_start)
+        dependency_source = source[function_start:function_end]
+        self.assertLess(
+            dependency_source.index("from unsloth import"),
+            dependency_source.index("from trl import"),
+        )
+        self.assertIn("DPOConfig", dependency_source)
+        self.assertIn("DPOTrainer", dependency_source)
 
 class ExportPhaseTest(unittest.TestCase):
     def test_reloads_adapter_and_exports_staged_gguf(self):

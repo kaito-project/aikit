@@ -436,6 +436,13 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 		return errors.New("baseModel is not defined")
 	}
 
+	if strings.TrimSpace(c.Objective.Type) == "" {
+		return errors.New("objective.type is not defined")
+	}
+	if c.Objective.Type != utils.ObjectiveSFT && c.Objective.Type != utils.ObjectiveDPO {
+		return errors.Errorf("objective.type %s is not supported", c.Objective.Type)
+	}
+
 	if len(c.Datasets) == 0 {
 		return errors.New("no datasets defined")
 	}
@@ -449,7 +456,7 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 			return errors.New("dataset source is not defined")
 		}
 		switch dataset.Type {
-		case utils.DatasetAlpaca, utils.DatasetMessages, utils.DatasetPromptCompletion, utils.DatasetShareGPT, utils.DatasetText:
+		case utils.DatasetAlpaca, utils.DatasetMessages, utils.DatasetPreference, utils.DatasetPromptCompletion, utils.DatasetShareGPT, utils.DatasetText:
 		default:
 			return errors.Errorf("dataset type %s is not supported", dataset.Type)
 		}
@@ -465,19 +472,57 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 	if unsloth.Loss != utils.SFTLossAll && unsloth.Loss != utils.SFTLossResponse {
 		return errors.Errorf("config.unsloth.loss %s is not supported", unsloth.Loss)
 	}
-	if unsloth.Loss == utils.SFTLossResponse {
-		for _, dataset := range c.Datasets {
-			if dataset.Type != utils.DatasetMessages && dataset.Type != utils.DatasetShareGPT {
-				return errors.Errorf("config.unsloth.loss response is not supported for dataset type %s", dataset.Type)
-			}
-		}
-		if unsloth.Packing {
-			return errors.New("config.unsloth.loss response does not support packing because response masks must not cross conversation boundaries")
-		}
-	}
 	if unsloth.MaxSeqLength <= 0 {
 		return errors.New("config.unsloth.maxSeqLength must be greater than zero")
 	}
+
+	dataset := c.Datasets[0]
+	switch c.Objective.Type {
+	case utils.ObjectiveSFT:
+		if c.Objective.HasDPOSettings() {
+			return errors.New("objective beta, lossType, and maxPromptLength are supported only for objective type dpo")
+		}
+		if dataset.Type == utils.DatasetPreference {
+			return errors.New("dataset type preference is supported only for objective type dpo")
+		}
+		if unsloth.Loss == utils.SFTLossResponse {
+			if dataset.Type != utils.DatasetMessages && dataset.Type != utils.DatasetShareGPT {
+				return errors.Errorf("config.unsloth.loss response is not supported for dataset type %s", dataset.Type)
+			}
+			if unsloth.Packing {
+				return errors.New("config.unsloth.loss response does not support packing because response masks must not cross conversation boundaries")
+			}
+		}
+	case utils.ObjectiveDPO:
+		if dataset.Type != utils.DatasetPreference {
+			return errors.Errorf("objective type dpo requires dataset type preference, got %s", dataset.Type)
+		}
+		if dataset.Loader != nil && dataset.Loader.Type == utils.DatasetLoaderText {
+			return errors.New("dataset type preference does not support loader type text because DPO requires prompt, chosen, and rejected columns")
+		}
+		if unsloth.Loss == utils.SFTLossResponse {
+			return errors.New("config.unsloth.loss response is an SFT-only setting and is not supported for objective type dpo")
+		}
+		if unsloth.Packing {
+			return errors.New("objective type dpo does not support config.unsloth.packing")
+		}
+		if c.Objective.Beta <= 0 || math.IsNaN(c.Objective.Beta) || math.IsInf(c.Objective.Beta, 0) {
+			return errors.New("objective.beta must be a finite value greater than zero")
+		}
+		if strings.TrimSpace(c.Objective.LossType) == "" {
+			return errors.New("objective.lossType is not defined")
+		}
+		if c.Objective.LossType != utils.DPOLossSigmoid {
+			return errors.Errorf("objective.lossType %s is not supported", c.Objective.LossType)
+		}
+		if c.Objective.MaxPromptLength <= 0 {
+			return errors.New("objective.maxPromptLength must be greater than zero")
+		}
+		if c.Objective.MaxPromptLength > unsloth.MaxSeqLength {
+			return errors.New("objective.maxPromptLength must not exceed config.unsloth.maxSeqLength")
+		}
+	}
+
 	if unsloth.BatchSize <= 0 {
 		return errors.New("config.unsloth.batchSize must be greater than zero")
 	}
