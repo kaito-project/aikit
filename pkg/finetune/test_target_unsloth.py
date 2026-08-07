@@ -763,6 +763,22 @@ class TrainingObjectiveTest(unittest.TestCase):
             ),
         )
 
+    def test_normalizes_go_yaml_scientific_dpo_beta(self):
+        train_config = target_unsloth.parse_config(
+            """objective:
+  type: dpo
+  beta: 1e-06
+  lossType: sigmoid
+  maxPromptLength: 512
+"""
+        )
+        self.assertEqual(train_config["objective"]["beta"], "1e-06")
+
+        objective = target_unsloth.training_objective_spec(train_config)
+
+        self.assertEqual(objective.beta, 1e-6)
+        self.assertIsInstance(objective.beta, float)
+
     def test_rejects_invalid_objective_shapes_and_fields(self):
         cases = (
             ([], "must be a mapping"),
@@ -784,6 +800,9 @@ class TrainingObjectiveTest(unittest.TestCase):
         cases = (
             ("beta", False, "beta.*finite"),
             ("beta", "0.1", "beta.*finite"),
+            ("beta", "0e+00", "beta.*finite"),
+            ("beta", "-1e-06", "beta.*finite"),
+            ("beta", "1e+309", "beta.*finite"),
             ("beta", 0, "beta.*finite"),
             ("beta", -0.1, "beta.*finite"),
             ("beta", math.nan, "beta.*finite"),
@@ -5595,6 +5614,90 @@ class DPOTrainingPhaseTest(unittest.TestCase):
             base_model,
             dependencies.fast_language_model.from_pretrained.return_value[0],
         )
+
+    def test_normalizes_go_yaml_scientific_floats_for_dpo_config(self):
+        train_config = target_unsloth.parse_config(
+            """baseModel: example/model
+objective:
+  type: dpo
+  beta: 1e-06
+  lossType: sigmoid
+  maxPromptLength: 512
+datasets:
+- source: organization/preferences
+  type: preference
+config:
+  unsloth:
+    packing: false
+    maxSeqLength: 2048
+    loadIn4bit: true
+    loss: all
+    batchSize: 2
+    gradientAccumulationSteps: 4
+    warmupSteps: 10
+    maxSteps: 60
+    learningRate: 1e-06
+    loggingSteps: 1
+    optimizer: adamw_8bit
+    weightDecay: 1e-06
+    lrSchedulerType: linear
+    seed: 42
+"""
+        )
+        cfg = train_config["config"]["unsloth"]
+        self.assertEqual(train_config["objective"]["beta"], "1e-06")
+        self.assertEqual(cfg["learningRate"], "1e-06")
+        self.assertEqual(cfg["weightDecay"], "1e-06")
+
+        dataset = FunctionalDataset(self.preference_rows())
+        dependencies = example_dpo_train_dependencies(
+            dataset,
+            train_config=train_config,
+        )
+        dependencies.dpo_trainer.runtime_trainer.beta = 1e-6
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            target_unsloth.train_model(
+                train_config,
+                trained_model_directory=(
+                    Path(temporary_directory) / "trained-model"
+                ),
+                dependencies=dependencies,
+            )
+
+        dpo_config = dependencies.dpo_config.call_args.kwargs
+        self.assertEqual(dpo_config["beta"], 1e-6)
+        self.assertIsInstance(dpo_config["beta"], float)
+        self.assertEqual(dpo_config["learning_rate"], 1e-6)
+        self.assertIsInstance(dpo_config["learning_rate"], float)
+        self.assertEqual(dpo_config["weight_decay"], 1e-6)
+        self.assertIsInstance(dpo_config["weight_decay"], float)
+
+    def test_rejects_invalid_transport_floats_before_loading_or_model_allocation(
+        self,
+    ):
+        cases = (
+            ("learningRate", "0e+00", "learningRate.*greater than zero"),
+            ("learningRate", "1e+309", "learningRate.*greater than zero"),
+            ("weightDecay", "-1e-06", "weightDecay.*zero or greater"),
+            ("weightDecay", "1e+309", "weightDecay.*zero or greater"),
+        )
+        for field, value, error_pattern in cases:
+            with self.subTest(field=field, value=value):
+                train_config = example_dpo_train_config()
+                train_config["config"]["unsloth"][field] = value
+                dependencies = example_train_dependencies(mock.Mock())
+
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    target_unsloth.train_model(
+                        train_config,
+                        dependencies=dependencies,
+                    )
+
+                dependencies.load_dataset.assert_not_called()
+                dependencies.fast_language_model.from_pretrained.assert_not_called()
+                dependencies.fast_language_model.get_peft_model.assert_not_called()
+                dependencies.dpo_config.assert_not_called()
+                dependencies.dpo_trainer.assert_not_called()
 
     def test_rejects_dpo_configuration_before_loading_or_model_allocation(self):
         cases = (

@@ -32,6 +32,9 @@ ADAPTER_CONFIG_FILENAME = "adapter_config.json"
 HF_COMMIT_HASH_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DATASET_CHECKSUM_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 DATASET_SPLIT_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$")
+GO_YAML_SCIENTIFIC_FLOAT_PATTERN = re.compile(
+    r"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)[eE][+-]?[0-9]+$"
+)
 DATASET_LOADER_HUGGINGFACE = "huggingface"
 DATASET_LOADER_JSON = "json"
 DATASET_LOADER_CSV = "csv"
@@ -305,6 +308,35 @@ def output_config(export_config: Mapping[str, Any]) -> Mapping[str, Any]:
     return export_config["output"]
 
 
+def normalize_go_yaml_float(
+    value: Any,
+    *,
+    description: str,
+    allow_zero: bool,
+) -> float:
+    """Normalize Go YAML scientific scalars and enforce their numeric range."""
+    requirement = "zero or greater" if allow_zero else "greater than zero"
+    error_message = f"{description} must be a finite value {requirement}"
+
+    if isinstance(value, str):
+        if GO_YAML_SCIENTIFIC_FLOAT_PATTERN.fullmatch(value) is None:
+            raise ValueError(error_message)
+        value = float(value)
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(error_message)
+
+    normalized = float(value)
+    if (
+        not math.isfinite(normalized)
+        or normalized < 0
+        or (not allow_zero and normalized == 0)
+    ):
+        raise ValueError(error_message)
+
+    return normalized
+
+
 def training_objective_spec(
     train_config: Mapping[str, Any],
 ) -> TrainingObjectiveSpec:
@@ -356,14 +388,11 @@ def training_objective_spec(
         )
 
     configured_beta = objective.get("beta", DEFAULT_DPO_BETA)
-    beta = DEFAULT_DPO_BETA if configured_beta is None else configured_beta
-    if (
-        isinstance(beta, bool)
-        or not isinstance(beta, (int, float))
-        or not math.isfinite(beta)
-        or beta <= 0
-    ):
-        raise ValueError("DPO objective beta must be a finite value greater than zero")
+    beta = normalize_go_yaml_float(
+        DEFAULT_DPO_BETA if configured_beta is None else configured_beta,
+        description="DPO objective beta",
+        allow_zero=False,
+    )
 
     configured_loss_type = objective.get("lossType", DPO_LOSS_SIGMOID)
     loss_type = (
@@ -394,7 +423,7 @@ def training_objective_spec(
 
     return TrainingObjectiveSpec(
         objective_type=OBJECTIVE_TYPE_DPO,
-        beta=float(beta),
+        beta=beta,
         loss_type=loss_type,
         max_prompt_length=max_prompt_length,
     )
@@ -3921,6 +3950,16 @@ def train_model(
 
     cfg = unsloth_config(train_config)
     max_seq_length = cfg["maxSeqLength"]
+    learning_rate = normalize_go_yaml_float(
+        cfg["learningRate"],
+        description="config.unsloth.learningRate",
+        allow_zero=False,
+    )
+    weight_decay = normalize_go_yaml_float(
+        cfg["weightDecay"],
+        description="config.unsloth.weightDecay",
+        allow_zero=True,
+    )
 
     dataset = load_training_dataset(
         dataset_spec,
@@ -4068,12 +4107,12 @@ def train_model(
                 ],
                 warmup_steps=cfg["warmupSteps"],
                 max_steps=cfg["maxSteps"],
-                learning_rate=cfg["learningRate"],
+                learning_rate=learning_rate,
                 fp16=not bfloat16_supported,
                 bf16=bfloat16_supported,
                 logging_steps=cfg["loggingSteps"],
                 optim=cfg["optimizer"],
-                weight_decay=cfg["weightDecay"],
+                weight_decay=weight_decay,
                 lr_scheduler_type=cfg["lrSchedulerType"],
                 seed=cfg["seed"],
                 save_strategy="no",
@@ -4119,12 +4158,12 @@ def train_model(
             gradient_accumulation_steps=cfg["gradientAccumulationSteps"],
             warmup_steps=cfg["warmupSteps"],
             max_steps=cfg["maxSteps"],
-            learning_rate=cfg["learningRate"],
+            learning_rate=learning_rate,
             fp16=not bfloat16_supported,
             bf16=bfloat16_supported,
             logging_steps=cfg["loggingSteps"],
             optim=cfg["optimizer"],
-            weight_decay=cfg["weightDecay"],
+            weight_decay=weight_decay,
             lr_scheduler_type=cfg["lrSchedulerType"],
             seed=cfg["seed"],
             save_strategy="no",

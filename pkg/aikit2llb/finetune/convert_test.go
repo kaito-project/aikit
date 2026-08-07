@@ -743,6 +743,7 @@ func TestAikit2LLBPropagatesDPOObjective(t *testing.T) {
 		"  lossType: sigmoid\n",
 		"  maxPromptLength: 512\n",
 		"  type: preference\n",
+		"    learningRate: 1e-06\n",
 	} {
 		if !strings.Contains(string(trainingConfigFile.Data), fragment) {
 			t.Errorf("training config does not contain %q: %q", fragment, trainingConfigFile.Data)
