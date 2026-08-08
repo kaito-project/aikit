@@ -140,7 +140,7 @@ if [[ -z "$MODEL" ]]; then
   echo ""
   echo "Examples:"
   if [[ "$BACKEND" == "vllm-cpp" ]]; then
-    echo "  docker run -p 8080:8080 <image> org/safetensors-model"
+    echo "  docker run -p 8080:8080 <image> org/safetensors-model@0123456789abcdef0123456789abcdef01234567"
     echo "  docker run -p 8080:8080 <image> https://example.com/model.gguf"
     echo "  docker run -p 8080:8080 <image> --model org/safetensors-model"
   else
@@ -332,9 +332,12 @@ VLLM_CPP_PAYLOAD_DIR="$VLLM_CPP_MODEL_DIR/payload"
 MODEL_KIND=""
 LOCAL_MODEL_PATH=""
 CONFIG_MODEL_PATH=""
+HF_REPOSITORY=""
+HF_REVISION=""
 
 validate_vllm_cpp_repository() {
   [[ -f "$VLLM_CPP_PAYLOAD_DIR/config.json" ]] || return 1
+  [[ -f "$VLLM_CPP_PAYLOAD_DIR/tokenizer.json" ]] || return 1
 
   local index_path="$VLLM_CPP_PAYLOAD_DIR/model.safetensors.index.json"
   if [[ -f "$index_path" ]]; then
@@ -388,14 +391,22 @@ case "$MODEL_SCHEME" in
     exit 1
     ;;
   "")
-    # Restrict repository IDs to safe Hugging Face path components. Besides
-    # rejecting unsupported URLs, this prevents option and YAML injection.
-    if [[ ! "$MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?$ ]]; then
+    # Accept an optional immutable Hugging Face commit after @. Restrict both
+    # repository IDs and revisions before passing them to the hf CLI.
+    HF_REPOSITORY="${MODEL%%@*}"
+    if [[ "$MODEL" == *@* ]]; then
+      HF_REVISION="${MODEL#*@}"
+      if [[ ! "$HF_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "Error: Hugging Face revisions for vllm-cpp must be 40-character lowercase commit SHAs" >&2
+        exit 1
+      fi
+    fi
+    if [[ ! "$HF_REPOSITORY" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?$ ]]; then
       echo "Error: invalid Hugging Face repository ID for vllm-cpp: $MODEL" >&2
       exit 1
     fi
     MODEL_KIND="repository"
-    MODEL_NAME="${MODEL##*/}"
+    MODEL_NAME="${HF_REPOSITORY##*/}"
     LOCAL_MODEL_PATH="$VLLM_CPP_PAYLOAD_DIR"
     CONFIG_MODEL_PATH="payload"
     ;;
@@ -432,14 +443,17 @@ else
     mv "$PARTIAL_PATH" "$LOCAL_MODEL_PATH"
   else
     echo "Downloading Hugging Face repository for vllm-cpp: $MODEL_LOG_REF"
-    HF_ARGS=("$MODEL" "--local-dir" "$VLLM_CPP_PAYLOAD_DIR" "--exclude" "*.gguf")
+    HF_ARGS=("$HF_REPOSITORY" "--local-dir" "$VLLM_CPP_PAYLOAD_DIR" "--exclude" "*.gguf")
+    if [[ -n "$HF_REVISION" ]]; then
+      HF_ARGS+=("--revision" "$HF_REVISION")
+    fi
     if [[ -n "${HF_TOKEN:-}" ]]; then
       HF_ARGS+=("--token" "$HF_TOKEN")
     fi
     hf download "${HF_ARGS[@]}"
 
     if ! validate_vllm_cpp_repository; then
-      echo "Error: vllm-cpp Hugging Face repositories must contain config.json and safetensors weights; use a direct HTTP(S) .gguf URL for GGUF models" >&2
+      echo "Error: vllm-cpp Hugging Face repositories must contain config.json and safetensors weights, plus tokenizer.json; use a direct HTTP(S) .gguf URL for GGUF models" >&2
       exit 1
     fi
   fi

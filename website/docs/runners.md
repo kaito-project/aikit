@@ -37,10 +37,14 @@ docker run -p 8080:8080 ghcr.io/kaito-project/aikit/runners/llama-cpp-cpu:latest
 # With GPU support
 docker run --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/runners/llama-cpp-cuda:latest \
   https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf
+
+# Native vllm.cpp with a safetensors repository pinned to an immutable revision
+docker run -p 8080:8080 ghcr.io/kaito-project/aikit/runners/vllm-cpp-cpu:latest \
+  Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca
 ```
 
 :::tip
-For HuggingFace repos with many quantization variants, use a **direct URL** to a specific file to avoid downloading all variants.
+For GGUF repositories with many quantization variants, use a **direct URL** to a specific `.gguf` file to avoid downloading all variants. The vllm.cpp runner accepts safetensors only as a repository reference; use `owner/repository@commit` with the full 40-character lowercase commit SHA for reproducible downloads.
 :::
 
 Then query the model:
@@ -52,7 +56,7 @@ curl http://localhost:8080/v1/chat/completions \
 ```
 
 :::note
-The model name in the API request is the GGUF filename without the `.gguf` extension.
+The model name in the API request is the GGUF filename without the `.gguf` extension. For a vllm.cpp safetensors repository, it is the repository name without the owner or pinned revision (for example, `Qwen3-0.6B`).
 :::
 
 ## GPU Support

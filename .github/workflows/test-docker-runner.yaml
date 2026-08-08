@@ -27,16 +27,16 @@ jobs:
       matrix:
         include:
           - runner: llama-cpp-cpu
-            model_url: https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/f0b45be0aac41bd6a100a4b5734cad5f67255bfb/gemma-3-1b-it-Q2_K.gguf
+            model_ref: https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/f0b45be0aac41bd6a100a4b5734cad5f67255bfb/gemma-3-1b-it-Q2_K.gguf
             model_name: gemma-3-1b-it-Q2_K
             api: chat
           - runner: vllm-cpp-cpu
-            model_url: https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/6ab461498e2023f6e3c1baea90a8f0fe38ab64d0/Qwen3.5-0.8B-Q3_K_S.gguf
-            model_name: Qwen3.5-0.8B-Q3_K_S
+            model_ref: Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca
+            model_name: Qwen3-0.6B
             api: completion
     env:
       MODEL_NAME: ${{ matrix.model_name }}
-      MODEL_URL: ${{ matrix.model_url }}
+      MODEL_REF: ${{ matrix.model_ref }}
       RUNNER: ${{ matrix.runner }}
     steps:
       - name: Harden Runner
@@ -112,7 +112,7 @@ jobs:
           '
 
       - name: run runner with model
-        run: docker run --name runner-test -d -p 8080:8080 runner-test:test "$MODEL_URL" --context-size 1024
+        run: docker run --name runner-test -d -p 8080:8080 runner-test:test "$MODEL_REF" --context-size 1024
 
       - name: wait for model download
         run: |

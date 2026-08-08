@@ -721,10 +721,12 @@ done
 mkdir -p "$local_dir"
 printf '{}\n' > "$local_dir/config.json"
 printf 'weights\n' > "$local_dir/model.safetensors"
+printf '{}\n' > "$local_dir/tokenizer.json"
 printf 'name: repository-owned\n' > "$local_dir/repository.yaml"
 `)
 
-	model := "huggingface://org/repo"
+	const revision = "0123456789abcdef0123456789abcdef01234567"
+	model := "huggingface://org/repo@" + revision
 	output, err := executeRunnerScript(t, script, binDir, model, "HF_ARGS_LOG="+hfArgsLog, "HF_TOKEN=test-token")
 	if err != nil {
 		t.Fatalf("run vllm-cpp Hugging Face flow: %v: %s", err, output)
@@ -740,7 +742,7 @@ printf 'name: repository-owned\n' > "$local_dir/repository.yaml"
 		"  use_tokenizer_template: true\n"
 	assertRunnerFileContent(t, filepath.Join(localModelDir, runnerConfigFilename), wantConfig)
 	assertRunnerFileContent(t, filepath.Join(localPayloadDir, "repository.yaml"), "name: repository-owned\n")
-	assertRunnerFileContent(t, filepath.Join(modelsDir, filepath.Base(runnerVLLMCppModelMarker)), runnerModelCacheKey("org/repo")+"\n")
+	assertRunnerFileContent(t, filepath.Join(modelsDir, filepath.Base(runnerVLLMCppModelMarker)), runnerModelCacheKey("org/repo@"+revision)+"\n")
 	modelRootEntries, err := os.ReadDir(localModelDir)
 	if err != nil {
 		t.Fatalf("read vllm-cpp model root: %v", err)
@@ -755,7 +757,18 @@ printf 'name: repository-owned\n' > "$local_dir/repository.yaml"
 	if err != nil {
 		t.Fatalf("read hf arguments: %v", err)
 	}
-	for _, expected := range []string{"download\n", "org/repo\n", "--local-dir\n", localPayloadDir + "\n", "--exclude\n", "*.gguf\n", "--token\n", "test-token\n"} {
+	for _, expected := range []string{
+		"download\n",
+		"org/repo\n",
+		"--local-dir\n",
+		localPayloadDir + "\n",
+		"--exclude\n",
+		"*.gguf\n",
+		"--revision\n",
+		revision + "\n",
+		"--token\n",
+		"test-token\n",
+	} {
 		if !strings.Contains(string(hfArgs), expected) {
 			t.Errorf("hf arguments do not contain %q: %s", expected, hfArgs)
 		}
@@ -769,11 +782,52 @@ printf 'name: repository-owned\n' > "$local_dir/repository.yaml"
 	if err != nil {
 		t.Fatalf("reuse cached vllm-cpp Hugging Face model: %v: %s", err, output)
 	}
-	if !strings.Contains(string(output), "Found cached vllm-cpp model matching org/repo") {
+	if !strings.Contains(string(output), "Found cached vllm-cpp model matching org/repo@"+revision) {
 		t.Errorf("cache-hit output missing expected message: %s", output)
 	}
 	if _, err := os.Stat(hfArgsLog); !os.IsNotExist(err) {
 		t.Errorf("hf downloader ran on cache hit; stat error = %v", err)
+	}
+
+	const updatedRevision = "fedcba9876543210fedcba9876543210fedcba98"
+	writeRunnerStub(t, binDir, "hf", `#!/bin/bash
+set -euo pipefail
+printf '%s\n' "$@" > "$HF_ARGS_LOG"
+local_dir=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--local-dir" ]]; then
+    local_dir="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[[ -n "$local_dir" ]]
+mkdir -p "$local_dir"
+printf '{}\n' > "$local_dir/config.json"
+printf 'updated weights\n' > "$local_dir/model.safetensors"
+printf '{}\n' > "$local_dir/tokenizer.json"
+printf 'revision b\n' > "$local_dir/revision-b"
+`)
+	updatedModel := "huggingface://org/repo@" + updatedRevision
+	output, err = executeRunnerScript(t, script, binDir, updatedModel, "HF_ARGS_LOG="+hfArgsLog)
+	if err != nil {
+		t.Fatalf("replace cached vllm-cpp revision: %v: %s", err, output)
+	}
+	if !strings.Contains(string(output), "does not match requested vllm-cpp model") {
+		t.Errorf("revision-change output missing cache mismatch message: %s", output)
+	}
+	if _, err := os.Stat(filepath.Join(localPayloadDir, "repository.yaml")); !os.IsNotExist(err) {
+		t.Errorf("old revision payload remains after replacement; stat error = %v", err)
+	}
+	assertRunnerFileContent(t, filepath.Join(localPayloadDir, "revision-b"), "revision b\n")
+	assertRunnerFileContent(t, filepath.Join(modelsDir, filepath.Base(runnerVLLMCppModelMarker)), runnerModelCacheKey("org/repo@"+updatedRevision)+"\n")
+	updatedHFArgs, err := os.ReadFile(hfArgsLog)
+	if err != nil {
+		t.Fatalf("read updated hf arguments: %v", err)
+	}
+	if !strings.Contains(string(updatedHFArgs), "--revision\n"+updatedRevision+"\n") {
+		t.Errorf("updated hf arguments do not contain revision %q: %s", updatedRevision, updatedHFArgs)
 	}
 }
 
@@ -883,6 +937,7 @@ func TestVLLMCppRunnerRepairsIncompleteShardedRepository(t *testing.T) {
 		filepath.Join(modelDir, "config.json"):                            "{}\n",
 		filepath.Join(modelDir, "model.safetensors.index.json"):           `{"weight_map":{"a":"model-00001-of-00002.safetensors","b":"model-00002-of-00002.safetensors"}}`,
 		filepath.Join(modelDir, "model-00001-of-00002.safetensors"):       "first shard\n",
+		filepath.Join(modelDir, "tokenizer.json"):                         "{}\n",
 		filepath.Join(modelsDir, filepath.Base(runnerVLLMCppModelMarker)): runnerModelCacheKey(model) + "\n",
 	}
 	for path, content := range seedFiles {
@@ -910,6 +965,7 @@ printf '{}\n' > "$local_dir/config.json"
 printf '%s\n' '{"weight_map":{"a":"model-00001-of-00002.safetensors","b":"model-00002-of-00002.safetensors"}}' > "$local_dir/model.safetensors.index.json"
 printf 'first shard\n' > "$local_dir/model-00001-of-00002.safetensors"
 printf 'second shard\n' > "$local_dir/model-00002-of-00002.safetensors"
+printf '{}\n' > "$local_dir/tokenizer.json"
 `)
 
 	output, err := executeRunnerScript(t, script, binDir, model, "HF_LOG="+hfLog)
@@ -1004,6 +1060,7 @@ done
 mkdir -p "$local_dir"
 printf '{}\n' > "$local_dir/config.json"
 printf 'GGUF' > "$local_dir/model.gguf"
+printf '{}\n' > "$local_dir/tokenizer.json"
 `)
 
 	output, err := executeRunnerScript(t, script, binDir, "huggingface://org/gguf-repo")
@@ -1032,6 +1089,7 @@ done
 mkdir -p "$local_dir/weights"
 printf '{}\n' > "$local_dir/config.json"
 printf 'weights\n' > "$local_dir/weights/model.safetensors"
+printf '{}\n' > "$local_dir/tokenizer.json"
 `)
 
 	output, err := executeRunnerScript(t, script, binDir, "huggingface://org/nested-safetensors")
@@ -1040,6 +1098,34 @@ printf 'weights\n' > "$local_dir/weights/model.safetensors"
 	}
 	if !strings.Contains(string(output), "must contain config.json and safetensors weights") {
 		t.Fatalf("unexpected nested safetensors repository error: %s", output)
+	}
+}
+
+func TestVLLMCppRunnerRejectsRepositoryWithoutTokenizer(t *testing.T) {
+	script, _, binDir := prepareVLLMCppRunnerScript(t)
+	writeRunnerStub(t, binDir, "hf", `#!/bin/bash
+set -euo pipefail
+local_dir=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--local-dir" ]]; then
+    local_dir="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[[ -n "$local_dir" ]]
+mkdir -p "$local_dir"
+printf '{}\n' > "$local_dir/config.json"
+printf 'weights\n' > "$local_dir/model.safetensors"
+`)
+
+	output, err := executeRunnerScript(t, script, binDir, "huggingface://org/missing-tokenizer")
+	if err == nil {
+		t.Fatalf("Hugging Face repository without tokenizer.json unexpectedly succeeded: %s", output)
+	}
+	if !strings.Contains(string(output), "plus tokenizer.json") {
+		t.Fatalf("unexpected missing-tokenizer error: %s", output)
 	}
 }
 
@@ -1068,6 +1154,16 @@ func TestVLLMCppRunnerRejectsUnsupportedModelReferences(t *testing.T) {
 			name:      "unsafe repository ID",
 			model:     "org/repo/extra",
 			wantError: "invalid Hugging Face repository ID",
+		},
+		{
+			name:      "mutable named revision",
+			model:     "org/repo@main",
+			wantError: "revisions for vllm-cpp must be 40-character lowercase commit SHAs",
+		},
+		{
+			name:      "uppercase commit revision",
+			model:     "org/repo@0123456789ABCDEF0123456789abcdef01234567",
+			wantError: "revisions for vllm-cpp must be 40-character lowercase commit SHAs",
 		},
 	}
 
