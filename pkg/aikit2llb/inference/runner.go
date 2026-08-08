@@ -14,7 +14,8 @@ import (
 const (
 	runnerHuggingFaceHubVersion = "1.26.0"
 	runnerConfigDir             = "/models/aikit-runner"
-	runnerConfigPath            = runnerConfigDir + "/model.yaml"
+	runnerConfigFilename        = "model.yaml"
+	runnerConfigPath            = runnerConfigDir + "/" + runnerConfigFilename
 	runnerLegacyModelMarker     = "/models/.aikit-model-ref"
 	runnerLlamaCppModelDir      = "/models/llama-cpp-model"
 	runnerLlamaCppModelMarker   = "/models/.aikit-llama-cpp-model-ref"
@@ -153,11 +154,19 @@ if [[ -z "$MODEL" ]]; then
   exit 1
 fi
 
-# Keep the one active generated config separate from cached model payloads and
-# user-provided files. This also makes a shared volume safe to reuse with a
-# different runner backend: LocalAI scans only the config generated below.
+# Keep generated configs and payloads inside backend-owned directories. Native
+# backends scan their cache directory because LocalAI requires model paths to be
+# relative to --models-path; other backends use the config-only directory.
 RUNNER_CONFIG_DIR="` + runnerConfigDir + `"
-RUNNER_CONFIG="` + runnerConfigPath + `"
+case "$BACKEND" in
+  llama-cpp)
+    RUNNER_CONFIG_DIR="` + runnerLlamaCppModelDir + `"
+    ;;
+  vllm-cpp)
+    RUNNER_CONFIG_DIR="` + runnerVLLMCppModelDir + `"
+    ;;
+esac
+RUNNER_CONFIG="$RUNNER_CONFIG_DIR/` + runnerConfigFilename + `"
 
 # Strip URI scheme prefixes (e.g. huggingface://org/repo -> org/repo)
 # kubeairunway passes model IDs with the huggingface:// prefix.
@@ -233,7 +242,8 @@ func generateLlamaCppDownload() string {
 MODEL_MARKER="` + runnerLlamaCppModelMarker + `"
 LEGACY_MODEL_MARKER="` + runnerLegacyModelMarker + `"
 LLAMA_CPP_MODEL_DIR="` + runnerLlamaCppModelDir + `"
-CACHED_GGUF=$(find "$LLAMA_CPP_MODEL_DIR" -type f -name "*.gguf" -print -quit 2>/dev/null || true)
+LLAMA_CPP_PAYLOAD_DIR="$LLAMA_CPP_MODEL_DIR/payload"
+CACHED_GGUF=$(find "$LLAMA_CPP_PAYLOAD_DIR" -type f -name "*.gguf" -print -quit 2>/dev/null || true)
 if [[ -f "$MODEL_MARKER" ]] && [[ "$(cat "$MODEL_MARKER")" == "$MODEL_CACHE_KEY" ]] &&
   [[ -n "$CACHED_GGUF" ]]; then
   echo "Found cached model matching $MODEL_LOG_REF in $LLAMA_CPP_MODEL_DIR, skipping download"
@@ -248,7 +258,7 @@ else
   fi
   rm -rf "$LLAMA_CPP_MODEL_DIR"
   rm -f "$MODEL_MARKER" "$LEGACY_MODEL_MARKER" "$RUNNER_CONFIG"
-  mkdir -p "$LLAMA_CPP_MODEL_DIR"
+  mkdir -p "$LLAMA_CPP_PAYLOAD_DIR"
   if [[ "$MODEL_SCHEME" == "http" ]] || [[ "$MODEL_SCHEME" == "https" ]]; then
     # Direct HTTP/HTTPS download
     echo "Downloading model from URL: $MODEL_LOG_REF"
@@ -259,17 +269,17 @@ else
       echo "Error: cannot derive a model filename from $MODEL_LOG_REF" >&2
       exit 1
     fi
-    curl -fL --progress-bar -o "$LLAMA_CPP_MODEL_DIR/$FILENAME" "$MODEL"
+    curl -fL --progress-bar -o "$LLAMA_CPP_PAYLOAD_DIR/$FILENAME" "$MODEL"
   else
     # HuggingFace repo - download GGUF files
     echo "Downloading GGUF files from HuggingFace: $MODEL_LOG_REF"
-    HF_ARGS=("$MODEL" "--local-dir" "$LLAMA_CPP_MODEL_DIR" "--include" "*.gguf")
+    HF_ARGS=("$MODEL" "--local-dir" "$LLAMA_CPP_PAYLOAD_DIR" "--include" "*.gguf")
     if [[ -n "${HF_TOKEN:-}" ]]; then
       HF_ARGS+=("--token" "$HF_TOKEN")
     fi
     hf download "${HF_ARGS[@]}"
   fi
-  DOWNLOADED_GGUF=$(find "$LLAMA_CPP_MODEL_DIR" -type f -name "*.gguf" -print -quit)
+  DOWNLOADED_GGUF=$(find "$LLAMA_CPP_PAYLOAD_DIR" -type f -name "*.gguf" -print -quit)
   if [[ -z "$DOWNLOADED_GGUF" ]]; then
     echo "Error: no GGUF file was downloaded for $MODEL_LOG_REF" >&2
     exit 1
@@ -280,7 +290,7 @@ fi
 
 # Generate a minimal config file so LocalAI can map the model name to the GGUF file.
 # Without this, LocalAI looks for the model name as a filename (without .gguf extension).
-GGUF_FILE=$(find "$LLAMA_CPP_MODEL_DIR" -type f -name "*.gguf" -print -quit)
+GGUF_FILE=$(find "$LLAMA_CPP_PAYLOAD_DIR" -type f -name "*.gguf" -print -quit)
 if [[ -z "$GGUF_FILE" ]]; then
   echo "Error: cached GGUF file for $MODEL_LOG_REF is missing" >&2
   exit 1
@@ -291,8 +301,13 @@ if [[ -z "$MODEL_NAME" ]]; then
   echo "Error: cannot derive a LocalAI model name from $GGUF_BASENAME" >&2
   exit 1
 fi
+MODEL_RELATIVE_PATH="${GGUF_FILE#"$LLAMA_CPP_MODEL_DIR"/}"
+if [[ -z "$MODEL_RELATIVE_PATH" ]] || [[ "$MODEL_RELATIVE_PATH" == "$GGUF_FILE" ]]; then
+  echo "Error: cached GGUF file is outside $LLAMA_CPP_MODEL_DIR" >&2
+  exit 1
+fi
 YAML_MODEL_NAME=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$MODEL_NAME")
-YAML_MODEL_PATH=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$GGUF_FILE")
+YAML_MODEL_PATH=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$MODEL_RELATIVE_PATH")
 mkdir -p "$RUNNER_CONFIG_DIR"
 echo "Generating config for model: $MODEL_NAME -> $GGUF_FILE"
 CONFIG_TMP=$(mktemp "$RUNNER_CONFIG_DIR/.model.yaml.XXXXXX")
@@ -313,15 +328,17 @@ func generateVLLMCppDownload() string {
 	return `# vllm.cpp requires the model to be materialized locally before startup.
 MODEL_MARKER="` + runnerVLLMCppModelMarker + `"
 VLLM_CPP_MODEL_DIR="` + runnerVLLMCppModelDir + `"
+VLLM_CPP_PAYLOAD_DIR="$VLLM_CPP_MODEL_DIR/payload"
 MODEL_KIND=""
 LOCAL_MODEL_PATH=""
+CONFIG_MODEL_PATH=""
 
 validate_vllm_cpp_repository() {
-  [[ -f "$VLLM_CPP_MODEL_DIR/config.json" ]] || return 1
+  [[ -f "$VLLM_CPP_PAYLOAD_DIR/config.json" ]] || return 1
 
-  local index_path="$VLLM_CPP_MODEL_DIR/model.safetensors.index.json"
+  local index_path="$VLLM_CPP_PAYLOAD_DIR/model.safetensors.index.json"
   if [[ -f "$index_path" ]]; then
-    python3 - "$VLLM_CPP_MODEL_DIR" "$index_path" <<'PYEOF'
+    python3 - "$VLLM_CPP_PAYLOAD_DIR" "$index_path" <<'PYEOF'
 import json
 import os
 import sys
@@ -347,7 +364,7 @@ PYEOF
     return
   fi
 
-  [[ -n "$(find "$VLLM_CPP_MODEL_DIR" -maxdepth 1 -type f -name "*.safetensors" -print -quit)" ]]
+  [[ -n "$(find "$VLLM_CPP_PAYLOAD_DIR" -maxdepth 1 -type f -name "*.safetensors" -print -quit)" ]]
 }
 
 case "$MODEL_SCHEME" in
@@ -363,7 +380,8 @@ case "$MODEL_SCHEME" in
     fi
     MODEL_KIND="gguf"
     MODEL_NAME="${GGUF_FILENAME%.gguf}"
-    LOCAL_MODEL_PATH="${VLLM_CPP_MODEL_DIR}/${GGUF_FILENAME}"
+    LOCAL_MODEL_PATH="${VLLM_CPP_PAYLOAD_DIR}/${GGUF_FILENAME}"
+    CONFIG_MODEL_PATH="payload/$GGUF_FILENAME"
     ;;
   ?*)
     echo "Error: vllm-cpp supports only huggingface:// repository references or HTTP(S) .gguf URLs" >&2
@@ -378,7 +396,8 @@ case "$MODEL_SCHEME" in
     fi
     MODEL_KIND="repository"
     MODEL_NAME="${MODEL##*/}"
-    LOCAL_MODEL_PATH="$VLLM_CPP_MODEL_DIR"
+    LOCAL_MODEL_PATH="$VLLM_CPP_PAYLOAD_DIR"
+    CONFIG_MODEL_PATH="payload"
     ;;
 esac
 
@@ -404,7 +423,7 @@ else
   # untrusted model references and makes cache replacement deterministic.
   rm -rf ` + runnerVLLMCppModelDir + `
   rm -f "$MODEL_MARKER" "$RUNNER_CONFIG"
-  mkdir -p "$VLLM_CPP_MODEL_DIR"
+  mkdir -p "$VLLM_CPP_PAYLOAD_DIR"
 
   if [[ "$MODEL_KIND" == "gguf" ]]; then
     echo "Downloading vllm-cpp GGUF model from URL: $MODEL_LOG_REF"
@@ -413,7 +432,7 @@ else
     mv "$PARTIAL_PATH" "$LOCAL_MODEL_PATH"
   else
     echo "Downloading Hugging Face repository for vllm-cpp: $MODEL_LOG_REF"
-    HF_ARGS=("$MODEL" "--local-dir" "$VLLM_CPP_MODEL_DIR" "--exclude" "*.gguf")
+    HF_ARGS=("$MODEL" "--local-dir" "$VLLM_CPP_PAYLOAD_DIR" "--exclude" "*.gguf")
     if [[ -n "${HF_TOKEN:-}" ]]; then
       HF_ARGS+=("--token" "$HF_TOKEN")
     fi
@@ -437,7 +456,7 @@ cat > "$CONFIG_TMP" <<MODELEOF
 name: '${MODEL_NAME}'
 backend: vllm-cpp
 parameters:
-  model: '${LOCAL_MODEL_PATH}'
+  model: '${CONFIG_MODEL_PATH}'
 template:
   use_tokenizer_template: true
 MODELEOF

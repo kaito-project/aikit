@@ -91,7 +91,7 @@ docker run -v models:/models -p 8080:8080 \
   https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf
 ```
 
-Native runners detect when a different model is requested and replace only their backend-owned cache. All runner images place their single active generated config under `/models/aikit-runner`; LocalAI scans that directory instead of unrelated YAML elsewhere in the mounted volume. Diffusers and Python vLLM update this config while retaining the shared Hugging Face cache for reuse.
+Native runners detect when a different model is requested and replace only their backend-owned cache. Their generated configs live at `/models/llama-cpp-model/model.yaml` and `/models/vllm-cpp-model/model.yaml`; downloaded payloads stay under each directory's unscanned `payload/` subtree. Diffusers and Python vLLM use `/models/aikit-runner/model.yaml` while retaining the shared Hugging Face cache for reuse. LocalAI scans only the active runner's config directory, not unrelated YAML elsewhere in the mounted volume.
 
 ## Kubernetes / kubeairunway
 

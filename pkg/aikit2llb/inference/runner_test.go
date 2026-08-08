@@ -207,7 +207,8 @@ func TestGenerateRunnerScript(t *testing.T) {
 			},
 			expectContains: []string{
 				`BACKEND="diffusers"`,
-				runnerConfigPath,
+				runnerConfigDir,
+				`RUNNER_CONFIG="$RUNNER_CONFIG_DIR/` + runnerConfigFilename + `"`,
 				"backend: diffusers",
 				runnerLocalAIExec,
 			},
@@ -226,7 +227,8 @@ func TestGenerateRunnerScript(t *testing.T) {
 			},
 			expectContains: []string{
 				`BACKEND="vllm"`,
-				runnerConfigPath,
+				runnerConfigDir,
+				`RUNNER_CONFIG="$RUNNER_CONFIG_DIR/` + runnerConfigFilename + `"`,
 				"backend: vllm",
 				runnerLocalAIExec,
 			},
@@ -433,7 +435,7 @@ func TestGenerateLlamaCppDownload(t *testing.T) {
 	if strings.Contains(script, "| head") {
 		t.Error("should use find's native early exit instead of a pipe that can fail under pipefail")
 	}
-	if !strings.Contains(script, `find "$LLAMA_CPP_MODEL_DIR"`) || !strings.Contains(script, "-print -quit") {
+	if !strings.Contains(script, `find "$LLAMA_CPP_PAYLOAD_DIR"`) || !strings.Contains(script, "-print -quit") {
 		t.Error("should discover nested GGUF files only inside the llama-cpp-owned cache")
 	}
 
@@ -505,14 +507,14 @@ printf 'fresh' > "$output"
 			t.Fatalf("runner should preserve YAML outside its owned config directory %q: %v", preserved, err)
 		}
 	}
-	freshModel := runnerPathInTestModels(modelsDir, runnerLlamaCppModelDir+"/fresh.gguf")
+	freshModel := runnerPathInTestModels(modelsDir, runnerLlamaCppModelDir+"/payload/fresh.gguf")
 	assertRunnerFileContent(t, freshModel, "fresh")
 	assertRunnerFileContent(t, filepath.Join(modelsDir, filepath.Base(runnerLlamaCppModelMarker)), runnerModelCacheKey(model)+"\n")
-	configPath := runnerPathInTestModels(modelsDir, runnerConfigPath)
+	configPath := runnerPathInTestModels(modelsDir, runnerLlamaCppModelDir+"/"+runnerConfigFilename)
 	wantConfig := "name: \"fresh\"\n" +
 		"backend: llama-cpp\n" +
 		"parameters:\n" +
-		"  model: \"" + freshModel + "\"\n"
+		"  model: \"payload/fresh.gguf\"\n"
 	assertRunnerFileContent(t, configPath, wantConfig)
 	if !strings.Contains(string(output), "LOCAL_AI_ARG="+filepath.Dir(configPath)) {
 		t.Fatalf("LocalAI does not scan the isolated runner config directory: %s", output)
@@ -524,14 +526,15 @@ func TestLlamaCppRunnerReplacesOnlyOwnedCacheAndConfig(t *testing.T) {
 	modelsDir := filepath.Join(testRoot, "models")
 	binDir := filepath.Join(testRoot, "bin")
 	llamaModelDir := runnerPathInTestModels(modelsDir, runnerLlamaCppModelDir)
-	activeConfig := runnerPathInTestModels(modelsDir, runnerConfigPath)
-	for _, dir := range []string{modelsDir, binDir, llamaModelDir, filepath.Dir(activeConfig)} {
+	llamaPayloadDir := filepath.Join(llamaModelDir, "payload")
+	activeConfig := runnerPathInTestModels(modelsDir, runnerLlamaCppModelDir+"/"+runnerConfigFilename)
+	for _, dir := range []string{modelsDir, binDir, llamaPayloadDir, filepath.Dir(activeConfig)} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("create runner test directory %q: %v", dir, err)
 		}
 	}
 
-	oldOwnedModel := filepath.Join(llamaModelDir, "old.gguf")
+	oldOwnedModel := filepath.Join(llamaPayloadDir, "old.gguf")
 	userModel := filepath.Join(modelsDir, "user.gguf")
 	userConfig := filepath.Join(modelsDir, "user.yaml")
 	seedFiles := map[string]string{
@@ -579,12 +582,12 @@ printf 'fresh' > "$output"
 			t.Fatalf("runner should preserve unrelated file %q: %v", preserved, err)
 		}
 	}
-	freshModel := filepath.Join(llamaModelDir, "fresh.gguf")
+	freshModel := filepath.Join(llamaPayloadDir, "fresh.gguf")
 	assertRunnerFileContent(t, freshModel, "fresh")
 	wantConfig := "name: \"fresh\"\n" +
 		"backend: llama-cpp\n" +
 		"parameters:\n" +
-		"  model: \"" + freshModel + "\"\n"
+		"  model: \"payload/fresh.gguf\"\n"
 	assertRunnerFileContent(t, activeConfig, wantConfig)
 }
 
@@ -622,12 +625,13 @@ printf 'GGUF' > "$local_dir/quantized/q3/nested.gguf"
 		t.Fatalf("run llama-cpp nested GGUF flow: %v: %s", err, output)
 	}
 
-	nestedModel := runnerPathInTestModels(modelsDir, runnerLlamaCppModelDir+"/quantized/q3/nested.gguf")
+	nestedModel := runnerPathInTestModels(modelsDir, runnerLlamaCppModelDir+"/payload/quantized/q3/nested.gguf")
+	assertRunnerFileContent(t, nestedModel, "GGUF")
 	wantConfig := "name: \"nested\"\n" +
 		"backend: llama-cpp\n" +
 		"parameters:\n" +
-		"  model: \"" + nestedModel + "\"\n"
-	assertRunnerFileContent(t, runnerPathInTestModels(modelsDir, runnerConfigPath), wantConfig)
+		"  model: \"payload/quantized/q3/nested.gguf\"\n"
+	assertRunnerFileContent(t, runnerPathInTestModels(modelsDir, runnerLlamaCppModelDir+"/"+runnerConfigFilename), wantConfig)
 	assertRunnerFileContent(t, filepath.Join(modelsDir, filepath.Base(runnerLlamaCppModelMarker)), runnerModelCacheKey("org/nested-repo")+"\n")
 
 	writeRunnerStub(t, binDir, "hf", "#!/bin/bash\nexit 91\n")
@@ -646,13 +650,14 @@ func TestGenerateVLLMCppDownload(t *testing.T) {
 	for _, expected := range []string{
 		runnerVLLMCppModelMarker,
 		`VLLM_CPP_MODEL_DIR="` + runnerVLLMCppModelDir + `"`,
+		`VLLM_CPP_PAYLOAD_DIR="$VLLM_CPP_MODEL_DIR/payload"`,
 		`hf download`,
 		`--local-dir`,
 		runnerCurlInvocation,
 		`\.gguf$`,
 		`backend: vllm-cpp`,
 		`name: '${MODEL_NAME}'`,
-		`model: '${LOCAL_MODEL_PATH}'`,
+		`model: '${CONFIG_MODEL_PATH}'`,
 		`use_tokenizer_template: true`,
 		`model.safetensors.index.json`,
 		`MODEL_CACHE_KEY`,
@@ -692,7 +697,7 @@ func TestRunnerBackendsUseSeparateModelMarkers(t *testing.T) {
 	if !strings.Contains(vllmCppScript, runnerVLLMCppModelMarker) || strings.Contains(vllmCppScript, runnerLlamaCppModelMarker) {
 		t.Fatal("vllm-cpp download script does not use only its backend-scoped marker")
 	}
-	if !strings.Contains(llamaScript, `find "$LLAMA_CPP_MODEL_DIR"`) || strings.Contains(llamaScript, "| head") {
+	if !strings.Contains(llamaScript, `find "$LLAMA_CPP_PAYLOAD_DIR"`) || strings.Contains(llamaScript, "| head") {
 		t.Fatal("llama-cpp lookup must recursively search only its owned cache and avoid pipelines")
 	}
 }
@@ -716,6 +721,7 @@ done
 mkdir -p "$local_dir"
 printf '{}\n' > "$local_dir/config.json"
 printf 'weights\n' > "$local_dir/model.safetensors"
+printf 'name: repository-owned\n' > "$local_dir/repository.yaml"
 `)
 
 	model := "huggingface://org/repo"
@@ -725,20 +731,31 @@ printf 'weights\n' > "$local_dir/model.safetensors"
 	}
 
 	localModelDir := filepath.Join(modelsDir, strings.TrimPrefix(runnerVLLMCppModelDir, "/models/"))
+	localPayloadDir := filepath.Join(localModelDir, "payload")
 	wantConfig := "name: 'repo'\n" +
 		"backend: vllm-cpp\n" +
 		"parameters:\n" +
-		"  model: '" + localModelDir + "'\n" +
+		"  model: 'payload'\n" +
 		"template:\n" +
 		"  use_tokenizer_template: true\n"
-	assertRunnerFileContent(t, runnerPathInTestModels(modelsDir, runnerConfigPath), wantConfig)
+	assertRunnerFileContent(t, filepath.Join(localModelDir, runnerConfigFilename), wantConfig)
+	assertRunnerFileContent(t, filepath.Join(localPayloadDir, "repository.yaml"), "name: repository-owned\n")
 	assertRunnerFileContent(t, filepath.Join(modelsDir, filepath.Base(runnerVLLMCppModelMarker)), runnerModelCacheKey("org/repo")+"\n")
+	modelRootEntries, err := os.ReadDir(localModelDir)
+	if err != nil {
+		t.Fatalf("read vllm-cpp model root: %v", err)
+	}
+	for _, entry := range modelRootEntries {
+		if !entry.IsDir() && (strings.HasSuffix(entry.Name(), ".yaml") || strings.HasSuffix(entry.Name(), ".yml")) && entry.Name() != runnerConfigFilename {
+			t.Fatalf("repository YAML escaped the unscanned payload directory: %s", entry.Name())
+		}
+	}
 
 	hfArgs, err := os.ReadFile(hfArgsLog)
 	if err != nil {
 		t.Fatalf("read hf arguments: %v", err)
 	}
-	for _, expected := range []string{"download\n", "org/repo\n", "--local-dir\n", localModelDir + "\n", "--exclude\n", "*.gguf\n", "--token\n", "test-token\n"} {
+	for _, expected := range []string{"download\n", "org/repo\n", "--local-dir\n", localPayloadDir + "\n", "--exclude\n", "*.gguf\n", "--token\n", "test-token\n"} {
 		if !strings.Contains(string(hfArgs), expected) {
 			t.Errorf("hf arguments do not contain %q: %s", expected, hfArgs)
 		}
@@ -783,14 +800,15 @@ printf 'GGUF' > "$output"
 		t.Fatalf("run vllm-cpp GGUF flow: %v: %s", err, output)
 	}
 
-	localModelPath := filepath.Join(modelsDir, strings.TrimPrefix(runnerVLLMCppModelDir, "/models/"), "null.gguf")
+	localModelDir := filepath.Join(modelsDir, strings.TrimPrefix(runnerVLLMCppModelDir, "/models/"))
+	localModelPath := filepath.Join(localModelDir, "payload", "null.gguf")
 	wantConfig := "name: 'null'\n" +
 		"backend: vllm-cpp\n" +
 		"parameters:\n" +
-		"  model: '" + localModelPath + "'\n" +
+		"  model: 'payload/null.gguf'\n" +
 		"template:\n" +
 		"  use_tokenizer_template: true\n"
-	assertRunnerFileContent(t, runnerPathInTestModels(modelsDir, runnerConfigPath), wantConfig)
+	assertRunnerFileContent(t, filepath.Join(localModelDir, runnerConfigFilename), wantConfig)
 	assertRunnerFileContent(t, localModelPath, "GGUF")
 }
 
@@ -857,7 +875,7 @@ printf 'GGUF' > "$output"
 func TestVLLMCppRunnerRepairsIncompleteShardedRepository(t *testing.T) {
 	script, modelsDir, binDir := prepareVLLMCppRunnerScript(t)
 	model := "huggingface://org/sharded"
-	modelDir := runnerPathInTestModels(modelsDir, runnerVLLMCppModelDir)
+	modelDir := runnerPathInTestModels(modelsDir, runnerVLLMCppModelDir+"/payload")
 	if err := os.MkdirAll(modelDir, 0o755); err != nil {
 		t.Fatalf("create sharded model directory: %v", err)
 	}
@@ -917,8 +935,9 @@ func TestVLLMCppRunnerIsolatesConfigFromStaleLlamaArtifacts(t *testing.T) {
 
 	staleModel := filepath.Join(modelsDir, "stale.gguf")
 	staleConfig := filepath.Join(modelsDir, "stale.yaml")
-	activeConfig := runnerPathInTestModels(modelsDir, runnerConfigPath)
-	if err := os.MkdirAll(filepath.Dir(activeConfig), 0o755); err != nil {
+	staleActiveConfig := runnerPathInTestModels(modelsDir, runnerConfigPath)
+	activeConfig := runnerPathInTestModels(modelsDir, runnerVLLMCppModelDir+"/"+runnerConfigFilename)
+	if err := os.MkdirAll(filepath.Dir(staleActiveConfig), 0o755); err != nil {
 		t.Fatalf("create active config directory: %v", err)
 	}
 	if err := os.WriteFile(staleModel, []byte("stale"), 0o600); err != nil {
@@ -927,7 +946,7 @@ func TestVLLMCppRunnerIsolatesConfigFromStaleLlamaArtifacts(t *testing.T) {
 	if err := os.WriteFile(staleConfig, []byte("name: stale\nbackend: llama-cpp\nparameters:\n  model: stale.gguf\n"), 0o600); err != nil {
 		t.Fatalf("write stale llama config: %v", err)
 	}
-	if err := os.WriteFile(activeConfig, []byte("name: stale\nbackend: llama-cpp\n"), 0o600); err != nil {
+	if err := os.WriteFile(staleActiveConfig, []byte("name: stale\nbackend: llama-cpp\n"), 0o600); err != nil {
 		t.Fatalf("write previous active config: %v", err)
 	}
 
@@ -951,7 +970,7 @@ printf 'GGUF' > "$output"
 		t.Fatalf("run vllm-cpp with stale llama artifacts: %v: %s", err, output)
 	}
 
-	for _, preserved := range []string{staleModel, staleConfig} {
+	for _, preserved := range []string{staleModel, staleConfig, staleActiveConfig} {
 		if _, err := os.Stat(preserved); err != nil {
 			t.Fatalf("vllm-cpp should preserve unrelated llama artifact %q: %v", preserved, err)
 		}
@@ -962,7 +981,7 @@ printf 'GGUF' > "$output"
 	wantConfig := "name: 'fresh'\n" +
 		"backend: vllm-cpp\n" +
 		"parameters:\n" +
-		"  model: '" + runnerPathInTestModels(modelsDir, runnerVLLMCppModelDir+"/fresh.gguf") + "'\n" +
+		"  model: 'payload/fresh.gguf'\n" +
 		"template:\n" +
 		"  use_tokenizer_template: true\n"
 	assertRunnerFileContent(t, activeConfig, wantConfig)
