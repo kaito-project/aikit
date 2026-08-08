@@ -269,10 +269,34 @@ make run-test-model-applesilicon
 
 ## Release Process
 
-AIKit uses semantic versioning. Version information is managed in:
-- `Makefile`: Update the `VERSION` variable
-- `charts/aikit/Chart.yaml`: Update `version` and `appVersion`
+AIKit uses semantic versioning. A `v*` tag is a production deployment event, so release tags must never be created or moved manually.
 
-The release process is automated through GitHub Actions.
+To publish a stable release:
+
+1. Run the **Prepare release** workflow from `main` with a version in `vX.Y.Z` form.
+2. Review and merge the generated pull request into `release-X.Y`. The pull request updates:
+   - `Makefile`: the `VERSION` variable
+   - `charts/aikit/Chart.yaml`: `version` and `appVersion`
+3. Run the **Publish release** workflow from `main` with the same version and obtain approval for the `prod` environment.
+4. The workflow validates the version files, release branch ancestry, and merged release pull request before the release GitHub App creates the protected tag.
+5. The tag starts the artifact and runner-image publishing workflows. A new minor release also opens a separate version-sync pull request to `main`.
+
+The publisher preflight permits follow-up fixes on the release branch after the preparation pull request, but the preparation pull request merge must remain an ancestor of the tagged commit.
+
+Do not run `git tag`, `git push origin vX.Y.Z`, or force-update a release tag. Rerun the failed workflow for a transient publication failure. If the release commit must change, prepare a new patch version; never move the existing tag.
+
+### Release repository setup
+
+The protected flow requires these one-time repository settings:
+
+- Install a dedicated release GitHub App on this repository with only **Contents: write** permission.
+- Store its client ID as the `RELEASE_APP_CLIENT_ID` variable and private key as the `RELEASE_APP_PRIVATE_KEY` secret in the protected `prod` environment.
+- Require a reviewer on `prod`, disallow administrator bypass, and restrict deployments to `main`. Enable self-review prevention when a second maintainer or reviewer team is available.
+- Apply a creation ruleset to `refs/tags/v*`. Remove repository-role and administrator bypasses; grant **Always allow** bypass only to the dedicated release GitHub App.
+- Apply a second ruleset to `refs/tags/v*` that blocks updates and deletions with no bypass actors. Keeping this separate prevents the release App from moving a tag after creating it.
+- If deletion is ever required for recovery, temporarily changing the no-bypass ruleset must be a separate audited break-glass process.
+- Before the next release from any branch created before these guardrails, backport the publisher workflows and release validator. Tag-push workflows run from the tagged commit, not from the current `main` branch.
+
+The GitHub App token is intentionally used instead of the workflow's default `GITHUB_TOKEN`: tags created with `GITHUB_TOKEN` do not start tag-push workflows.
 
 Thank you for contributing to AIKit! 🚀

@@ -79,6 +79,9 @@ jobs:
       - name: Test image size checker
         run: scripts/ci/check-image-size_test.sh
 
+      - name: Test release validator
+        run: scripts/ci/validate-release_test.sh
+
   llb-benchmark:
     name: llb-benchmark
     runs-on: ubuntu-latest

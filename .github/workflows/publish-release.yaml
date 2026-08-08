@@ -1,0 +1,154 @@
+name: Publish release
+run-name: Publish ${{ inputs.release_version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Prepared stable version to publish (vX.Y.Z)'
+        required: true
+        type: string
+
+concurrency:
+  group: publish-release-${{ inputs.release_version }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      release_branch: ${{ steps.release.outputs.release_branch }}
+      release_commit: ${{ steps.commit.outputs.sha }}
+      release_pr: ${{ steps.provenance.outputs.release_pr }}
+      release_version: ${{ inputs.release_version }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            *.githubusercontent.com:443
+
+      - name: Validate workflow request
+        id: release
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "Publish release must be run from main, not ${GITHUB_REF}." >&2
+            exit 1
+          fi
+          if ! [[ "${RELEASE_VERSION}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "release_version must use stable semantic version form vX.Y.Z." >&2
+            exit 1
+          fi
+
+          echo "release_branch=release-${BASH_REMATCH[1]}.${BASH_REMATCH[2]}" >>"${GITHUB_OUTPUT}"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Resolve release branch head
+        id: commit
+        env:
+          RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet --no-tags origin "refs/heads/${RELEASE_BRANCH}"
+          echo "sha=$(git rev-parse "FETCH_HEAD^{commit}")" >>"${GITHUB_OUTPUT}"
+
+      - name: Ensure release tag does not exist
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --quiet --exit-code --tags origin "refs/tags/${RELEASE_VERSION}"; then
+            echo "Tag ${RELEASE_VERSION} already exists; release tags are immutable." >&2
+            exit 1
+          else
+            status=$?
+            if [[ $status -ne 2 ]]; then
+              echo "Could not determine whether tag ${RELEASE_VERSION} exists." >&2
+              exit "$status"
+            fi
+          fi
+
+      - name: Validate release provenance
+        id: provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_COMMIT: ${{ steps.commit.outputs.sha }}
+        run: scripts/ci/validate-release.sh "${RELEASE_VERSION}" "${RELEASE_COMMIT}"
+
+      - name: Summarize release candidate
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
+          RELEASE_COMMIT: ${{ steps.commit.outputs.sha }}
+          RELEASE_PR: ${{ steps.provenance.outputs.release_pr }}
+        run: |
+          {
+            echo "### Validated release candidate"
+            echo
+            echo "- Version: ${RELEASE_VERSION}"
+            echo "- Branch: ${RELEASE_BRANCH}"
+            echo "- Commit: ${RELEASE_COMMIT}"
+            echo "- Preparation pull request: #${RELEASE_PR}"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+  create-release-tag:
+    needs: preflight
+    environment: prod
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+          allowed-endpoints: api.github.com:443
+
+      - name: Create release GitHub App token
+        id: release-app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Recheck release branch and create protected tag
+        env:
+          GH_TOKEN: ${{ steps.release-app.outputs.token }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
+          RELEASE_BRANCH: ${{ needs.preflight.outputs.release_branch }}
+          RELEASE_COMMIT: ${{ needs.preflight.outputs.release_commit }}
+        run: |
+          set -euo pipefail
+          current_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/${RELEASE_BRANCH}" \
+            --jq '.object.sha')
+          if [[ "${current_commit}" != "${RELEASE_COMMIT}" ]]; then
+            echo "${RELEASE_BRANCH} advanced from ${RELEASE_COMMIT} to ${current_commit}; rerun Publish release." >&2
+            exit 1
+          fi
+
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            --raw-field "ref=refs/tags/${RELEASE_VERSION}" \
+            --raw-field "sha=${RELEASE_COMMIT}"
+          printf 'Created protected tag %s at %s.\n' \
+            "${RELEASE_VERSION}" "${RELEASE_COMMIT}" >>"${GITHUB_STEP_SUMMARY}"

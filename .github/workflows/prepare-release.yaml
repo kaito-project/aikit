@@ -1,0 +1,76 @@
+name: Prepare release
+run-name: Prepare ${{ inputs.release_version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Stable version to prepare (vX.Y.Z)'
+        required: true
+        type: string
+
+concurrency:
+  group: prepare-release-${{ inputs.release_version }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  create-release-pull-request:
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Validate release request
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "Prepare release must be run from main, not ${GITHUB_REF}." >&2
+            exit 1
+          fi
+          if ! [[ "${RELEASE_VERSION}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "release_version must use stable semantic version form vX.Y.Z." >&2
+            exit 1
+          fi
+
+          echo "NEWVERSION=${RELEASE_VERSION}" >>"${GITHUB_ENV}"
+          echo "TARGET_BRANCH=release-${BASH_REMATCH[1]}.${BASH_REMATCH[2]}" >>"${GITHUB_ENV}"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Create release branch if needed
+        run: |
+          set -euo pipefail
+          if git show-ref --verify --quiet "refs/remotes/origin/${TARGET_BRANCH}"; then
+            git checkout --track "origin/${TARGET_BRANCH}"
+          else
+            git checkout -b "${TARGET_BRANCH}"
+            git push --set-upstream origin "${TARGET_BRANCH}"
+          fi
+
+      - name: Update version manifests
+        run: make release-manifest
+
+      - name: Create release pull request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          commit-message: "chore: Prepare ${{ env.NEWVERSION }} release"
+          title: "chore: Prepare ${{ env.NEWVERSION }} release"
+          branch: "prepare-${{ env.NEWVERSION }}"
+          base: "${{ env.TARGET_BRANCH }}"
+          signoff: true
+          labels: |
+            release-pr
+            ${{ inputs.release_version }}

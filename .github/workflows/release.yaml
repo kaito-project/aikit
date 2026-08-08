@@ -1,4 +1,4 @@
-name: release
+name: Release artifacts
 
 on:
   push:
@@ -9,7 +9,33 @@ permissions:
   contents: read
 
 jobs:
+  preflight:
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            *.githubusercontent.com:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Validate release provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/validate-release.sh "${GITHUB_REF_NAME}" "$(git rev-parse "${GITHUB_REF}^{commit}")"
+
   release:
+    needs: preflight
     permissions:
       contents: write
       packages: write
@@ -63,10 +89,8 @@ jobs:
 
       - name: Set LDFLAGS
         run: |
-          set -x
-          GIT_COMMIT=$(git rev-list --abbrev-commit --tags --max-count=1)
-          GIT_TAG=$(git describe --abbrev=0 --tags ${GIT_COMMIT} 2>/dev/null)
-          echo LDFLAGS="-X github.com/kaito-project/aikit/pkg/version.Version=${GIT_TAG}" >> $GITHUB_ENV
+          set -euo pipefail
+          echo "LDFLAGS=-X github.com/kaito-project/aikit/pkg/version.Version=${GITHUB_REF_NAME}" >>"${GITHUB_ENV}"
 
       - name: Build and push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -95,9 +119,9 @@ jobs:
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
         run: |
-          cosign verify ghcr.io/kaito-project/aikit/aikit@${DIGEST} \
+          cosign verify "ghcr.io/kaito-project/aikit/aikit@${DIGEST}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity https://github.com/kaito-project/aikit/.github/workflows/release.yaml@$GITHUB_REF
+            --certificate-identity "https://github.com/kaito-project/aikit/.github/workflows/release.yaml@${GITHUB_REF}"
 
       - name: Create GitHub release
         uses: marvinpinto/action-automatic-releases@919008cf3f741b179569b7a6fb4d8860689ab7f0 # v1.2.1
