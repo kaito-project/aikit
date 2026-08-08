@@ -5264,17 +5264,28 @@ class AdapterArtifactContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             bundle = Path(temporary_directory) / "adapter"
             self.write_bundle(bundle)
+            added_token = FakeAddedToken("<domain>", special=True)
             original = RoundtripTokenizer(
-                vocab={"hello": 1},
+                vocab={"hello": 1, "<domain>": 7},
+                added_tokens_decoder={7: added_token},
                 serialized_artifacts={
                     target_unsloth.TOKENIZER_CONFIG_FILENAME: json.dumps(
-                        {"is_local": False, "tokenizer_class": "Example"}
+                        {
+                            "added_tokens_decoder": {
+                                "7": added_token.__getstate__()
+                            },
+                            "is_local": False,
+                            "tokenizer_class": "Example",
+                        }
                     ),
                     "tokenizer.json": "{}\n",
                 },
             )
             reloaded = RoundtripTokenizer(
-                vocab={"hello": 1},
+                vocab={"hello": 1, "<domain>": 7},
+                added_tokens_decoder={
+                    7: FakeAddedToken("<domain>", special=True)
+                },
                 serialized_artifacts={
                     target_unsloth.TOKENIZER_CONFIG_FILENAME: json.dumps(
                         {

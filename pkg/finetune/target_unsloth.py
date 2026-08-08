@@ -854,6 +854,11 @@ def tokenizer_serialization_manifest(
             # preserve every non-empty value for exact comparison.
             if tokenizer_config.get("additional_special_tokens") == []:
                 tokenizer_config.pop("additional_special_tokens")
+            # Unsloth restores this metadata for fast tokenizers after
+            # Transformers deliberately omits it from subsequent saves. The
+            # canonical ID and all six AddedToken fields are compared directly
+            # above, so exclude only this duplicate serialized representation.
+            tokenizer_config.pop("added_tokens_decoder", None)
             contents = json.dumps(
                 tokenizer_config,
                 ensure_ascii=False,
