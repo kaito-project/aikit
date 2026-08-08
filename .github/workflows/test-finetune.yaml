@@ -551,11 +551,22 @@ jobs:
               fi
               if find "$adapter_directory" -type f \( \
                 -name '*.gguf' -o \
-                \( -name '*.safetensors' ! -name 'adapter_model.safetensors' \) -o \
+                -name '*.ggml' -o \
+                \( -name '*.safetensors' ! -path "$adapter_directory/adapter_model.safetensors" \) -o \
+                -name '*.index.json' -o \
+                -name '*.ckpt.*' -o \
                 -name '*.bin' -o \
                 -name '*.pt' -o \
                 -name '*.pth' -o \
                 -name '*.ckpt' -o \
+                -name '*.h5' -o \
+                -name '*.hdf5' -o \
+                -name '*.msgpack' -o \
+                -name '*.npz' -o \
+                -name '*.onnx' -o \
+                -name '*.pb' -o \
+                -name '*.pdparams' -o \
+                -name '*.tflite' -o \
                 -name 'config.json' \
               \) -print -quit | grep -q .; then
                 echo "adapter bundle unexpectedly contains standalone model weights" >&2

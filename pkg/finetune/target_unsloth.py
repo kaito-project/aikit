@@ -40,6 +40,25 @@ DATASET_SPLIT_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$")
 GO_YAML_SCIENTIFIC_FLOAT_PATTERN = re.compile(
     r"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)[eE][+-]?[0-9]+$"
 )
+MODEL_WEIGHT_SUFFIXES = frozenset(
+    {
+        ".bin",
+        ".ckpt",
+        ".ggml",
+        ".gguf",
+        ".h5",
+        ".hdf5",
+        ".msgpack",
+        ".npz",
+        ".onnx",
+        ".pb",
+        ".pdparams",
+        ".pt",
+        ".pth",
+        ".safetensors",
+        ".tflite",
+    }
+)
 DATASET_LOADER_HUGGINGFACE = "huggingface"
 DATASET_LOADER_JSON = "json"
 DATASET_LOADER_CSV = "csv"
@@ -479,21 +498,6 @@ def resolve_model_snapshot(
     )
 
 
-def resolve_export_base_model(
-    configured_model_name: str,
-    *,
-    model_info: Callable[..., Any],
-    resolve_model_name: Callable[..., str],
-) -> tuple[str, str]:
-    return resolve_model_snapshot(
-        configured_model_name,
-        load_in_4bit=False,
-        description="resolved export base model revision",
-        model_info=model_info,
-        resolve_model_name=resolve_model_name,
-    )
-
-
 def pin_peft_base_model(
     model: Any,
     *,
@@ -564,14 +568,22 @@ def validate_portable_adapter_bundle(
                 f"saved adapter contains a special file: {relative_path}"
             )
         filename = artifact_path.name
+        is_root_adapter_weights = relative_path == Path(
+            ADAPTER_WEIGHTS_FILENAME
+        )
+        has_model_weight_suffix = any(
+            suffix.lower() in MODEL_WEIGHT_SUFFIXES
+            for suffix in artifact_path.suffixes
+        )
         if (
-            filename == "adapter_model.bin"
-            or filename == "config.json"
-            or filename.endswith(".gguf")
-            or filename.startswith("pytorch_model")
+            filename == "config.json"
             or (
-                filename.startswith("model")
-                and filename.endswith(".safetensors")
+                has_model_weight_suffix
+                and not is_root_adapter_weights
+            )
+            or (
+                filename.startswith("adapter_model.")
+                and not is_root_adapter_weights
             )
             or (
                 filename == ADAPTER_CONFIG_FILENAME
@@ -5216,12 +5228,6 @@ def train_model(
                     )
                 rendered_source_datasets.append(source_dataset)
 
-    base_model_name, base_model_revision = resolve_export_base_model(
-        train_config["baseModel"],
-        model_info=dependencies.model_info,
-        resolve_model_name=dependencies.resolve_model_name,
-    )
-
     model = dependencies.fast_language_model.get_peft_model(
         model,
         r=16,
@@ -5241,13 +5247,13 @@ def train_model(
         random_state=cfg["seed"],
         use_rslora=False,
         loftq_config=None,
-        base_model_name_or_path=base_model_name,
-        revision=base_model_revision,
+        base_model_name_or_path=training_model_name,
+        revision=training_model_revision,
     )
     pin_peft_base_model(
         model,
-        base_model_name=base_model_name,
-        revision=base_model_revision,
+        base_model_name=training_model_name,
+        revision=training_model_revision,
     )
 
     if objective.objective_type == OBJECTIVE_TYPE_DPO:

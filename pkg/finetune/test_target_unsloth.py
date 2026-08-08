@@ -5053,17 +5053,33 @@ class AdapterArtifactContractTest(unittest.TestCase):
                 target_unsloth.validate_portable_adapter_bundle(bundle)
 
     def test_rejects_base_weights_and_symbolic_links(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            bundle = Path(temporary_directory) / "adapter"
-            self.write_bundle(bundle)
-            (bundle / "model-00001-of-00002.safetensors").write_bytes(
-                b"base weights"
-            )
-            with self.assertRaisesRegex(
-                RuntimeError,
-                "unsupported artifact",
+        unsafe_weight_paths = (
+            "model-00001-of-00002.safetensors",
+            "tf_model.h5",
+            "flax_model.msgpack",
+            "consolidated.00.pth",
+            "nested/adapter_model.safetensors",
+            "pytorch_model.bin.index.json",
+            "model.safetensors.index.json",
+            "flax_model.msgpack.index.json",
+            "model.ckpt.index",
+            "model.ckpt.data-00000-of-00001",
+        )
+        for unsafe_weight_path in unsafe_weight_paths:
+            with (
+                self.subTest(path=unsafe_weight_path),
+                tempfile.TemporaryDirectory() as temporary_directory,
             ):
-                target_unsloth.validate_portable_adapter_bundle(bundle)
+                bundle = Path(temporary_directory) / "adapter"
+                self.write_bundle(bundle)
+                unsafe_artifact = bundle / unsafe_weight_path
+                unsafe_artifact.parent.mkdir(parents=True, exist_ok=True)
+                unsafe_artifact.write_bytes(b"base weights")
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "unsupported artifact",
+                ):
+                    target_unsloth.validate_portable_adapter_bundle(bundle)
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -5172,24 +5188,19 @@ class TrainingPhaseTest(unittest.TestCase):
             random_state=42,
             use_rslora=False,
             loftq_config=None,
-            base_model_name_or_path="example/resolved-model",
+            base_model_name_or_path="example/training-model",
             revision="a" * 40,
         )
-        dependencies.resolve_model_name.assert_has_calls(
-            [
-                mock.call("example/model", load_in_4bit=True),
-                mock.call("example/model", load_in_4bit=False),
-            ]
+        dependencies.resolve_model_name.assert_called_once_with(
+            "example/model",
+            load_in_4bit=True,
         )
-        dependencies.model_info.assert_has_calls(
-            [
-                mock.call(repo_id="example/training-model"),
-                mock.call(repo_id="example/resolved-model"),
-            ]
+        dependencies.model_info.assert_called_once_with(
+            repo_id="example/training-model"
         )
         self.assertEqual(
             adapter_config.base_model_name_or_path,
-            "example/resolved-model",
+            "example/training-model",
         )
         self.assertEqual(adapter_config.revision, "a" * 40)
         dependencies.load_dataset.assert_called_once_with(
@@ -6606,7 +6617,7 @@ class TrainingPhaseTest(unittest.TestCase):
                     error_pattern=error_pattern,
                 )
 
-    def test_rejects_training_when_export_base_revision_is_not_immutable(self):
+    def test_rejects_training_when_training_revision_is_not_immutable(self):
         train_config = example_train_config()
         base_model = mock.Mock()
         fast_language_model = mock.Mock()
@@ -6628,13 +6639,7 @@ class TrainingPhaseTest(unittest.TestCase):
             is_bfloat16_supported=mock.Mock(),
             dataset_from_dict=mock.Mock(),
             load_dataset=mock.Mock(return_value=dataset),
-            model_info=mock.Mock(
-                side_effect=lambda *, repo_id: mock.Mock(
-                    sha="a" * 40
-                    if repo_id == "example/training-model"
-                    else None
-                )
-            ),
+            model_info=mock.Mock(return_value=mock.Mock(sha=None)),
             resolve_model_name=mock.Mock(
                 side_effect=lambda _model_name, *, load_in_4bit: (
                     "example/training-model"
@@ -6652,14 +6657,22 @@ class TrainingPhaseTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             RuntimeError,
-            "resolved export base model revision is not an immutable",
+            "resolved training model revision is not an immutable",
         ):
             target_unsloth.train_model(
                 train_config,
                 dependencies=dependencies,
             )
 
+        fast_language_model.from_pretrained.assert_not_called()
         fast_language_model.get_peft_model.assert_not_called()
+        dependencies.resolve_model_name.assert_called_once_with(
+            "example/model",
+            load_in_4bit=True,
+        )
+        dependencies.model_info.assert_called_once_with(
+            repo_id="example/training-model"
+        )
         dependencies.load_dataset.assert_called_once_with(
             "organization/dataset",
             split="train",

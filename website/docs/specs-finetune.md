@@ -66,7 +66,7 @@ An adapter output has this shape (tokenizer assets vary by base model and may in
 └── optional tokenizer assets and templates
 ```
 
-The bundle does not contain base-model weights or a GGUF file. `adapter_config.json` identifies the resolved base-model repository and immutable revision used for training. A consumer must load that compatible base model, apply the adapter with a PEFT-compatible runtime, and use the bundled tokenizer configuration and templates. The adapter directory is not a standalone model source for AIKit's current GGUF/llama.cpp image path; runtime-specific LoRA loading must be configured outside that path.
+The bundle does not contain base-model weights or a GGUF file. `adapter_config.json` identifies the exact resolved model repository and immutable revision loaded by the training phase. When `loadIn4bit` resolves to a prequantized repository, the adapter records that repository rather than independently resolving an unquantized model with unverifiable provenance. A consumer must load the recorded snapshot, apply the adapter with a PEFT-compatible runtime, and use the bundled tokenizer configuration and templates. The adapter directory is not a standalone model source for AIKit's current GGUF/llama.cpp image path; runtime-specific LoRA loading must be configured outside that path.
 
 ### Training Objectives and Dataset Model
 

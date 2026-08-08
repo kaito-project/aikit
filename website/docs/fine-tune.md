@@ -408,7 +408,7 @@ _output/
     └── optional tokenizer assets and templates
 ```
 
-The adapter bundle intentionally excludes both GGUF and base-model weights. Its `adapter_config.json` records the resolved base repository and immutable revision. Load that compatible base separately in a PEFT-capable consumer, then apply the adapter and bundled tokenizer configuration. Architecture, target modules, tokenizer behavior, and the runtime's LoRA support must all be compatible; a similarly named or newer base revision is not assumed compatible.
+The adapter bundle intentionally excludes both GGUF and base-model weights. Its `adapter_config.json` records the exact resolved model repository and immutable revision loaded for training. With `loadIn4bit`, this may be a prequantized repository. Load that recorded snapshot separately in a PEFT-capable consumer, then apply the adapter and bundled tokenizer configuration. Architecture, target modules, tokenizer behavior, and the runtime's LoRA support must all be compatible; a similarly named or newer base revision is not assumed compatible.
 
 AIKit's current model-image flow consumes standalone GGUF files and does not directly serve this adapter directory. Choose GGUF for that path. Choose adapter when another PEFT-compatible runtime or downstream merge process will combine the base and LoRA weights; the base model remains subject to its own availability and license terms.
 
