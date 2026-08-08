@@ -443,7 +443,20 @@ else
     mv "$PARTIAL_PATH" "$LOCAL_MODEL_PATH"
   else
     echo "Downloading Hugging Face repository for vllm-cpp: $MODEL_LOG_REF"
-    HF_ARGS=("$HF_REPOSITORY" "--local-dir" "$VLLM_CPP_PAYLOAD_DIR" "--exclude" "*.gguf")
+    # Download only the native vllm.cpp weight, configuration, and tokenizer
+    # assets. This avoids materializing alternate PyTorch, ONNX, Flax, or GGUF
+    # weights that can coexist in the same repository.
+    HF_ARGS=(
+      "$HF_REPOSITORY"
+      "--local-dir" "$VLLM_CPP_PAYLOAD_DIR"
+      "--include" "*.json"
+      "--include" "*.safetensors"
+      "--include" "*.model"
+      "--include" "*.txt"
+      "--include" "*.tiktoken"
+      "--include" "*.jinja"
+      "--exclude" "*.gguf"
+    )
     if [[ -n "$HF_REVISION" ]]; then
       HF_ARGS+=("--revision" "$HF_REVISION")
     fi

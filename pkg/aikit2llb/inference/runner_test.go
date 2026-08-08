@@ -653,6 +653,13 @@ func TestGenerateVLLMCppDownload(t *testing.T) {
 		`VLLM_CPP_PAYLOAD_DIR="$VLLM_CPP_MODEL_DIR/payload"`,
 		`hf download`,
 		`--local-dir`,
+		`"--include" "*.json"`,
+		`"--include" "*.safetensors"`,
+		`"--include" "*.model"`,
+		`"--include" "*.txt"`,
+		`"--include" "*.tiktoken"`,
+		`"--include" "*.jinja"`,
+		`"--exclude" "*.gguf"`,
 		runnerCurlInvocation,
 		`\.gguf$`,
 		`backend: vllm-cpp`,
@@ -670,7 +677,6 @@ func TestGenerateVLLMCppDownload(t *testing.T) {
 	for _, unexpected := range []string{
 		`model: ${MODEL}`,
 		runnerLegacyHFCLICommand,
-		`--include`,
 	} {
 		if strings.Contains(script, unexpected) {
 			t.Errorf("vllm-cpp download script should not contain %q", unexpected)
@@ -762,6 +768,12 @@ printf 'name: repository-owned\n' > "$local_dir/repository.yaml"
 		"org/repo\n",
 		"--local-dir\n",
 		localPayloadDir + "\n",
+		"--include\n*.json\n",
+		"--include\n*.safetensors\n",
+		"--include\n*.model\n",
+		"--include\n*.txt\n",
+		"--include\n*.tiktoken\n",
+		"--include\n*.jinja\n",
 		"--exclude\n",
 		"*.gguf\n",
 		"--revision\n",
