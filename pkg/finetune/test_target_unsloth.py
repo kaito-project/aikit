@@ -5162,7 +5162,7 @@ class TrainingPhaseTest(unittest.TestCase):
 
         self.assertEqual(result, trained_model_directory)
         fast_language_model.from_pretrained.assert_called_once_with(
-            model_name="example/training-model",
+            model_name="example/resolved-model",
             max_seq_length=2048,
             dtype=None,
             load_in_4bit=True,
@@ -5188,19 +5188,19 @@ class TrainingPhaseTest(unittest.TestCase):
             random_state=42,
             use_rslora=False,
             loftq_config=None,
-            base_model_name_or_path="example/training-model",
+            base_model_name_or_path="example/resolved-model",
             revision="a" * 40,
         )
         dependencies.resolve_model_name.assert_called_once_with(
             "example/model",
-            load_in_4bit=True,
+            load_in_4bit=False,
         )
         dependencies.model_info.assert_called_once_with(
-            repo_id="example/training-model"
+            repo_id="example/resolved-model"
         )
         self.assertEqual(
             adapter_config.base_model_name_or_path,
-            "example/training-model",
+            "example/resolved-model",
         )
         self.assertEqual(adapter_config.revision, "a" * 40)
         dependencies.load_dataset.assert_called_once_with(
@@ -5815,10 +5815,10 @@ class TrainingPhaseTest(unittest.TestCase):
         dependencies.fast_language_model.get_peft_model.assert_not_called()
         dependencies.resolve_model_name.assert_called_once_with(
             "example/model",
-            load_in_4bit=True,
+            load_in_4bit=False,
         )
         dependencies.model_info.assert_called_once_with(
-            repo_id="example/training-model"
+            repo_id="example/resolved-model"
         )
         dependencies.sft_trainer.assert_not_called()
 
@@ -5887,10 +5887,10 @@ class TrainingPhaseTest(unittest.TestCase):
                 dependencies.fast_language_model.get_peft_model.assert_not_called()
                 dependencies.resolve_model_name.assert_called_once_with(
                     "example/model",
-                    load_in_4bit=True,
+                    load_in_4bit=False,
                 )
                 dependencies.model_info.assert_called_once_with(
-                    repo_id="example/training-model"
+                    repo_id="example/resolved-model"
                 )
                 dependencies.sft_trainer.assert_not_called()
 
@@ -6321,10 +6321,10 @@ class TrainingPhaseTest(unittest.TestCase):
         dependencies.fast_language_model.get_peft_model.assert_not_called()
         dependencies.resolve_model_name.assert_called_once_with(
             "example/model",
-            load_in_4bit=True,
+            load_in_4bit=False,
         )
         dependencies.model_info.assert_called_once_with(
-            repo_id="example/training-model"
+            repo_id="example/resolved-model"
         )
         dependencies.sft_trainer.assert_not_called()
 
@@ -6353,10 +6353,10 @@ class TrainingPhaseTest(unittest.TestCase):
         dependencies.fast_language_model.get_peft_model.assert_not_called()
         dependencies.resolve_model_name.assert_called_once_with(
             "example/model",
-            load_in_4bit=True,
+            load_in_4bit=False,
         )
         dependencies.model_info.assert_called_once_with(
-            repo_id="example/training-model"
+            repo_id="example/resolved-model"
         )
         dataset.projected_dataset.map.assert_not_called()
         dependencies.sft_trainer.assert_not_called()
@@ -6657,7 +6657,7 @@ class TrainingPhaseTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             RuntimeError,
-            "resolved training model revision is not an immutable",
+            "resolved training base model revision is not an immutable",
         ):
             target_unsloth.train_model(
                 train_config,
@@ -6668,10 +6668,10 @@ class TrainingPhaseTest(unittest.TestCase):
         fast_language_model.get_peft_model.assert_not_called()
         dependencies.resolve_model_name.assert_called_once_with(
             "example/model",
-            load_in_4bit=True,
+            load_in_4bit=False,
         )
         dependencies.model_info.assert_called_once_with(
-            repo_id="example/training-model"
+            repo_id="example/resolved-model"
         )
         dependencies.load_dataset.assert_called_once_with(
             "organization/dataset",
@@ -6827,7 +6827,7 @@ class DPOTrainingPhaseTest(unittest.TestCase):
 
         runtime_trainer.train.assert_called_once_with()
         dependencies.fast_language_model.from_pretrained.assert_called_once_with(
-            model_name="example/training-model",
+            model_name="example/resolved-model",
             max_seq_length=1024,
             dtype=None,
             load_in_4bit=True,

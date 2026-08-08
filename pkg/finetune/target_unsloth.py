@@ -5100,10 +5100,12 @@ def train_model(
                 )
             source_datasets.append(source_dataset)
 
+    # Resolve the full-precision base first, then quantize that exact pinned
+    # snapshot during loading so adapter and GGUF outputs share provenance.
     training_model_name, training_model_revision = resolve_model_snapshot(
         train_config["baseModel"],
-        load_in_4bit=cfg["loadIn4bit"],
-        description="resolved training model revision",
+        load_in_4bit=False,
+        description="resolved training base model revision",
         model_info=dependencies.model_info,
         resolve_model_name=dependencies.resolve_model_name,
     )
