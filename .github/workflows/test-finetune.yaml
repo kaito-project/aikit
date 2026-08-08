@@ -10,6 +10,7 @@ on:
         default: smoke
         options:
           - smoke
+          - adapter-smoke
           - messages-smoke
           - messages-response-smoke
           - sharegpt-response-smoke
@@ -44,7 +45,7 @@ jobs:
           smoke_dataset_file=""
           smoke_dataset_file_2=""
           case "$run_mode" in
-            smoke)
+            smoke | adapter-smoke)
               smoke_dataset_file="${GITHUB_WORKSPACE}/test/fixtures/alpaca-smoke.jsonl"
               ;;
             messages-smoke)
@@ -241,6 +242,10 @@ jobs:
               source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-smoke.yaml"
               dataset_url="${SMOKE_DATASET_URL:?smoke dataset URL is required}"
               ;;
+            adapter-smoke)
+              source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-adapter-smoke.yaml"
+              dataset_url="${SMOKE_DATASET_URL:?adapter smoke dataset URL is required}"
+              ;;
             messages-smoke)
               source_config="$GITHUB_WORKSPACE/test/aikitfile-unsloth-messages-smoke.yaml"
               dataset_url="${SMOKE_DATASET_URL:?messages smoke dataset URL is required}"
@@ -352,8 +357,9 @@ jobs:
           output_scalar() {
             local config_path=$1
             local key=$2
+            local default_value=${3:-}
 
-            awk -v key="$key" '
+            awk -v key="$key" -v default_value="$default_value" '
               /^output:[[:space:]]*(#.*)?$/ {
                 output_headers++
                 in_output = 1
@@ -391,6 +397,10 @@ jobs:
                 if (output_headers != 1) {
                   print "rendered fine-tune config must contain exactly one output mapping" > "/dev/stderr"
                   exit 1
+                }
+                if (values == 0 && default_value != "") {
+                  print default_value
+                  exit
                 }
                 if (values != 1 || scalar !~ /^[A-Za-z0-9._-]+$/) {
                   print "rendered fine-tune config must contain one safe output." key " value" > "/dev/stderr"
@@ -438,17 +448,36 @@ jobs:
           rm -f -- "$intermediate_config" "$second_intermediate_config"
 
           output_name=$(output_scalar "$FINETUNE_CONFIG" "name")
-          output_quantize=$(output_scalar "$FINETUNE_CONFIG" "quantize")
-          expected_gguf_filename="${output_name}-${output_quantize}.gguf"
-
-          render_config \
-            "$GITHUB_WORKSPACE/test/aikitfile-unsloth-custom.yaml" \
-            "$CUSTOM_CONFIG" \
-            "$gguf_placeholder" \
-            "$expected_gguf_filename" \
-            2
-
-          echo "EXPECTED_GGUF_FILENAME=$expected_gguf_filename" >> "$GITHUB_ENV"
+          output_format=$(output_scalar "$FINETUNE_CONFIG" "format" "gguf")
+          case "$output_format" in
+            gguf)
+              if [[ "$RUN_MODE" == "adapter-smoke" ]]; then
+                echo "adapter-smoke must render output.format: adapter" >&2
+                exit 1
+              fi
+              output_quantize=$(output_scalar "$FINETUNE_CONFIG" "quantize")
+              expected_gguf_filename="${output_name}-${output_quantize}.gguf"
+              render_config \
+                "$GITHUB_WORKSPACE/test/aikitfile-unsloth-custom.yaml" \
+                "$CUSTOM_CONFIG" \
+                "$gguf_placeholder" \
+                "$expected_gguf_filename" \
+                2
+              echo "EXPECTED_GGUF_FILENAME=$expected_gguf_filename" >> "$GITHUB_ENV"
+              ;;
+            adapter)
+              if [[ "$RUN_MODE" != "adapter-smoke" ]]; then
+                echo "output.format: adapter is only expected in adapter-smoke" >&2
+                exit 1
+              fi
+              echo "EXPECTED_ADAPTER_DIRECTORY=$output_name" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "unsupported rendered output.format: $output_format" >&2
+              exit 1
+              ;;
+          esac
+          echo "FINETUNE_OUTPUT_FORMAT=$output_format" >> "$GITHUB_ENV"
 
       - name: Build AIKit frontend
         shell: bash
@@ -487,9 +516,72 @@ jobs:
         run: |
           set -euo pipefail
           ls -al "$OUTPUT_DIR"
-          test -s "$OUTPUT_DIR/$EXPECTED_GGUF_FILENAME"
+          case "$FINETUNE_OUTPUT_FORMAT" in
+            gguf)
+              test -s "$OUTPUT_DIR/$EXPECTED_GGUF_FILENAME"
+              ;;
+            adapter)
+              adapter_directory="$OUTPUT_DIR/$EXPECTED_ADAPTER_DIRECTORY"
+              test -d "$adapter_directory"
+              test "$(find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1
+              test -s "$adapter_directory/adapter_config.json"
+              test -s "$adapter_directory/adapter_model.safetensors"
+              test -s "$adapter_directory/tokenizer_config.json"
+              test -s "$adapter_directory/tokenizer.json"
+
+              jq -e '
+                (.base_model_name_or_path |
+                  type == "string" and
+                  length > 0 and
+                  (startswith("/") | not) and
+                  (startswith(".") | not) and
+                  (contains("\\") | not) and
+                  (contains("/snapshots/") | not)) and
+                (.revision | type == "string" and test("^[0-9a-f]{40}$")) and
+                (.peft_type | type == "string" and ascii_upcase == "LORA")
+              ' "$adapter_directory/adapter_config.json" > /dev/null
+
+              if find "$adapter_directory" -type l -print -quit | grep -q .; then
+                echo "adapter bundle must not contain symbolic links" >&2
+                exit 1
+              fi
+              if find "$adapter_directory" -mindepth 1 ! -type d ! -type f -print -quit | grep -q .; then
+                echo "adapter bundle must contain only regular files and directories" >&2
+                exit 1
+              fi
+              if find "$adapter_directory" -type f \( \
+                -name '*.gguf' -o \
+                -name '*.ggml' -o \
+                \( -name '*.safetensors' ! -path "$adapter_directory/adapter_model.safetensors" \) -o \
+                -name '*.index.json' -o \
+                -name '*.ckpt.*' -o \
+                -name '*.bin' -o \
+                -name '*.pt' -o \
+                -name '*.pth' -o \
+                -name '*.ckpt' -o \
+                -name '*.h5' -o \
+                -name '*.hdf5' -o \
+                -name '*.msgpack' -o \
+                -name '*.npz' -o \
+                -name '*.onnx' -o \
+                -name '*.pb' -o \
+                -name '*.pdparams' -o \
+                -name '*.tflite' -o \
+                -name 'config.json' \
+              \) -print -quit | grep -q .; then
+                echo "adapter bundle unexpectedly contains standalone model weights" >&2
+                exit 1
+              fi
+              find "$adapter_directory" -type f -print | sort
+              ;;
+            *)
+              echo "unsupported fine-tune output format: $FINETUNE_OUTPUT_FORMAT" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Build custom model image
+        if: env.FINETUNE_OUTPUT_FORMAT == 'gguf'
         shell: bash
         run: |
           set -euo pipefail
@@ -503,6 +595,7 @@ jobs:
             "$OUTPUT_DIR"
 
       - name: Run test model
+        if: env.FINETUNE_OUTPUT_FORMAT == 'gguf'
         shell: bash
         run: |
           set -euo pipefail
@@ -518,6 +611,7 @@ jobs:
           echo "INFERENCE_URL=http://127.0.0.1:${inference_port}" >> "$GITHUB_ENV"
 
       - name: Test inference response
+        if: env.FINETUNE_OUTPUT_FORMAT == 'gguf'
         shell: bash
         run: |
           set -euo pipefail

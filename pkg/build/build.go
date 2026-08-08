@@ -567,14 +567,28 @@ func validateFinetuneConfig(c *config.FineTuneConfig) error {
 		return errors.New("config.unsloth.seed must be zero or greater")
 	}
 
-	if strings.TrimSpace(c.Output.Quantize) == "" {
-		return errors.New("output.quantize is not defined")
+	if strings.TrimSpace(c.Output.Format) == "" {
+		return errors.New("output.format is not defined")
 	}
-	normalizedQuantization := strings.ToLower(c.Output.Quantize)
-	if !isSupportedUnslothQuantization(normalizedQuantization) {
-		return errors.Errorf("output.quantize %q is not supported", c.Output.Quantize)
+	normalizedOutputFormat := strings.ToLower(c.Output.Format)
+	switch normalizedOutputFormat {
+	case config.FineTuneOutputFormatGGUF:
+		if strings.TrimSpace(c.Output.Quantize) == "" {
+			return errors.New("output.quantize is not defined")
+		}
+		normalizedQuantization := strings.ToLower(c.Output.Quantize)
+		if !isSupportedUnslothQuantization(normalizedQuantization) {
+			return errors.Errorf("output.quantize %q is not supported", c.Output.Quantize)
+		}
+		c.Output.Quantize = normalizedQuantization
+	case config.FineTuneOutputFormatAdapter:
+		if c.Output.QuantizeConfigured() {
+			return errors.New("output.quantize cannot be configured when output.format is adapter")
+		}
+	default:
+		return errors.Errorf("output.format %q is not supported", c.Output.Format)
 	}
-	c.Output.Quantize = normalizedQuantization
+	c.Output.Format = normalizedOutputFormat
 	if !isPathSafeOutputName(c.Output.Name) {
 		return errors.New("output name must be a safe filename containing only letters, numbers, dots, hyphens, or underscores")
 	}

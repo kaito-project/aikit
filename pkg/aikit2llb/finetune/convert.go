@@ -121,6 +121,13 @@ func Aikit2LLB(c *config.FineTuneConfig, opts Options) (llb.State, error) {
 	}
 	trainingConfigState := llb.Scratch().File(llb.Mkfile("/train-config.yaml", 0o600, mustMarshalYAML(trainingConfig)))
 	state = runUnslothPhase(state, scriptState, trainingConfigState, "train", cdiDevice, false)
+	if c.Output.Format == config.FineTuneOutputFormatAdapter {
+		copyOptions := []llb.CopyOption{&llb.CopyInfo{
+			CopyDirContentsOnly: true,
+			CreateDestPath:      true,
+		}}
+		return llb.Scratch().File(llb.Copy(state, "/aikit-trained-model/", c.Output.Name+"/", copyOptions...)), nil
+	}
 
 	exportConfig := unslothExportConfig{
 		BaseModel: c.BaseModel,

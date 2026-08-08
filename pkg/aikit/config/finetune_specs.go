@@ -23,6 +23,7 @@ const (
 	defaultWeightDecay               = 0.01
 	defaultLrSchedulerType           = "linear"
 	defaultSeed                      = 42
+	defaultOutputFormat              = FineTuneOutputFormatGGUF
 	defaultOutputQuantize            = "q4_k_m"
 	defaultOutputName                = "aikit-model"
 	defaultDatasetSplit              = "train"
@@ -34,6 +35,13 @@ const (
 	defaultDPOBeta                   = 0.1
 	defaultDPOLossType               = utils.DPOLossSigmoid
 	defaultDPOMaxPromptLength        = 512
+)
+
+const (
+	// FineTuneOutputFormatGGUF exports a merged, quantized GGUF model.
+	FineTuneOutputFormatGGUF = "gguf"
+	// FineTuneOutputFormatAdapter exports only the trained adapter weights.
+	FineTuneOutputFormatAdapter = "adapter"
 )
 
 type FineTuneConfig struct {
@@ -199,8 +207,16 @@ type FineTuneConfigUnslothSpec struct {
 }
 
 type FineTuneOutputSpec struct {
+	Format   string `yaml:"format"`
 	Quantize string `yaml:"quantize"`
 	Name     string `yaml:"name"`
+
+	quantizeConfigured bool
+}
+
+// QuantizeConfigured reports whether output.quantize was explicitly configured.
+func (o FineTuneOutputSpec) QuantizeConfigured() bool {
+	return o.quantizeConfigured
 }
 
 type rawFineTuneConfig struct {
@@ -242,8 +258,45 @@ type rawFineTuneConfigUnslothSpec struct {
 }
 
 type rawFineTuneOutputSpec struct {
+	Format   *string `yaml:"format"`
 	Quantize *string `yaml:"quantize"`
 	Name     *string `yaml:"name"`
+
+	quantizeConfigured bool
+}
+
+// UnmarshalYAML records output.quantize key presence, including merged and null values.
+func (o *rawFineTuneOutputSpec) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type outputFields struct {
+		Format   *string `yaml:"format"`
+		Quantize *string `yaml:"quantize"`
+		Name     *string `yaml:"name"`
+	}
+	type outputPresenceFields struct {
+		Format   interface{} `yaml:"format"`
+		Quantize interface{} `yaml:"quantize"`
+		Name     interface{} `yaml:"name"`
+	}
+
+	var fields outputFields
+	if err := unmarshal(&fields); err != nil {
+		return err
+	}
+
+	quantizeAbsent := &struct{}{}
+	presenceFields := outputPresenceFields{Quantize: quantizeAbsent}
+	if err := unmarshal(&presenceFields); err != nil {
+		return err
+	}
+
+	*o = rawFineTuneOutputSpec{
+		Format:   fields.Format,
+		Quantize: fields.Quantize,
+		Name:     fields.Name,
+	}
+	o.quantizeConfigured = presenceFields.Quantize != quantizeAbsent
+
+	return nil
 }
 
 func (c rawFineTuneConfig) normalize() FineTuneConfig {
@@ -321,8 +374,10 @@ func normalizeFineTuneOutput(c *rawFineTuneOutputSpec) FineTuneOutputSpec {
 	}
 
 	return FineTuneOutputSpec{
-		Quantize: valueOrDefault(c.Quantize, defaultOutputQuantize),
-		Name:     valueOrDefault(c.Name, defaultOutputName),
+		Format:             valueOrDefault(c.Format, defaultOutputFormat),
+		Quantize:           valueOrDefault(c.Quantize, defaultOutputQuantize),
+		Name:               valueOrDefault(c.Name, defaultOutputName),
+		quantizeConfigured: c.quantizeConfigured,
 	}
 }
 

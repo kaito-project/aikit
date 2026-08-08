@@ -102,7 +102,7 @@ config:
 
 DPO defaults to `beta: 0.1`, `lossType: sigmoid`, `maxPromptLength: 512`, and `learningRate: 0.000001`. `beta` must be finite and positive, `maxPromptLength` must not exceed `maxSeqLength`, and only sigmoid loss is supported. DPO requires exactly one `preference` dataset, requires `packing: false`, rejects every SFT record schema, and rejects the SFT-only `loss: response` setting. Before training, AIKit rejects a pair when its chosen and rejected responses become token-identical after the trainer's effective tokenization and pinned `keep_end` truncation, because that pair would provide no preference signal.
 
-AIKit constructs a separate DPO trainer with the LoRA policy and `ref_model=None`. The same PEFT model with its adapter disabled supplies reference log probabilities; this is not reference-free DPO. Preference records bypass all SFT formatting and masking paths. The trained adapter and tokenizer use the same save, GGUF export, and inference path as SFT.
+AIKit constructs a separate DPO trainer with the LoRA policy and `ref_model=None`. The same PEFT model with its adapter disabled supplies reference log probabilities; this is not reference-free DPO. Preference records bypass all SFT formatting and masking paths. DPO and SFT use the same trained-adapter save path and can both produce either a GGUF or adapter output.
 
 #### Dataset Formats
 
@@ -338,6 +338,7 @@ Please make sure to change syntax to `#syntax=ghcr.io/kaito-project/aikit/aikit:
 :::
 
 - [Alpaca](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth.yaml)
+- [Adapter output smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-adapter-smoke.yaml)
 - [Messages smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-messages-smoke.yaml)
 - [Response-only messages smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-messages-response-smoke.yaml)
 - [Response-only ShareGPT smoke test](https://github.com/kaito-project/aikit/blob/main/test/aikitfile-unsloth-sharegpt-response-smoke.yaml)
@@ -350,7 +351,7 @@ Please make sure to change syntax to `#syntax=ghcr.io/kaito-project/aikit/aikit:
 
 ## Build
 
-Build using following command and make sure to replace `--target` with the fine-tuning implementation of your choice (`unsloth` is the only option supported at this time), `--file` with the path to your configuration YAML and `--output` with the output directory of the finetuned model. This example assumes the builder and Docker runtime use the same local NVIDIA device namespace. For a remote or on-demand builder, select a device shown by `docker buildx inspect` and omit `nvidiaDriverVersion` unless its driver version is known.
+Build using following command and make sure to replace `--target` with the fine-tuning implementation of your choice (`unsloth` is the only option supported at this time), `--file` with the path to your configuration YAML and `--output` with the output directory of the fine-tuned artifact. This example assumes the builder and Docker runtime use the same local NVIDIA device namespace. For a remote or on-demand builder, select a device shown by `docker buildx inspect` and omit `nvidiaDriverVersion` unless its driver version is known.
 
 ```bash
 NVIDIA_DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n 1)
@@ -369,16 +370,47 @@ docker buildx build --builder aikit-builder \
 
 The `device` entitlement authorizes only the CDI device requested by AIKit. Training and GGUF export run with the normal BuildKit sandbox security mode. The `cdiDevice` argument selects that GPU, while the optional `nvidiaDriverVersion` argument is used only as a GPU-phase cache discriminator; AIKit does not install that driver in the build container. AIKit reuses GPU results across BuildKit sessions only when the driver version is paired with an immutable `GPU-...` or `MIG-...` CDI selector. Index, `all`, and on-demand selectors can identify different hardware on another builder, so AIKit falls back to the current BuildKit session as the result-cache discriminator while retaining persistent model, dataset, and compiler caches.
 
-The training and GGUF export phases are cached separately. Changing only `output.name` reuses both phases, while changing only `output.quantize` reuses training and reruns export.
+Training and GGUF export are cached separately. Changing only `output.name` reuses training and, for GGUF, export. Changing only `output.quantize` reuses training and reruns GGUF export. Adapter output skips GGUF export entirely; switching from adapter to GGUF can reuse the cached training result.
 
-Depending on your setup and configuration, build process may take some time. At the end of the build, the fine-tuned model will automatically be quantized with the specified format and output to the path specified in the `--output`.
+### Choose an output format
 
-Output will be a `GGUF` model file with the name and quanization format from the configuration. For example:
+`output.format` defaults to `gguf`, preserving the existing behavior. GGUF output is a merged, standalone model file named from `output.name` and `output.quantize`:
+
+```yaml
+output:
+  format: gguf
+  quantize: q4_k_m
+  name: aikit-model
+```
 
 ```bash
 $ ls -al _output
 -rw-r--r--  1 kaito-project kaito-project 7161089856 Mar  3 00:19 aikit-model-q4_k_m.gguf
 ```
+
+Use `format: adapter` to export only the trained LoRA adapter and tokenizer assets:
+
+```yaml
+output:
+  format: adapter
+  name: aikit-adapter
+```
+
+For adapter output, omit `output.quantize` entirely; specifying it, including as YAML `null`, is rejected because no GGUF quantization occurs. The local output is a directory named exactly `output.name`:
+
+```text
+_output/
+└── aikit-adapter/
+    ├── adapter_config.json
+    ├── adapter_model.safetensors
+    ├── tokenizer_config.json
+    ├── tokenizer.json
+    └── optional tokenizer assets and templates
+```
+
+The adapter bundle intentionally excludes both GGUF and base-model weights. Its `adapter_config.json` records the exact resolved base-model repository and immutable revision loaded for training. When `loadIn4bit` is enabled, AIKit quantizes that pinned base while loading it rather than substituting a separately versioned prequantized repository. Load the recorded snapshot separately in a PEFT-capable consumer, then apply the adapter and bundled tokenizer configuration. Architecture, target modules, tokenizer behavior, and the runtime's LoRA support must all be compatible; a similarly named or newer base revision is not assumed compatible.
+
+AIKit's current model-image flow consumes standalone GGUF files and does not directly serve this adapter directory. Choose GGUF for that path. Choose adapter when another PEFT-compatible runtime or downstream merge process will combine the base and LoRA weights; the base model remains subject to its own availability and license terms.
 
 ## Demo
 
@@ -386,7 +418,7 @@ https://www.youtube.com/watch?v=FZuVb-9i-94
 
 ## What's next?
 
-👉 Now that you have a fine-tuned model output as a GGUF file, you can refer to [Creating Model Images](./create-images.md) on how to create an image with AIKit to serve your fine-tuned model!
+👉 For GGUF output, refer to [Creating Model Images](./create-images.md) to create an AIKit image. Adapter output must instead be loaded with its compatible base model by a PEFT-capable consumer.
 
 ## Troubleshooting
 

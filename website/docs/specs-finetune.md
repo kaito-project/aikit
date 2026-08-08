@@ -39,9 +39,34 @@ config:
     lrSchedulerType: # optional. defaults to linear
     seed: # optional. defaults to 42
 output:
-  quantize: # optional. defaults to q4_k_m. for unsloth, see for allowed quantization methods: https://github.com/unslothai/unsloth/wiki#saving-to-gguf.
-  name: # optional. defaults to "aikit-model"
+  format: # optional. defaults to gguf. supported values are gguf and adapter
+  quantize: # GGUF only. optional and defaults to q4_k_m. must be omitted when format is adapter
+  name: # optional. defaults to "aikit-model". GGUF filename prefix or adapter directory name
 ```
+
+### Output Formats
+
+`output.format` selects the artifact produced after training. Omitting it preserves the existing `gguf` behavior.
+
+| `output.format` | Local output | `output.quantize` | Runtime contract |
+| --- | --- | --- | --- |
+| `gguf` (default) | One `<name>-<quantize>.gguf` file | Optional; defaults to `q4_k_m` | Standalone quantized model for the existing GGUF image and inference path. |
+| `adapter` | One `<name>/` directory | Must be omitted | Standard PEFT LoRA adapter and tokenizer bundle; a compatible base model is required separately. |
+
+The `quantize` key is invalid with `format: adapter`, even when its YAML value is `null`. Adapter tensors are saved in their native PEFT representation and are not GGUF-quantized. `output.name` must be a safe single filename component containing only letters, numbers, dots, hyphens, or underscores.
+
+An adapter output has this shape (tokenizer assets vary by base model and may include nested template files):
+
+```text
+<name>/
+├── adapter_config.json
+├── adapter_model.safetensors
+├── tokenizer_config.json
+├── tokenizer.json (or model-specific tokenizer vocabulary files)
+└── optional tokenizer assets and templates
+```
+
+The bundle does not contain base-model weights or a GGUF file. `adapter_config.json` identifies the exact resolved base-model repository and immutable revision loaded by the training phase. When `loadIn4bit` is enabled, AIKit quantizes that pinned base while loading it rather than substituting a separately versioned prequantized repository. A consumer must load the recorded snapshot, apply the adapter with a PEFT-compatible runtime, and use the bundled tokenizer configuration and templates. The adapter directory is not a standalone model source for AIKit's current GGUF/llama.cpp image path; runtime-specific LoRA loading must be configured outside that path.
 
 ### Training Objectives and Dataset Model
 
@@ -272,6 +297,7 @@ config:
     lrSchedulerType: linear
     seed: 42
 output:
+  format: gguf
   quantize: q4_k_m
   name: model
 ```

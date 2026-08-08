@@ -118,7 +118,7 @@ func TestNewFromBytesNormalizesFineTuneDefaults(t *testing.T) {
 		LrSchedulerType:           "linear",
 		Seed:                      42,
 	}
-	wantOutput := FineTuneOutputSpec{Quantize: "q4_k_m", Name: "aikit-model"}
+	wantOutput := FineTuneOutputSpec{Format: FineTuneOutputFormatGGUF, Quantize: "q4_k_m", Name: "aikit-model"}
 	wantObjective := FineTuneObjectiveSpec{Type: utils.ObjectiveSFT}
 
 	for _, tt := range tests {
@@ -144,6 +144,142 @@ func TestNewFromBytesNormalizesFineTuneDefaults(t *testing.T) {
 			}
 			if !reflect.DeepEqual(fineTuneConfig.Output, wantOutput) {
 				t.Errorf("output config = %#v, want %#v", fineTuneConfig.Output, wantOutput)
+			}
+		})
+	}
+}
+
+func TestNewFromBytesTracksFineTuneOutputQuantizePresence(t *testing.T) {
+	const q8Quantize = "q8_0"
+
+	tests := []struct {
+		name               string
+		outputYAML         string
+		wantFormat         string
+		wantQuantize       string
+		wantName           string
+		wantQuantizeConfig bool
+	}{
+		{
+			name:         "output omitted",
+			wantFormat:   FineTuneOutputFormatGGUF,
+			wantQuantize: defaultOutputQuantize,
+			wantName:     defaultOutputName,
+		},
+		{
+			name:         "adapter omits quantize",
+			outputYAML:   "output:\n  format: adapter\n",
+			wantFormat:   FineTuneOutputFormatAdapter,
+			wantQuantize: defaultOutputQuantize,
+			wantName:     defaultOutputName,
+		},
+		{
+			name:               "quantize has value",
+			outputYAML:         "output:\n  format: adapter\n  quantize: q8_0\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantQuantize:       q8Quantize,
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
+		{
+			name:               "quantize is empty",
+			outputYAML:         "output:\n  format: adapter\n  quantize: \"\"\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
+		{
+			name:               "quantize is null",
+			outputYAML:         "output:\n  format: adapter\n  quantize: null\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantQuantize:       defaultOutputQuantize,
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
+		{
+			name:               "quantize is inherited",
+			outputYAML:         "outputDefaults: &outputDefaults\n  quantize: q8_0\noutput:\n  <<: *outputDefaults\n  format: adapter\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantQuantize:       q8Quantize,
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
+		{
+			name:               "inherited quantize is null",
+			outputYAML:         "outputDefaults: &outputDefaults\n  quantize: null\noutput:\n  <<: *outputDefaults\n  format: adapter\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantQuantize:       defaultOutputQuantize,
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
+		{
+			name:         "merge omits quantize",
+			outputYAML:   "outputDefaults: &outputDefaults\n  name: merged-model\noutput:\n  <<: *outputDefaults\n  format: adapter\n",
+			wantFormat:   FineTuneOutputFormatAdapter,
+			wantQuantize: defaultOutputQuantize,
+			wantName:     "merged-model",
+		},
+		{
+			name:               "explicit quantize overrides inherited value",
+			outputYAML:         "outputDefaults: &outputDefaults\n  quantize: q8_0\noutput:\n  <<: *outputDefaults\n  format: adapter\n  quantize: f16\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantQuantize:       "f16",
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
+		{
+			name:               "explicit null overrides inherited value",
+			outputYAML:         "outputDefaults: &outputDefaults\n  quantize: q8_0\noutput:\n  <<: *outputDefaults\n  format: adapter\n  quantize: null\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantQuantize:       defaultOutputQuantize,
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
+		{
+			name:               "quantize uses scalar alias",
+			outputYAML:         "quantizeValue: &quantizeValue q8_0\noutput:\n  format: adapter\n  quantize: *quantizeValue\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantQuantize:       q8Quantize,
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
+		{
+			name:               "first merged mapping takes precedence",
+			outputYAML:         "firstOutput: &firstOutput\n  quantize: q8_0\nsecondOutput: &secondOutput\n  quantize: f16\noutput:\n  <<: [*firstOutput, *secondOutput]\n  format: adapter\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantQuantize:       q8Quantize,
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
+		{
+			name:               "duplicate quantize keeps last value",
+			outputYAML:         "output:\n  format: adapter\n  quantize: q8_0\n  quantize: f16\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantQuantize:       "f16",
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := "apiVersion: v1alpha1\n" +
+				"baseModel: test-model\n" +
+				"datasets:\n" +
+				"  - source: test-dataset\n" +
+				"    type: alpaca\n" +
+				tt.outputYAML
+			_, fineTuneConfig, err := NewFromBytes([]byte(input))
+			if err != nil {
+				t.Fatalf("NewFromBytes() error = %v", err)
+			}
+
+			got := fineTuneConfig.Output
+			if got.Format != tt.wantFormat || got.Quantize != tt.wantQuantize || got.Name != tt.wantName {
+				t.Errorf("output config = %#v, want format %q, quantize %q, name %q", got, tt.wantFormat, tt.wantQuantize, tt.wantName)
+			}
+			if configured := got.QuantizeConfigured(); configured != tt.wantQuantizeConfig {
+				t.Errorf("QuantizeConfigured() = %t, want %t", configured, tt.wantQuantizeConfig)
 			}
 		})
 	}
@@ -296,8 +432,9 @@ output:
 	if !reflect.DeepEqual(fineTuneConfig.Config.Unsloth, wantUnsloth) {
 		t.Errorf("unsloth config = %#v, want explicit zero values %#v", fineTuneConfig.Config.Unsloth, wantUnsloth)
 	}
-	if fineTuneConfig.Output != (FineTuneOutputSpec{}) {
-		t.Errorf("output config = %#v, want explicit empty values", fineTuneConfig.Output)
+	wantOutput := FineTuneOutputSpec{Format: FineTuneOutputFormatGGUF, quantizeConfigured: true}
+	if fineTuneConfig.Output != wantOutput {
+		t.Errorf("output config = %#v, want %#v", fineTuneConfig.Output, wantOutput)
 	}
 }
 
