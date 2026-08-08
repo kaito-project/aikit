@@ -389,6 +389,16 @@ def preprocessing_tokenizer():
 
 
 def configure_adapter_bundle_writers(adapter_model, tokenizer, adapter_config):
+    def write_tokenizer_files(output_path):
+        (output_path / target_unsloth.TOKENIZER_CONFIG_FILENAME).write_text(
+            "{}\n",
+            encoding="utf-8",
+        )
+        (output_path / "tokenizer.json").write_text(
+            "{}\n",
+            encoding="utf-8",
+        )
+
     def save_adapter(path, **_kwargs):
         output_path = Path(path)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -409,21 +419,42 @@ def configure_adapter_bundle_writers(adapter_model, tokenizer, adapter_config):
         )
         # Keep the shared training mock valid when individual tests replace
         # the tokenizer after constructing dependencies.
-        (output_path / target_unsloth.TOKENIZER_CONFIG_FILENAME).write_text(
-            "{}\n",
-            encoding="utf-8",
-        )
+        write_tokenizer_files(output_path)
 
     def save_tokenizer(path):
         output_path = Path(path)
         output_path.mkdir(parents=True, exist_ok=True)
-        (output_path / target_unsloth.TOKENIZER_CONFIG_FILENAME).write_text(
-            "{}\n",
-            encoding="utf-8",
-        )
+        write_tokenizer_files(output_path)
 
     adapter_model.save_pretrained.side_effect = save_adapter
     tokenizer.save_pretrained.side_effect = save_tokenizer
+    tokenizer.get_vocab = mock.Mock(return_value={"test-token": 1})
+    tokenizer.backend_tokenizer = None
+    tokenizer.sp_model = None
+    tokenizer.special_tokens_map = {}
+    tokenizer.extra_special_tokens = []
+    tokenizer.added_tokens_decoder = {}
+
+
+def reload_test_tokenizer(tokenizer, _path):
+    if not callable(getattr(tokenizer, "get_vocab", None)):
+        tokenizer.get_vocab = lambda: {}
+
+    save_pretrained = getattr(tokenizer, "save_pretrained", None)
+    if isinstance(save_pretrained, mock.Mock) and save_pretrained.side_effect is None:
+        def save_tokenizer(path):
+            output_path = Path(path)
+            output_path.mkdir(parents=True, exist_ok=True)
+            (
+                output_path / target_unsloth.TOKENIZER_CONFIG_FILENAME
+            ).write_text("{}\n", encoding="utf-8")
+            (output_path / "tokenizer.json").write_text(
+                "{}\n",
+                encoding="utf-8",
+            )
+
+        save_pretrained.side_effect = save_tokenizer
+    return tokenizer
 
 
 class TextPreprocessingTokenizer:
@@ -574,6 +605,7 @@ def example_train_dependencies(dataset):
         ),
         train_on_responses_only=mock.Mock(side_effect=lambda trainer, **_: trainer),
         concatenate_datasets=mock.Mock(),
+        reload_tokenizer=mock.Mock(side_effect=reload_test_tokenizer),
     )
     return dependencies
 
@@ -4961,8 +4993,129 @@ class MultiSourceFingerprintTest(unittest.TestCase):
         self.assertNotEqual(merged, missing_duplicate)
 
 
+class RoundtripTokenizer:
+    def __init__(
+        self,
+        *,
+        vocab,
+        backend_state=None,
+        sentencepiece_state=None,
+        special_tokens_map=None,
+        extra_special_tokens=None,
+        added_tokens_decoder=None,
+        all_special_tokens=None,
+        chat_template="{{ messages }}",
+        probe_delta=0,
+        reload_error=None,
+        serialized_artifacts=None,
+    ):
+        self.vocab = vocab
+        self.backend_tokenizer = (
+            None
+            if backend_state is None
+            else SimpleNamespace(to_str=lambda: json.dumps(backend_state))
+        )
+        self.sp_model = (
+            None
+            if sentencepiece_state is None
+            else SimpleNamespace(
+                serialized_model_proto=lambda: sentencepiece_state
+            )
+        )
+        self.special_tokens_map = special_tokens_map or {}
+        self.extra_special_tokens = extra_special_tokens or []
+        self.added_tokens_decoder = added_tokens_decoder or {}
+        self.all_special_tokens = (
+            list(all_special_tokens)
+            if all_special_tokens is not None
+            else list(self.special_tokens_map.values())
+            + list(self.extra_special_tokens)
+        )
+        self.chat_template = chat_template
+        self.probe_delta = probe_delta
+        self.reload_error = reload_error
+        self.reloaded_tokenizer = None
+        self.reload_calls = []
+        self.serialized_artifacts = (
+            {
+                target_unsloth.TOKENIZER_CONFIG_FILENAME: "{}\n",
+                "tokenizer.json": "{}\n",
+            }
+            if serialized_artifacts is None
+            else serialized_artifacts
+        )
+
+    def from_pretrained(self, path, *, local_files_only):
+        self.reload_calls.append((Path(path), local_files_only))
+        if self.reload_error is not None:
+            raise self.reload_error
+        return self.reloaded_tokenizer
+
+    def get_vocab(self):
+        return self.vocab
+
+    def save_pretrained(self, path):
+        output_path = Path(path)
+        output_path.mkdir(parents=True, exist_ok=True)
+        for relative_path, contents in self.serialized_artifacts.items():
+            artifact_path = output_path / relative_path
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(contents, bytes):
+                artifact_path.write_bytes(contents)
+            else:
+                artifact_path.write_text(contents, encoding="utf-8")
+
+    def __call__(self, text, *, add_special_tokens):
+        return {
+            "input_ids": [
+                self.probe_delta,
+                len(text),
+                int(add_special_tokens),
+            ]
+        }
+
+
+class FakeAddedToken:
+    def __init__(
+        self,
+        content,
+        *,
+        single_word=False,
+        lstrip=False,
+        rstrip=False,
+        normalized=False,
+        special=True,
+    ):
+        self.content = content
+        self.single_word = single_word
+        self.lstrip = lstrip
+        self.rstrip = rstrip
+        self.normalized = normalized
+        self.special = special
+
+    def __getstate__(self):
+        return {
+            "content": self.content,
+            "single_word": self.single_word,
+            "lstrip": self.lstrip,
+            "rstrip": self.rstrip,
+            "normalized": self.normalized,
+            "special": self.special,
+        }
+
+
 class AdapterArtifactContractTest(unittest.TestCase):
-    def write_bundle(self, directory, *, base_model="example/base-model"):
+    @staticmethod
+    def reload_roundtrip_tokenizer(tokenizer, path):
+        return tokenizer.from_pretrained(path, local_files_only=True)
+
+    def write_bundle(
+        self,
+        directory,
+        *,
+        base_model="example/base-model",
+        tokenizer_files=("tokenizer.json",),
+    ):
         directory.mkdir(parents=True, exist_ok=True)
         (directory / target_unsloth.ADAPTER_CONFIG_FILENAME).write_text(
             json.dumps(
@@ -4981,6 +5134,11 @@ class AdapterArtifactContractTest(unittest.TestCase):
             "{}\n",
             encoding="utf-8",
         )
+        for tokenizer_file in tokenizer_files:
+            (directory / tokenizer_file).write_text(
+                "tokenizer\n",
+                encoding="utf-8",
+            )
 
     def test_requires_one_default_adapter_without_auxiliary_trainable_state(self):
         valid_config = SimpleNamespace(
@@ -5036,6 +5194,330 @@ class AdapterArtifactContractTest(unittest.TestCase):
             )
         )
 
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "unexpectedly requires embedding layers",
+        ):
+            target_unsloth.validate_adapter_save_contract(
+                SimpleNamespace(
+                    peft_config={"default": valid_config},
+                    _need_to_train_embeddings=True,
+                )
+            )
+
+    def test_validates_fast_and_slow_tokenizer_roundtrips(self):
+        cases = (
+            (
+                "fast backend",
+                ("tokenizer.json",),
+                {"hello": 1, "world": 2},
+                {"model": {"type": "BPE", "merges": ["h e"]}},
+                None,
+            ),
+            (
+                "slow SentencePiece",
+                ("tokenizer.model",),
+                {"<unk>": 0, "hello": 1},
+                None,
+                b"sentencepiece-model",
+            ),
+            (
+                "vocabulary-free algorithmic tokenizer",
+                ("tokenizer.json",),
+                {},
+                None,
+                None,
+            ),
+        )
+        for name, tokenizer_files, vocab, backend_state, sentencepiece in cases:
+            with (
+                self.subTest(name=name),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                bundle = Path(temporary_directory) / "adapter"
+                self.write_bundle(bundle, tokenizer_files=tokenizer_files)
+                original = RoundtripTokenizer(
+                    vocab=vocab,
+                    backend_state=backend_state,
+                    sentencepiece_state=sentencepiece,
+                    special_tokens_map={"eos_token": "</s>"},
+                )
+                original.reloaded_tokenizer = RoundtripTokenizer(
+                    vocab=vocab,
+                    backend_state=backend_state,
+                    sentencepiece_state=sentencepiece,
+                    special_tokens_map={"eos_token": "</s>"},
+                )
+
+                target_unsloth.validate_portable_adapter_bundle(
+                    bundle,
+                    tokenizer=original,
+                    reload_tokenizer=self.reload_roundtrip_tokenizer,
+                )
+
+                self.assertEqual(
+                    original.reload_calls,
+                    [(bundle, True)],
+                )
+
+    def test_uses_exact_tokenizer_class_and_normalizes_local_load_context(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            bundle = Path(temporary_directory) / "adapter"
+            self.write_bundle(bundle)
+            original = RoundtripTokenizer(
+                vocab={"hello": 1},
+                serialized_artifacts={
+                    target_unsloth.TOKENIZER_CONFIG_FILENAME: json.dumps(
+                        {"is_local": False, "tokenizer_class": "Example"}
+                    ),
+                    "tokenizer.json": "{}\n",
+                },
+            )
+            reloaded = RoundtripTokenizer(
+                vocab={"hello": 1},
+                serialized_artifacts={
+                    target_unsloth.TOKENIZER_CONFIG_FILENAME: json.dumps(
+                        {
+                            "additional_special_tokens": [],
+                            "is_local": True,
+                            "tokenizer_class": "Example",
+                        }
+                    ),
+                    "tokenizer.json": "{}\n",
+                },
+            )
+
+            with mock.patch.object(
+                RoundtripTokenizer,
+                "from_pretrained",
+                return_value=reloaded,
+            ) as from_pretrained:
+                target_unsloth.validate_portable_adapter_bundle(
+                    bundle,
+                    tokenizer=original,
+                )
+
+            from_pretrained.assert_called_once_with(
+                bundle,
+                local_files_only=True,
+            )
+
+    def test_rejects_lost_extra_special_tokens_and_added_token_flags(self):
+        original_added_token = FakeAddedToken("<domain>", special=True)
+        cases = (
+            (
+                "lost extra special token",
+                [],
+                [],
+                {7: original_added_token},
+                "all special tokens changed",
+            ),
+            (
+                "changed AddedToken flag",
+                ["<domain>"],
+                ["<domain>"],
+                {7: FakeAddedToken("<domain>", special=False)},
+                "added-token state changed",
+            ),
+        )
+        for (
+            name,
+            reloaded_extra_tokens,
+            reloaded_all_special_tokens,
+            reloaded_decoder,
+            error_pattern,
+        ) in cases:
+            with (
+                self.subTest(name=name),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                bundle = Path(temporary_directory) / "adapter"
+                self.write_bundle(bundle)
+                original = RoundtripTokenizer(
+                    vocab={"<domain>": 7},
+                    extra_special_tokens=["<domain>"],
+                    all_special_tokens=["<domain>"],
+                    added_tokens_decoder={7: original_added_token},
+                )
+                original.reloaded_tokenizer = RoundtripTokenizer(
+                    vocab={"<domain>": 7},
+                    extra_special_tokens=reloaded_extra_tokens,
+                    all_special_tokens=reloaded_all_special_tokens,
+                    added_tokens_decoder=reloaded_decoder,
+                )
+
+                with self.assertRaisesRegex(RuntimeError, error_pattern):
+                    target_unsloth.validate_portable_adapter_bundle(
+                        bundle,
+                        tokenizer=original,
+                        reload_tokenizer=self.reload_roundtrip_tokenizer,
+                    )
+
+    def test_rejects_changed_slow_bpe_merge_serialization(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            bundle = Path(temporary_directory) / "adapter"
+            self.write_bundle(bundle, tokenizer_files=("merges.txt",))
+            common_artifacts = {
+                "vocab.json": '{"q": 1, "z": 2, "qz": 3}\n',
+            }
+            original = RoundtripTokenizer(
+                vocab={"q": 1, "z": 2, "qz": 3},
+                serialized_artifacts=common_artifacts
+                | {
+                    target_unsloth.TOKENIZER_CONFIG_FILENAME: json.dumps(
+                        {"is_local": False, "tokenizer_class": "CTRLTokenizer"}
+                    ),
+                    "merges.txt": "#version: 0.2\nq z\n",
+                },
+            )
+            original.reloaded_tokenizer = RoundtripTokenizer(
+                vocab={"q": 1, "z": 2, "qz": 3},
+                serialized_artifacts=common_artifacts
+                | {
+                    target_unsloth.TOKENIZER_CONFIG_FILENAME: json.dumps(
+                        {"is_local": True, "tokenizer_class": "CTRLTokenizer"}
+                    ),
+                    "merges.txt": "#version: 0.2\n",
+                },
+            )
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "serialized artifacts changed",
+            ):
+                target_unsloth.validate_portable_adapter_bundle(
+                    bundle,
+                    tokenizer=original,
+                    reload_tokenizer=self.reload_roundtrip_tokenizer,
+                )
+
+    def test_rejects_tokenizer_roundtrip_semantic_changes(self):
+        mismatch_cases = (
+            (
+                "config-only fallback vocabulary",
+                {"hello": 1, "world": 2},
+                {"[UNK]": 0},
+                {"model": {"type": "BPE"}},
+                {"model": {"type": "BPE"}},
+                0,
+                0,
+                "vocabulary changed",
+            ),
+            (
+                "changed backend",
+                {"hello": 1},
+                {"hello": 1},
+                {"model": {"merges": ["h e"]}},
+                {"model": {"merges": []}},
+                0,
+                0,
+                "backend state changed",
+            ),
+            (
+                "changed encoding behavior",
+                {"hello": 1},
+                {"hello": 1},
+                None,
+                None,
+                0,
+                1,
+                "probe encodings changed",
+            ),
+        )
+        for (
+            name,
+            original_vocab,
+            reloaded_vocab,
+            original_backend,
+            reloaded_backend,
+            original_probe_delta,
+            reloaded_probe_delta,
+            error_pattern,
+        ) in mismatch_cases:
+            with (
+                self.subTest(name=name),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                bundle = Path(temporary_directory) / "adapter"
+                self.write_bundle(bundle, tokenizer_files=())
+                original = RoundtripTokenizer(
+                    vocab=original_vocab,
+                    backend_state=original_backend,
+                    probe_delta=original_probe_delta,
+                )
+                original.reloaded_tokenizer = RoundtripTokenizer(
+                    vocab=reloaded_vocab,
+                    backend_state=reloaded_backend,
+                    probe_delta=reloaded_probe_delta,
+                )
+
+                with self.assertRaisesRegex(RuntimeError, error_pattern):
+                    target_unsloth.validate_portable_adapter_bundle(
+                        bundle,
+                        tokenizer=original,
+                        reload_tokenizer=self.reload_roundtrip_tokenizer,
+                    )
+
+    def test_rejects_tokenizer_that_cannot_reload_offline(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            bundle = Path(temporary_directory) / "adapter"
+            self.write_bundle(bundle)
+            tokenizer = RoundtripTokenizer(
+                vocab={"hello": 1},
+                reload_error=ValueError("corrupt tokenizer.json"),
+            )
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "could not be reloaded offline",
+            ):
+                target_unsloth.validate_portable_adapter_bundle(
+                    bundle,
+                    tokenizer=tokenizer,
+                    reload_tokenizer=self.reload_roundtrip_tokenizer,
+                )
+
+    def test_rejects_other_tokenizer_roundtrip_state_changes(self):
+        original_state = {
+            "vocab": {"hello": 1},
+            "sentencepiece_state": b"sentencepiece-model",
+            "special_tokens_map": {"eos_token": "</s>"},
+            "chat_template": "{{ messages }}",
+        }
+        cases = (
+            (
+                "SentencePiece state",
+                {"sentencepiece_state": b"changed-model"},
+                "SentencePiece state changed",
+            ),
+            (
+                "special tokens",
+                {"special_tokens_map": {"eos_token": "<eos>"}},
+                "special tokens changed",
+            ),
+            (
+                "chat template",
+                {"chat_template": "{{ changed }}"},
+                "chat template changed",
+            ),
+        )
+        for name, changed_state, error_pattern in cases:
+            with (
+                self.subTest(name=name),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                bundle = Path(temporary_directory) / "adapter"
+                self.write_bundle(bundle, tokenizer_files=("tokenizer.model",))
+                original = RoundtripTokenizer(**original_state)
+                original.reloaded_tokenizer = RoundtripTokenizer(
+                    **(original_state | changed_state)
+                )
+                with self.assertRaisesRegex(RuntimeError, error_pattern):
+                    target_unsloth.validate_portable_adapter_bundle(
+                        bundle,
+                        tokenizer=original,
+                        reload_tokenizer=self.reload_roundtrip_tokenizer,
+                    )
+
     def test_validates_nested_tokenizer_assets_and_rejects_local_base(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             bundle = Path(temporary_directory) / "adapter"
@@ -5046,11 +5528,11 @@ class AdapterArtifactContractTest(unittest.TestCase):
                 "{{ messages }}\n",
                 encoding="utf-8",
             )
-            target_unsloth.validate_portable_adapter_bundle(bundle)
+            target_unsloth.validate_adapter_bundle_structure(bundle)
 
             self.write_bundle(bundle, base_model="/cache/snapshots/base")
             with self.assertRaisesRegex(RuntimeError, "portable Hub ID"):
-                target_unsloth.validate_portable_adapter_bundle(bundle)
+                target_unsloth.validate_adapter_bundle_structure(bundle)
 
     def test_rejects_base_weights_and_symbolic_links(self):
         unsafe_weight_paths = (
@@ -5079,7 +5561,7 @@ class AdapterArtifactContractTest(unittest.TestCase):
                     RuntimeError,
                     "unsupported artifact",
                 ):
-                    target_unsloth.validate_portable_adapter_bundle(bundle)
+                    target_unsloth.validate_adapter_bundle_structure(bundle)
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -5088,7 +5570,7 @@ class AdapterArtifactContractTest(unittest.TestCase):
             (root / "outside").write_text("secret", encoding="utf-8")
             (bundle / "linked-tokenizer").symlink_to(root / "outside")
             with self.assertRaisesRegex(RuntimeError, "symbolic link"):
-                target_unsloth.validate_portable_adapter_bundle(bundle)
+                target_unsloth.validate_adapter_bundle_structure(bundle)
 
 
 class TrainingPhaseTest(unittest.TestCase):
@@ -5228,9 +5710,11 @@ class TrainingPhaseTest(unittest.TestCase):
             selected_adapters=[target_unsloth.DEFAULT_ADAPTER_NAME],
             save_embedding_layers=False,
         )
-        tokenizer.save_pretrained.assert_called_once_with(
-            trained_model_directory
+        self.assertEqual(
+            tokenizer.save_pretrained.call_args_list[0],
+            mock.call(trained_model_directory),
         )
+        self.assertEqual(tokenizer.save_pretrained.call_count, 3)
         self.assertFalse(dependencies.sft_config.call_args.kwargs["fp16"])
         self.assertTrue(dependencies.sft_config.call_args.kwargs["bf16"])
         self.assertIs(
@@ -5351,7 +5835,7 @@ class TrainingPhaseTest(unittest.TestCase):
         self.assertEqual(trainer.data_collator.call_count, 1)
         dependencies.concatenate_datasets.assert_not_called()
         trainer.train.assert_called_once_with()
-        tokenizer.save_pretrained.assert_called_once()
+        self.assertEqual(tokenizer.save_pretrained.call_count, 3)
 
     def test_response_loss_rejects_unsafe_role_order_before_model_allocation(self):
         cases = (
@@ -6292,7 +6776,7 @@ class TrainingPhaseTest(unittest.TestCase):
             policy=mock.ANY,
         )
         dependencies.concatenate_datasets.assert_not_called()
-        tokenizer.save_pretrained.assert_called_once()
+        self.assertEqual(tokenizer.save_pretrained.call_count, 3)
 
     def test_text_dataset_requires_eos_before_lora_allocation(self):
         train_config = example_train_config()
@@ -6886,9 +7370,11 @@ class DPOTrainingPhaseTest(unittest.TestCase):
             selected_adapters=[target_unsloth.DEFAULT_ADAPTER_NAME],
             save_embedding_layers=False,
         )
-        tokenizer.save_pretrained.assert_called_once_with(
-            trained_model_directory
+        self.assertEqual(
+            tokenizer.save_pretrained.call_args_list[0],
+            mock.call(trained_model_directory),
         )
+        self.assertEqual(tokenizer.save_pretrained.call_count, 3)
         self.assertIs(
             base_model,
             dependencies.fast_language_model.from_pretrained.return_value[0],
@@ -7987,6 +8473,10 @@ class ExportPhaseTest(unittest.TestCase):
                 trained_model_directory
                 / target_unsloth.TOKENIZER_CONFIG_FILENAME
             ).write_text("{}\n", encoding="utf-8")
+            (trained_model_directory / "tokenizer.json").write_text(
+                "{}\n",
+                encoding="utf-8",
+            )
             snapshot_path = root / "cache" / "snapshots" / ("a" * 40)
             snapshot_download.return_value = str(snapshot_path)
             generated_directory.mkdir()
@@ -8073,6 +8563,10 @@ class ExportPhaseTest(unittest.TestCase):
                 trained_model_directory
                 / target_unsloth.TOKENIZER_CONFIG_FILENAME
             ).write_text("{}\n", encoding="utf-8")
+            (trained_model_directory / "tokenizer.json").write_text(
+                "{}\n",
+                encoding="utf-8",
+            )
 
             with self.assertRaisesRegex(
                 RuntimeError,

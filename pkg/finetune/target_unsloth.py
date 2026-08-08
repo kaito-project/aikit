@@ -34,6 +34,10 @@ ADAPTER_CONFIG_FILENAME = "adapter_config.json"
 ADAPTER_WEIGHTS_FILENAME = "adapter_model.safetensors"
 DEFAULT_ADAPTER_NAME = "default"
 TOKENIZER_CONFIG_FILENAME = "tokenizer_config.json"
+TOKENIZER_ROUNDTRIP_PROBES = (
+    "AIKit tokenizer round-trip validation.",
+    "  whitespace\nUnicode: café 東京 🙂",
+)
 HF_COMMIT_HASH_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DATASET_CHECKSUM_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 DATASET_SPLIT_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$")
@@ -302,6 +306,7 @@ class TrainDependencies(NamedTuple):
     get_chat_template_parts: Callable[..., tuple[str, str]]
     train_on_responses_only: Callable[..., Any]
     concatenate_datasets: Callable[[list[Any]], Any] | None = None
+    reload_tokenizer: Callable[[Any, Path | str], Any] | None = None
 
 
 class ExportDependencies(NamedTuple):
@@ -562,10 +567,18 @@ def validate_adapter_save_contract(model: Any) -> None:
         )
 
 
-def validate_portable_adapter_bundle(
+def validate_adapter_bundle_structure(
     trained_model_directory: Path | str,
 ) -> None:
     trained_model_path = Path(trained_model_directory)
+
+    def is_nonempty_regular_file(artifact_path: Path) -> bool:
+        return (
+            not artifact_path.is_symlink()
+            and artifact_path.is_file()
+            and artifact_path.stat().st_size > 0
+        )
+
     required_files = (
         ADAPTER_CONFIG_FILENAME,
         ADAPTER_WEIGHTS_FILENAME,
@@ -573,11 +586,7 @@ def validate_portable_adapter_bundle(
     )
     for filename in required_files:
         artifact_path = trained_model_path / filename
-        if (
-            not artifact_path.is_file()
-            or artifact_path.is_symlink()
-            or artifact_path.stat().st_size == 0
-        ):
+        if not is_nonempty_regular_file(artifact_path):
             raise RuntimeError(
                 f"saved adapter is missing a non-empty {filename}"
             )
@@ -644,6 +653,348 @@ def validate_portable_adapter_bundle(
     require_hf_commit_hash(
         adapter_config.get("revision"),
         description="saved adapter base model revision",
+    )
+
+
+def tokenizer_vocab(tokenizer: Any) -> dict[str, Any]:
+    get_vocab = getattr(tokenizer, "get_vocab", None)
+    if not callable(get_vocab):
+        raise RuntimeError("tokenizer does not expose its vocabulary")
+    try:
+        vocab = get_vocab()
+    except Exception:
+        raise RuntimeError("tokenizer vocabulary could not be read") from None
+    if not isinstance(vocab, Mapping):
+        raise RuntimeError("tokenizer vocabulary is not a mapping")
+    return dict(vocab)
+
+
+def tokenizer_backend_state(tokenizer: Any) -> Any:
+    backend = getattr(tokenizer, "backend_tokenizer", None)
+    if backend is None:
+        return None
+    serialize = getattr(backend, "to_str", None)
+    if not callable(serialize):
+        raise RuntimeError("tokenizer backend cannot be serialized")
+    try:
+        return json.loads(serialize())
+    except Exception:
+        raise RuntimeError("tokenizer backend cannot be serialized") from None
+
+
+def tokenizer_sentencepiece_state(tokenizer: Any) -> bytes | None:
+    sentencepiece = getattr(tokenizer, "sp_model", None)
+    if sentencepiece is None:
+        return None
+    serialize = getattr(sentencepiece, "serialized_model_proto", None)
+    if not callable(serialize):
+        raise RuntimeError("tokenizer SentencePiece model cannot be serialized")
+    try:
+        state = serialize()
+    except Exception:
+        raise RuntimeError(
+            "tokenizer SentencePiece model cannot be serialized"
+        ) from None
+    if not isinstance(state, bytes):
+        raise RuntimeError(
+            "tokenizer SentencePiece model serialization is not bytes"
+        )
+    return state
+
+
+def canonical_added_token_state(token: Any) -> tuple[Any, ...]:
+    if isinstance(token, str):
+        return (token, None, None, None, None, None)
+
+    getstate = getattr(token, "__getstate__", None)
+    state = getstate() if callable(getstate) else None
+    if state is not None and not isinstance(state, Mapping):
+        raise RuntimeError("tokenizer added-token state is not a mapping")
+    state_mapping = state if isinstance(state, Mapping) else {}
+
+    fields = (
+        "content",
+        "single_word",
+        "lstrip",
+        "rstrip",
+        "normalized",
+        "special",
+    )
+    values = tuple(
+        state_mapping.get(field, getattr(token, field, None))
+        for field in fields
+    )
+    content, *flags = values
+    if not isinstance(content, str) or any(
+        not isinstance(flag, bool) for flag in flags
+    ):
+        raise RuntimeError("tokenizer added-token state is invalid")
+    return values
+
+
+def tokenizer_added_token_state(
+    tokenizer: Any,
+) -> tuple[tuple[str, ...], tuple[tuple[int, tuple[Any, ...]], ...]]:
+    extra_special_tokens = getattr(tokenizer, "extra_special_tokens", ())
+    if extra_special_tokens is None:
+        extra_special_tokens = ()
+    if (
+        not isinstance(extra_special_tokens, Sequence)
+        or isinstance(extra_special_tokens, (str, bytes))
+        or any(not isinstance(token, str) for token in extra_special_tokens)
+    ):
+        raise RuntimeError("tokenizer extra special tokens are invalid")
+
+    added_tokens_decoder = getattr(tokenizer, "added_tokens_decoder", {})
+    if added_tokens_decoder is None:
+        added_tokens_decoder = {}
+    if not isinstance(added_tokens_decoder, Mapping):
+        raise RuntimeError("tokenizer added-token decoder is not a mapping")
+
+    canonical_added_tokens = []
+    for token_id, token in added_tokens_decoder.items():
+        if not isinstance(token_id, int) or isinstance(token_id, bool):
+            raise RuntimeError("tokenizer added-token ID is invalid")
+        canonical_added_tokens.append(
+            (token_id, canonical_added_token_state(token))
+        )
+    canonical_added_tokens.sort(key=operator.itemgetter(0))
+    return (
+        tuple(extra_special_tokens),
+        tuple(canonical_added_tokens),
+    )
+
+
+def tokenizer_probe_ids(tokenizer: Any) -> tuple[tuple[int, ...], ...]:
+    probe_ids: list[tuple[int, ...]] = []
+    for probe in TOKENIZER_ROUNDTRIP_PROBES:
+        for add_special_tokens in (False, True):
+            try:
+                encoding = tokenizer(
+                    probe,
+                    add_special_tokens=add_special_tokens,
+                )
+            except Exception:
+                raise RuntimeError(
+                    "tokenizer could not encode a round-trip probe"
+                ) from None
+            if not isinstance(encoding, Mapping):
+                raise RuntimeError(
+                    "tokenizer round-trip probe did not return a mapping"
+                )
+            input_ids = encoding.get("input_ids")
+            if (
+                not isinstance(input_ids, Sequence)
+                or isinstance(input_ids, (str, bytes))
+                or any(
+                    not isinstance(token_id, int) or isinstance(token_id, bool)
+                    for token_id in input_ids
+                )
+            ):
+                raise RuntimeError(
+                    "tokenizer round-trip probe returned invalid input IDs"
+                )
+            probe_ids.append(tuple(input_ids))
+    return tuple(probe_ids)
+
+
+def tokenizer_serialization_manifest(
+    tokenizer: Any,
+    serialization_directory: Path,
+) -> dict[str, tuple[int, str]]:
+    try:
+        tokenizer.save_pretrained(serialization_directory)
+    except Exception:
+        raise RuntimeError(
+            "tokenizer could not be serialized for round-trip validation"
+        ) from None
+
+    manifest = {}
+    for artifact_path in sorted(serialization_directory.rglob("*")):
+        relative_path = artifact_path.relative_to(
+            serialization_directory
+        ).as_posix()
+        if artifact_path.is_symlink():
+            raise RuntimeError(
+                "tokenizer round-trip serialization contains a symbolic link"
+            )
+        if artifact_path.is_dir():
+            continue
+        if not artifact_path.is_file():
+            raise RuntimeError(
+                "tokenizer round-trip serialization contains a non-regular file"
+            )
+        try:
+            contents = artifact_path.read_bytes()
+        except OSError:
+            raise RuntimeError(
+                "tokenizer round-trip serialization could not be read"
+            ) from None
+        if relative_path == TOKENIZER_CONFIG_FILENAME:
+            try:
+                tokenizer_config = json.loads(contents)
+            except (TypeError, ValueError, UnicodeDecodeError):
+                raise RuntimeError(
+                    "tokenizer round-trip serialization has invalid "
+                    "tokenizer_config.json"
+                ) from None
+            if not isinstance(tokenizer_config, Mapping):
+                raise RuntimeError(
+                    "tokenizer round-trip serialization has a non-mapping "
+                    "tokenizer_config.json"
+                )
+            tokenizer_config = dict(tokenizer_config)
+            # Transformers records whether loading used a local directory.
+            # That context changes after the required offline reload but does
+            # not affect tokenizer behavior or portability.
+            tokenizer_config.pop("is_local", None)
+            # Transformers 5 can materialize its deprecated alias as an empty
+            # list when reloading some slow tokenizers. An absent field and an
+            # empty list both declare that there are no additional tokens;
+            # preserve every non-empty value for exact comparison.
+            if tokenizer_config.get("additional_special_tokens") == []:
+                tokenizer_config.pop("additional_special_tokens")
+            contents = json.dumps(
+                tokenizer_config,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        manifest[relative_path] = (
+            len(contents),
+            hashlib.sha256(contents).hexdigest(),
+        )
+
+    if TOKENIZER_CONFIG_FILENAME not in manifest:
+        raise RuntimeError(
+            "tokenizer round-trip serialization is missing tokenizer_config.json"
+        )
+    return manifest
+
+
+def validate_tokenizer_serialization_roundtrip(
+    tokenizer: Any,
+    reloaded_tokenizer: Any,
+) -> None:
+    with tempfile.TemporaryDirectory(
+        prefix="aikit-tokenizer-roundtrip-"
+    ) as temporary_directory:
+        root = Path(temporary_directory)
+        original_manifest = tokenizer_serialization_manifest(
+            tokenizer,
+            root / "original",
+        )
+        reloaded_manifest = tokenizer_serialization_manifest(
+            reloaded_tokenizer,
+            root / "reloaded",
+        )
+    if original_manifest != reloaded_manifest:
+        raise RuntimeError(
+            "saved tokenizer serialized artifacts changed after offline reload"
+        )
+
+
+def validate_tokenizer_roundtrip(
+    tokenizer: Any,
+    trained_model_directory: Path | str,
+    *,
+    reload_tokenizer: Callable[[Any, Path | str], Any] | None = None,
+) -> None:
+    if reload_tokenizer is None:
+        tokenizer_class = type(tokenizer)
+        class_reload_tokenizer = getattr(
+            tokenizer_class,
+            "from_pretrained",
+            None,
+        )
+        if not callable(class_reload_tokenizer):
+            raise RuntimeError(
+                "tokenizer class does not support offline reload"
+            )
+        try:
+            reloaded_tokenizer = class_reload_tokenizer(
+                trained_model_directory,
+                local_files_only=True,
+            )
+        except Exception:
+            raise RuntimeError(
+                "saved tokenizer could not be reloaded offline"
+            ) from None
+    else:
+        try:
+            reloaded_tokenizer = reload_tokenizer(
+                tokenizer,
+                trained_model_directory,
+            )
+        except Exception:
+            raise RuntimeError(
+                "saved tokenizer could not be reloaded offline"
+            ) from None
+
+    comparisons = (
+        (
+            "vocabulary",
+            tokenizer_vocab(tokenizer),
+            tokenizer_vocab(reloaded_tokenizer),
+        ),
+        (
+            "backend state",
+            tokenizer_backend_state(tokenizer),
+            tokenizer_backend_state(reloaded_tokenizer),
+        ),
+        (
+            "SentencePiece state",
+            tokenizer_sentencepiece_state(tokenizer),
+            tokenizer_sentencepiece_state(reloaded_tokenizer),
+        ),
+        (
+            "special tokens",
+            getattr(tokenizer, "special_tokens_map", None),
+            getattr(reloaded_tokenizer, "special_tokens_map", None),
+        ),
+        (
+            "all special tokens",
+            getattr(tokenizer, "all_special_tokens", None),
+            getattr(reloaded_tokenizer, "all_special_tokens", None),
+        ),
+        (
+            "added-token state",
+            tokenizer_added_token_state(tokenizer),
+            tokenizer_added_token_state(reloaded_tokenizer),
+        ),
+        (
+            "chat template",
+            getattr(tokenizer, "chat_template", None),
+            getattr(reloaded_tokenizer, "chat_template", None),
+        ),
+        (
+            "probe encodings",
+            tokenizer_probe_ids(tokenizer),
+            tokenizer_probe_ids(reloaded_tokenizer),
+        ),
+    )
+    for description, original_state, reloaded_state in comparisons:
+        if original_state != reloaded_state:
+            raise RuntimeError(
+                f"saved tokenizer {description} changed after offline reload"
+            )
+    validate_tokenizer_serialization_roundtrip(
+        tokenizer,
+        reloaded_tokenizer,
+    )
+
+
+def validate_portable_adapter_bundle(
+    trained_model_directory: Path | str,
+    *,
+    tokenizer: Any,
+    reload_tokenizer: Callable[[Any, Path | str], Any] | None = None,
+) -> None:
+    validate_adapter_bundle_structure(trained_model_directory)
+    validate_tokenizer_roundtrip(
+        tokenizer,
+        trained_model_directory,
+        reload_tokenizer=reload_tokenizer,
     )
 
 
@@ -5025,6 +5376,8 @@ def save_trained_model(
     model: Any,
     tokenizer: Any,
     trained_model_directory: Path | str,
+    *,
+    reload_tokenizer: Callable[[Any, Path | str], Any] | None = None,
 ) -> Path:
     trained_model_path = Path(trained_model_directory)
     trained_model_path.mkdir(parents=True, exist_ok=True)
@@ -5036,7 +5389,11 @@ def save_trained_model(
         save_embedding_layers=False,
     )
     tokenizer.save_pretrained(trained_model_path)
-    validate_portable_adapter_bundle(trained_model_path)
+    validate_portable_adapter_bundle(
+        trained_model_path,
+        tokenizer=tokenizer,
+        reload_tokenizer=reload_tokenizer,
+    )
     return trained_model_path
 
 
@@ -5336,6 +5693,7 @@ def train_model(
             model,
             tokenizer,
             trained_model_directory,
+            reload_tokenizer=dependencies.reload_tokenizer,
         )
 
     canonical_datasets = []
@@ -5535,7 +5893,12 @@ def train_model(
             policy=text_policy,
         )
     trainer.train()
-    return save_trained_model(model, tokenizer, trained_model_directory)
+    return save_trained_model(
+        model,
+        tokenizer,
+        trained_model_directory,
+        reload_tokenizer=dependencies.reload_tokenizer,
+    )
 
 def export_model(
     export_config: Mapping[str, Any],
@@ -5552,7 +5915,7 @@ def export_model(
     trained_model_path = Path(trained_model_directory)
     export_path = Path(export_directory)
 
-    validate_portable_adapter_bundle(trained_model_path)
+    validate_adapter_bundle_structure(trained_model_path)
     with tempfile.TemporaryDirectory(prefix="aikit-gguf-adapter-") as temp_dir:
         export_adapter_path = Path(temp_dir) / "adapter"
         shutil.copytree(trained_model_path, export_adapter_path)
