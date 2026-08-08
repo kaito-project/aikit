@@ -82,6 +82,9 @@ jobs:
       - name: Test release validator
         run: scripts/ci/validate-release_test.sh
 
+      - name: Test release sync planner
+        run: scripts/ci/plan-release-sync_test.sh
+
   llb-benchmark:
     name: llb-benchmark
     runs-on: ubuntu-latest
