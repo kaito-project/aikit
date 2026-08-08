@@ -157,4 +157,4 @@ For AMD GPUs, run the resulting image with the ROCm device flags described in [G
 | `llama-cpp` | GGUF models via llama.cpp (CPU, NVIDIA CUDA, or ROCm) |
 | `diffusers` | HuggingFace diffusers models (requires NVIDIA CUDA) |
 | `vllm` | HuggingFace safetensors models via vLLM (requires NVIDIA CUDA) |
-| `vllm-cpp` | Local GGUF files or materialized Hugging Face repositories via the experimental native engine (CPU, or CUDA 13 on amd64 Blackwell GPUs) |
+| `vllm-cpp` | Direct HTTP(S) GGUF URLs or Hugging Face safetensors repositories via the experimental native engine (CPU, or CUDA 13 on amd64 Blackwell GPUs) |

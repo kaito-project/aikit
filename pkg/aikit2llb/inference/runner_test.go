@@ -2,6 +2,8 @@ package inference
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -417,7 +419,7 @@ func TestGenerateLlamaCppDownload(t *testing.T) {
 	}
 
 	// Should handle HTTP URLs
-	if !strings.Contains(script, `"$MODEL" == http://*`) {
+	if !strings.Contains(script, `"$MODEL_SCHEME" == "http"`) {
 		t.Error("should handle HTTP URLs")
 	}
 
@@ -505,7 +507,7 @@ printf 'fresh' > "$output"
 	}
 	freshModel := runnerPathInTestModels(modelsDir, runnerLlamaCppModelDir+"/fresh.gguf")
 	assertRunnerFileContent(t, freshModel, "fresh")
-	assertRunnerFileContent(t, filepath.Join(modelsDir, filepath.Base(runnerLlamaCppModelMarker)), model+"\n")
+	assertRunnerFileContent(t, filepath.Join(modelsDir, filepath.Base(runnerLlamaCppModelMarker)), runnerModelCacheKey(model)+"\n")
 	configPath := runnerPathInTestModels(modelsDir, runnerConfigPath)
 	wantConfig := "name: \"fresh\"\n" +
 		"backend: llama-cpp\n" +
@@ -537,7 +539,7 @@ func TestLlamaCppRunnerReplacesOnlyOwnedCacheAndConfig(t *testing.T) {
 		userModel:     "user",
 		userConfig:    "name: user-owned\n",
 		activeConfig:  "name: old\nbackend: llama-cpp\nparameters:\n  model: old.gguf\n",
-		filepath.Join(modelsDir, filepath.Base(runnerLlamaCppModelMarker)): "https://example.com/old.gguf\n",
+		filepath.Join(modelsDir, filepath.Base(runnerLlamaCppModelMarker)): runnerModelCacheKey("https://example.com/old.gguf") + "\n",
 	}
 	for path, content := range seedFiles {
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -626,7 +628,7 @@ printf 'GGUF' > "$local_dir/quantized/q3/nested.gguf"
 		"parameters:\n" +
 		"  model: \"" + nestedModel + "\"\n"
 	assertRunnerFileContent(t, runnerPathInTestModels(modelsDir, runnerConfigPath), wantConfig)
-	assertRunnerFileContent(t, filepath.Join(modelsDir, filepath.Base(runnerLlamaCppModelMarker)), "org/nested-repo\n")
+	assertRunnerFileContent(t, filepath.Join(modelsDir, filepath.Base(runnerLlamaCppModelMarker)), runnerModelCacheKey("org/nested-repo")+"\n")
 
 	writeRunnerStub(t, binDir, "hf", "#!/bin/bash\nexit 91\n")
 	output, err = executeRunnerScript(t, script, binDir, "huggingface://org/nested-repo")
@@ -652,6 +654,8 @@ func TestGenerateVLLMCppDownload(t *testing.T) {
 		`name: '${MODEL_NAME}'`,
 		`model: '${LOCAL_MODEL_PATH}'`,
 		`use_tokenizer_template: true`,
+		`model.safetensors.index.json`,
+		`MODEL_CACHE_KEY`,
 	} {
 		if !strings.Contains(script, expected) {
 			t.Errorf("vllm-cpp download script does not contain %q", expected)
@@ -728,7 +732,7 @@ printf 'weights\n' > "$local_dir/model.safetensors"
 		"template:\n" +
 		"  use_tokenizer_template: true\n"
 	assertRunnerFileContent(t, runnerPathInTestModels(modelsDir, runnerConfigPath), wantConfig)
-	assertRunnerFileContent(t, filepath.Join(modelsDir, filepath.Base(runnerVLLMCppModelMarker)), "org/repo\n")
+	assertRunnerFileContent(t, filepath.Join(modelsDir, filepath.Base(runnerVLLMCppModelMarker)), runnerModelCacheKey("org/repo")+"\n")
 
 	hfArgs, err := os.ReadFile(hfArgsLog)
 	if err != nil {
@@ -788,6 +792,123 @@ printf 'GGUF' > "$output"
 		"  use_tokenizer_template: true\n"
 	assertRunnerFileContent(t, runnerPathInTestModels(modelsDir, runnerConfigPath), wantConfig)
 	assertRunnerFileContent(t, localModelPath, "GGUF")
+}
+
+func TestVLLMCppRunnerDoesNotPersistOrLogAuthenticatedURL(t *testing.T) {
+	script, modelsDir, binDir := prepareVLLMCppRunnerScript(t)
+	writeRunnerStub(t, binDir, "curl", `#!/bin/bash
+set -euo pipefail
+output=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--output" ]]; then
+    output="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[[ -n "$output" ]]
+printf 'GGUF' > "$output"
+`)
+
+	//nolint:gosec // Deliberately includes fake URL credentials to verify redaction.
+	model := "https://alice:s3cr3t@example.com/model.gguf?X-Amz-Credential=top-secret#fragment"
+	output, err := executeRunnerScript(t, script, binDir, model)
+	if err != nil {
+		t.Fatalf("run vllm-cpp authenticated GGUF flow: %v: %s", err, output)
+	}
+
+	for _, secret := range []string{"alice", "s3cr3t", "X-Amz-Credential", "top-secret"} {
+		if strings.Contains(string(output), secret) {
+			t.Errorf("runner output leaked %q: %s", secret, output)
+		}
+	}
+	if !strings.Contains(string(output), "https://[redacted]@example.com/model.gguf") {
+		t.Errorf("runner output does not contain the sanitized URL: %s", output)
+	}
+
+	marker := filepath.Join(modelsDir, filepath.Base(runnerVLLMCppModelMarker))
+	assertRunnerFileContent(t, marker, runnerModelCacheKey(model)+"\n")
+	markerContent, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read vllm-cpp marker: %v", err)
+	}
+	if strings.Contains(string(markerContent), "example.com") || strings.Contains(string(markerContent), "top-secret") {
+		t.Fatalf("vllm-cpp marker persisted URL data: %q", markerContent)
+	}
+
+	//nolint:gosec // Deliberately includes fake URL credentials to verify mixed-case scheme redaction.
+	mixedCaseModel := "HTTPS://bob:another-secret@example.com/mixed.gguf?token=still-secret"
+	output, err = executeRunnerScript(t, script, binDir, mixedCaseModel)
+	if err != nil {
+		t.Fatalf("run vllm-cpp mixed-case authenticated GGUF flow: %v: %s", err, output)
+	}
+	for _, secret := range []string{"bob", "another-secret", "token=", "still-secret"} {
+		if strings.Contains(string(output), secret) {
+			t.Errorf("mixed-case runner output leaked %q: %s", secret, output)
+		}
+	}
+	if !strings.Contains(string(output), "https://[redacted]@example.com/mixed.gguf") {
+		t.Errorf("mixed-case runner output does not contain the sanitized URL: %s", output)
+	}
+	assertRunnerFileContent(t, marker, runnerModelCacheKey(mixedCaseModel)+"\n")
+}
+
+func TestVLLMCppRunnerRepairsIncompleteShardedRepository(t *testing.T) {
+	script, modelsDir, binDir := prepareVLLMCppRunnerScript(t)
+	model := "huggingface://org/sharded"
+	modelDir := runnerPathInTestModels(modelsDir, runnerVLLMCppModelDir)
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		t.Fatalf("create sharded model directory: %v", err)
+	}
+	seedFiles := map[string]string{
+		filepath.Join(modelDir, "config.json"):                            "{}\n",
+		filepath.Join(modelDir, "model.safetensors.index.json"):           `{"weight_map":{"a":"model-00001-of-00002.safetensors","b":"model-00002-of-00002.safetensors"}}`,
+		filepath.Join(modelDir, "model-00001-of-00002.safetensors"):       "first shard\n",
+		filepath.Join(modelsDir, filepath.Base(runnerVLLMCppModelMarker)): runnerModelCacheKey(model) + "\n",
+	}
+	for path, content := range seedFiles {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("seed sharded repository file %q: %v", path, err)
+		}
+	}
+
+	hfLog := filepath.Join(t.TempDir(), "hf-called")
+	writeRunnerStub(t, binDir, "hf", `#!/bin/bash
+set -euo pipefail
+printf 'called\n' > "$HF_LOG"
+local_dir=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--local-dir" ]]; then
+    local_dir="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[[ -n "$local_dir" ]]
+mkdir -p "$local_dir"
+printf '{}\n' > "$local_dir/config.json"
+printf '%s\n' '{"weight_map":{"a":"model-00001-of-00002.safetensors","b":"model-00002-of-00002.safetensors"}}' > "$local_dir/model.safetensors.index.json"
+printf 'first shard\n' > "$local_dir/model-00001-of-00002.safetensors"
+printf 'second shard\n' > "$local_dir/model-00002-of-00002.safetensors"
+`)
+
+	output, err := executeRunnerScript(t, script, binDir, model, "HF_LOG="+hfLog)
+	if err != nil {
+		t.Fatalf("repair incomplete sharded repository: %v: %s", err, output)
+	}
+	assertRunnerFileContent(t, hfLog, "called\n")
+	assertRunnerFileContent(t, filepath.Join(modelDir, "model-00002-of-00002.safetensors"), "second shard\n")
+
+	writeRunnerStub(t, binDir, "hf", "#!/bin/bash\nexit 91\n")
+	output, err = executeRunnerScript(t, script, binDir, model)
+	if err != nil {
+		t.Fatalf("reuse complete sharded repository: %v: %s", err, output)
+	}
+	if !strings.Contains(string(output), "Found cached vllm-cpp model matching org/sharded") {
+		t.Errorf("complete sharded repository was not treated as a cache hit: %s", output)
+	}
 }
 
 func TestVLLMCppRunnerIsolatesConfigFromStaleLlamaArtifacts(t *testing.T) {
@@ -872,6 +993,34 @@ printf 'GGUF' > "$local_dir/model.gguf"
 	}
 	if !strings.Contains(string(output), "must contain config.json and safetensors weights") {
 		t.Fatalf("unexpected GGUF-only repository error: %s", output)
+	}
+}
+
+func TestVLLMCppRunnerRejectsNestedSafetensorsRepository(t *testing.T) {
+	script, _, binDir := prepareVLLMCppRunnerScript(t)
+	writeRunnerStub(t, binDir, "hf", `#!/bin/bash
+set -euo pipefail
+local_dir=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--local-dir" ]]; then
+    local_dir="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[[ -n "$local_dir" ]]
+mkdir -p "$local_dir/weights"
+printf '{}\n' > "$local_dir/config.json"
+printf 'weights\n' > "$local_dir/weights/model.safetensors"
+`)
+
+	output, err := executeRunnerScript(t, script, binDir, "huggingface://org/nested-safetensors")
+	if err == nil {
+		t.Fatalf("nested safetensors repository unexpectedly succeeded: %s", output)
+	}
+	if !strings.Contains(string(output), "must contain config.json and safetensors weights") {
+		t.Fatalf("unexpected nested safetensors repository error: %s", output)
 	}
 }
 
@@ -1036,6 +1185,12 @@ func prepareVLLMCppRunnerScript(t *testing.T) (string, string, string) {
 
 func runnerPathInTestModels(modelsDir, runnerPath string) string {
 	return filepath.Join(modelsDir, strings.TrimPrefix(runnerPath, "/models/"))
+}
+
+func runnerModelCacheKey(model string) string {
+	normalizedModel := strings.TrimPrefix(model, "huggingface://")
+	digest := sha256.Sum256([]byte(normalizedModel))
+	return hex.EncodeToString(digest[:])
 }
 
 func executeRunnerScript(t *testing.T, script, binDir, model string, extraEnv ...string) ([]byte, error) {

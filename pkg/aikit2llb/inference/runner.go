@@ -153,8 +153,6 @@ if [[ -z "$MODEL" ]]; then
   exit 1
 fi
 
-echo "AIKit Runner: backend=$BACKEND model=$MODEL"
-
 # Keep the one active generated config separate from cached model payloads and
 # user-provided files. This also makes a shared volume safe to reuse with a
 # different runner backend: LocalAI scans only the config generated below.
@@ -164,6 +162,28 @@ RUNNER_CONFIG="` + runnerConfigPath + `"
 # Strip URI scheme prefixes (e.g. huggingface://org/repo -> org/repo)
 # kubeairunway passes model IDs with the huggingface:// prefix.
 MODEL="${MODEL#huggingface://}"
+
+# Cache markers contain only a digest so authenticated URLs are never persisted.
+# Logs omit URL queries/fragments and redact URI userinfo for the same reason.
+MODEL_CACHE_KEY="$(printf '%s' "$MODEL" | sha256sum)"
+MODEL_CACHE_KEY="${MODEL_CACHE_KEY%% *}"
+MODEL_SCHEME=""
+if [[ "$MODEL" == *://* ]]; then
+  MODEL_SCHEME="${MODEL%%://*}"
+  MODEL_SCHEME="$(printf '%s' "$MODEL_SCHEME" | tr '[:upper:]' '[:lower:]')"
+fi
+MODEL_LOG_REF="$MODEL"
+if [[ -n "$MODEL_SCHEME" ]]; then
+  MODEL_LOG_REF="${MODEL_LOG_REF%%\#*}"
+  MODEL_LOG_REF="${MODEL_LOG_REF%%\?*}"
+  MODEL_LOG_REF="${MODEL_LOG_REF#*://}"
+  if [[ "$MODEL_LOG_REF" == *@* ]]; then
+    MODEL_LOG_REF="[redacted]@${MODEL_LOG_REF##*@}"
+  fi
+  MODEL_LOG_REF="${MODEL_SCHEME}://${MODEL_LOG_REF}"
+fi
+
+echo "AIKit Runner: backend=$BACKEND model=$MODEL_LOG_REF"
 
 `)
 
@@ -214,35 +234,35 @@ MODEL_MARKER="` + runnerLlamaCppModelMarker + `"
 LEGACY_MODEL_MARKER="` + runnerLegacyModelMarker + `"
 LLAMA_CPP_MODEL_DIR="` + runnerLlamaCppModelDir + `"
 CACHED_GGUF=$(find "$LLAMA_CPP_MODEL_DIR" -type f -name "*.gguf" -print -quit 2>/dev/null || true)
-if [[ -f "$MODEL_MARKER" ]] && [[ "$(cat "$MODEL_MARKER")" == "$MODEL" ]] &&
+if [[ -f "$MODEL_MARKER" ]] && [[ "$(cat "$MODEL_MARKER")" == "$MODEL_CACHE_KEY" ]] &&
   [[ -n "$CACHED_GGUF" ]]; then
-  echo "Found cached model matching $MODEL in $LLAMA_CPP_MODEL_DIR, skipping download"
+  echo "Found cached model matching $MODEL_LOG_REF in $LLAMA_CPP_MODEL_DIR, skipping download"
 else
   # Different model requested, missing payload, or a legacy marker — clean and
   # re-download only the runner-owned cache. Legacy root files have no reliable
   # ownership metadata, so leave them untouched and outside LocalAI's config path.
   if [[ -f "$MODEL_MARKER" ]]; then
-    echo "Cached model data for $(cat "$MODEL_MARKER") is missing or does not match requested model ($MODEL), re-downloading"
+    echo "Cached model data is missing or does not match requested model ($MODEL_LOG_REF), re-downloading"
   elif [[ -f "$LEGACY_MODEL_MARKER" ]]; then
-    echo "Migrating legacy cached model ($(cat "$LEGACY_MODEL_MARKER")) for requested model ($MODEL)"
+    echo "Migrating legacy cached model for requested model ($MODEL_LOG_REF)"
   fi
   rm -rf "$LLAMA_CPP_MODEL_DIR"
   rm -f "$MODEL_MARKER" "$LEGACY_MODEL_MARKER" "$RUNNER_CONFIG"
   mkdir -p "$LLAMA_CPP_MODEL_DIR"
-  if [[ "$MODEL" == http://* ]] || [[ "$MODEL" == https://* ]]; then
+  if [[ "$MODEL_SCHEME" == "http" ]] || [[ "$MODEL_SCHEME" == "https" ]]; then
     # Direct HTTP/HTTPS download
-    echo "Downloading model from URL: $MODEL"
+    echo "Downloading model from URL: $MODEL_LOG_REF"
     MODEL_URL_PATH="${MODEL%%\#*}"
     MODEL_URL_PATH="${MODEL_URL_PATH%%\?*}"
     FILENAME="${MODEL_URL_PATH##*/}"
     if [[ -z "$FILENAME" ]] || [[ "$FILENAME" == "." ]] || [[ "$FILENAME" == ".." ]]; then
-      echo "Error: cannot derive a model filename from $MODEL" >&2
+      echo "Error: cannot derive a model filename from $MODEL_LOG_REF" >&2
       exit 1
     fi
     curl -fL --progress-bar -o "$LLAMA_CPP_MODEL_DIR/$FILENAME" "$MODEL"
   else
     # HuggingFace repo - download GGUF files
-    echo "Downloading GGUF files from HuggingFace: $MODEL"
+    echo "Downloading GGUF files from HuggingFace: $MODEL_LOG_REF"
     HF_ARGS=("$MODEL" "--local-dir" "$LLAMA_CPP_MODEL_DIR" "--include" "*.gguf")
     if [[ -n "${HF_TOKEN:-}" ]]; then
       HF_ARGS+=("--token" "$HF_TOKEN")
@@ -251,10 +271,10 @@ else
   fi
   DOWNLOADED_GGUF=$(find "$LLAMA_CPP_MODEL_DIR" -type f -name "*.gguf" -print -quit)
   if [[ -z "$DOWNLOADED_GGUF" ]]; then
-    echo "Error: no GGUF file was downloaded for $MODEL" >&2
+    echo "Error: no GGUF file was downloaded for $MODEL_LOG_REF" >&2
     exit 1
   fi
-  printf '%s\n' "$MODEL" > "$MODEL_MARKER"
+  printf '%s\n' "$MODEL_CACHE_KEY" > "$MODEL_MARKER"
   echo "Download complete"
 fi
 
@@ -262,7 +282,7 @@ fi
 # Without this, LocalAI looks for the model name as a filename (without .gguf extension).
 GGUF_FILE=$(find "$LLAMA_CPP_MODEL_DIR" -type f -name "*.gguf" -print -quit)
 if [[ -z "$GGUF_FILE" ]]; then
-  echo "Error: cached GGUF file for $MODEL is missing" >&2
+  echo "Error: cached GGUF file for $MODEL_LOG_REF is missing" >&2
   exit 1
 fi
 GGUF_BASENAME=$(basename "$GGUF_FILE")
@@ -296,8 +316,42 @@ VLLM_CPP_MODEL_DIR="` + runnerVLLMCppModelDir + `"
 MODEL_KIND=""
 LOCAL_MODEL_PATH=""
 
-case "$MODEL" in
-  http://*|https://*)
+validate_vllm_cpp_repository() {
+  [[ -f "$VLLM_CPP_MODEL_DIR/config.json" ]] || return 1
+
+  local index_path="$VLLM_CPP_MODEL_DIR/model.safetensors.index.json"
+  if [[ -f "$index_path" ]]; then
+    python3 - "$VLLM_CPP_MODEL_DIR" "$index_path" <<'PYEOF'
+import json
+import os
+import sys
+
+root = os.path.realpath(sys.argv[1])
+with open(sys.argv[2], encoding="utf-8") as index_file:
+    weight_map = json.load(index_file).get("weight_map")
+
+if not isinstance(weight_map, dict) or not weight_map:
+    raise SystemExit(1)
+
+for relative_path in set(weight_map.values()):
+    if (
+        not isinstance(relative_path, str)
+        or not relative_path.endswith(".safetensors")
+        or os.path.basename(relative_path) != relative_path
+    ):
+        raise SystemExit(1)
+    candidate = os.path.join(root, relative_path)
+    if not os.path.isfile(candidate):
+        raise SystemExit(1)
+PYEOF
+    return
+  fi
+
+  [[ -n "$(find "$VLLM_CPP_MODEL_DIR" -maxdepth 1 -type f -name "*.safetensors" -print -quit)" ]]
+}
+
+case "$MODEL_SCHEME" in
+  http|https)
     # Direct URLs are supported only for a single GGUF file. Strip query and
     # fragment components before validating and deriving the local filename.
     MODEL_URL_PATH="${MODEL%%\#*}"
@@ -311,11 +365,11 @@ case "$MODEL" in
     MODEL_NAME="${GGUF_FILENAME%.gguf}"
     LOCAL_MODEL_PATH="${VLLM_CPP_MODEL_DIR}/${GGUF_FILENAME}"
     ;;
-  *://*)
+  ?*)
     echo "Error: vllm-cpp supports only huggingface:// repository references or HTTP(S) .gguf URLs" >&2
     exit 1
     ;;
-  *)
+  "")
     # Restrict repository IDs to safe Hugging Face path components. Besides
     # rejecting unsupported URLs, this prevents option and YAML injection.
     if [[ ! "$MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?$ ]]; then
@@ -331,20 +385,19 @@ esac
 # Reuse a materialized model only when both its source marker and local payload
 # match. This keeps a mounted /models volume model-aware across runner restarts.
 CACHE_HIT="false"
-if [[ -f "$MODEL_MARKER" ]] && [[ "$(cat "$MODEL_MARKER")" == "$MODEL" ]]; then
+if [[ -f "$MODEL_MARKER" ]] && [[ "$(cat "$MODEL_MARKER")" == "$MODEL_CACHE_KEY" ]]; then
   if [[ "$MODEL_KIND" == "gguf" ]] && [[ -f "$LOCAL_MODEL_PATH" ]]; then
     CACHE_HIT="true"
-  elif [[ "$MODEL_KIND" == "repository" ]] && [[ -f "$VLLM_CPP_MODEL_DIR/config.json" ]] &&
-    [[ -n "$(find "$VLLM_CPP_MODEL_DIR" -type f -name "*.safetensors" -print -quit)" ]]; then
+  elif [[ "$MODEL_KIND" == "repository" ]] && validate_vllm_cpp_repository; then
     CACHE_HIT="true"
   fi
 fi
 
 if [[ "$CACHE_HIT" == "true" ]]; then
-  echo "Found cached vllm-cpp model matching $MODEL in $VLLM_CPP_MODEL_DIR, skipping download"
+  echo "Found cached vllm-cpp model matching $MODEL_LOG_REF in $VLLM_CPP_MODEL_DIR, skipping download"
 else
   if [[ -f "$MODEL_MARKER" ]]; then
-    echo "Cached model ($(cat "$MODEL_MARKER")) does not match requested vllm-cpp model ($MODEL), re-downloading"
+    echo "Cached model does not match requested vllm-cpp model ($MODEL_LOG_REF), re-downloading"
   fi
 
   # This fixed runner-owned directory avoids deriving filesystem paths from
@@ -354,26 +407,25 @@ else
   mkdir -p "$VLLM_CPP_MODEL_DIR"
 
   if [[ "$MODEL_KIND" == "gguf" ]]; then
-    echo "Downloading vllm-cpp GGUF model from URL: $MODEL"
+    echo "Downloading vllm-cpp GGUF model from URL: $MODEL_LOG_REF"
     PARTIAL_PATH="${LOCAL_MODEL_PATH}.part"
     curl -fL --progress-bar --output "$PARTIAL_PATH" "$MODEL"
     mv "$PARTIAL_PATH" "$LOCAL_MODEL_PATH"
   else
-    echo "Downloading Hugging Face repository for vllm-cpp: $MODEL"
+    echo "Downloading Hugging Face repository for vllm-cpp: $MODEL_LOG_REF"
     HF_ARGS=("$MODEL" "--local-dir" "$VLLM_CPP_MODEL_DIR" "--exclude" "*.gguf")
     if [[ -n "${HF_TOKEN:-}" ]]; then
       HF_ARGS+=("--token" "$HF_TOKEN")
     fi
     hf download "${HF_ARGS[@]}"
 
-    if [[ ! -f "$VLLM_CPP_MODEL_DIR/config.json" ]] ||
-      [[ -z "$(find "$VLLM_CPP_MODEL_DIR" -type f -name "*.safetensors" -print -quit)" ]]; then
+    if ! validate_vllm_cpp_repository; then
       echo "Error: vllm-cpp Hugging Face repositories must contain config.json and safetensors weights; use a direct HTTP(S) .gguf URL for GGUF models" >&2
       exit 1
     fi
   fi
 
-  printf '%s\n' "$MODEL" > "$MODEL_MARKER"
+  printf '%s\n' "$MODEL_CACHE_KEY" > "$MODEL_MARKER"
   echo "Download complete"
 fi
 
