@@ -1221,14 +1221,27 @@ func Test_validateFineTuneConfigNormalizesQuantization(t *testing.T) {
 
 func Test_validateFineTuneAdapterRejectsExplicitQuantize(t *testing.T) {
 	tests := []struct {
-		name     string
-		quantize string
-		wantErr  string
+		name       string
+		defaults   string
+		outputBody string
+		wantErr    string
 	}{
 		{name: "omitted"},
-		{name: "value", quantize: "  quantize: q4_k_m\n", wantErr: adapterQuantizeError},
-		{name: "empty", quantize: "  quantize: \"\"\n", wantErr: adapterQuantizeError},
-		{name: "null", quantize: "  quantize: null\n", wantErr: adapterQuantizeError},
+		{name: "value", outputBody: "  quantize: q4_k_m\n", wantErr: adapterQuantizeError},
+		{name: "empty", outputBody: "  quantize: \"\"\n", wantErr: adapterQuantizeError},
+		{name: "null", outputBody: "  quantize: null\n", wantErr: adapterQuantizeError},
+		{
+			name:       "inherited value",
+			defaults:   "outputDefaults: &outputDefaults\n  quantize: q8_0\n",
+			outputBody: "  <<: *outputDefaults\n",
+			wantErr:    adapterQuantizeError,
+		},
+		{
+			name:       "inherited null",
+			defaults:   "outputDefaults: &outputDefaults\n  quantize: null\n",
+			outputBody: "  <<: *outputDefaults\n",
+			wantErr:    adapterQuantizeError,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1238,9 +1251,10 @@ func Test_validateFineTuneAdapterRejectsExplicitQuantize(t *testing.T) {
 				"datasets:\n" +
 				"  - source: test-dataset\n" +
 				"    type: alpaca\n" +
+				tt.defaults +
 				"output:\n" +
 				"  format: ADAPTER\n" +
-				tt.quantize
+				tt.outputBody
 			_, fineTuneConfig, err := config.NewFromBytes([]byte(input))
 			if err != nil {
 				t.Fatalf("config.NewFromBytes() error = %v", err)

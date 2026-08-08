@@ -194,6 +194,37 @@ func TestNewFromBytesTracksFineTuneOutputQuantizePresence(t *testing.T) {
 			wantName:           defaultOutputName,
 			wantQuantizeConfig: true,
 		},
+		{
+			name:               "quantize is inherited",
+			outputYAML:         "outputDefaults: &outputDefaults\n  quantize: q8_0\noutput:\n  <<: *outputDefaults\n  format: adapter\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantQuantize:       "q8_0",
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
+		{
+			name:               "inherited quantize is null",
+			outputYAML:         "outputDefaults: &outputDefaults\n  quantize: null\noutput:\n  <<: *outputDefaults\n  format: adapter\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantQuantize:       defaultOutputQuantize,
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
+		{
+			name:         "merge omits quantize",
+			outputYAML:   "outputDefaults: &outputDefaults\n  name: merged-model\noutput:\n  <<: *outputDefaults\n  format: adapter\n",
+			wantFormat:   FineTuneOutputFormatAdapter,
+			wantQuantize: defaultOutputQuantize,
+			wantName:     "merged-model",
+		},
+		{
+			name:               "explicit quantize overrides inherited value",
+			outputYAML:         "outputDefaults: &outputDefaults\n  quantize: q8_0\noutput:\n  <<: *outputDefaults\n  format: adapter\n  quantize: f16\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantQuantize:       "f16",
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
 	}
 
 	for _, tt := range tests {

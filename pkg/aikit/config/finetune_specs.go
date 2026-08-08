@@ -265,7 +265,7 @@ type rawFineTuneOutputSpec struct {
 	quantizeConfigured bool
 }
 
-// UnmarshalYAML records output.quantize key presence, including null values.
+// UnmarshalYAML records output.quantize key presence, including merged and null values.
 func (o *rawFineTuneOutputSpec) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type outputFields struct {
 		Format   *string `yaml:"format"`
@@ -278,8 +278,8 @@ func (o *rawFineTuneOutputSpec) UnmarshalYAML(unmarshal func(interface{}) error)
 		return err
 	}
 
-	var rawFields yaml.MapSlice
-	if err := unmarshal(&rawFields); err != nil {
+	var effectiveFields map[interface{}]interface{}
+	if err := unmarshal(&effectiveFields); err != nil {
 		return err
 	}
 
@@ -288,13 +288,7 @@ func (o *rawFineTuneOutputSpec) UnmarshalYAML(unmarshal func(interface{}) error)
 		Quantize: fields.Quantize,
 		Name:     fields.Name,
 	}
-	for _, field := range rawFields {
-		fieldName, ok := field.Key.(string)
-		if ok && fieldName == "quantize" {
-			o.quantizeConfigured = true
-			break
-		}
-	}
+	_, o.quantizeConfigured = effectiveFields["quantize"]
 
 	return nil
 }
