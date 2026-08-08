@@ -150,6 +150,8 @@ func TestNewFromBytesNormalizesFineTuneDefaults(t *testing.T) {
 }
 
 func TestNewFromBytesTracksFineTuneOutputQuantizePresence(t *testing.T) {
+	const q8Quantize = "q8_0"
+
 	tests := []struct {
 		name               string
 		outputYAML         string
@@ -175,7 +177,7 @@ func TestNewFromBytesTracksFineTuneOutputQuantizePresence(t *testing.T) {
 			name:               "quantize has value",
 			outputYAML:         "output:\n  format: adapter\n  quantize: q8_0\n",
 			wantFormat:         FineTuneOutputFormatAdapter,
-			wantQuantize:       "q8_0",
+			wantQuantize:       q8Quantize,
 			wantName:           defaultOutputName,
 			wantQuantizeConfig: true,
 		},
@@ -198,7 +200,7 @@ func TestNewFromBytesTracksFineTuneOutputQuantizePresence(t *testing.T) {
 			name:               "quantize is inherited",
 			outputYAML:         "outputDefaults: &outputDefaults\n  quantize: q8_0\noutput:\n  <<: *outputDefaults\n  format: adapter\n",
 			wantFormat:         FineTuneOutputFormatAdapter,
-			wantQuantize:       "q8_0",
+			wantQuantize:       q8Quantize,
 			wantName:           defaultOutputName,
 			wantQuantizeConfig: true,
 		},
@@ -220,6 +222,38 @@ func TestNewFromBytesTracksFineTuneOutputQuantizePresence(t *testing.T) {
 		{
 			name:               "explicit quantize overrides inherited value",
 			outputYAML:         "outputDefaults: &outputDefaults\n  quantize: q8_0\noutput:\n  <<: *outputDefaults\n  format: adapter\n  quantize: f16\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantQuantize:       "f16",
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
+		{
+			name:               "explicit null overrides inherited value",
+			outputYAML:         "outputDefaults: &outputDefaults\n  quantize: q8_0\noutput:\n  <<: *outputDefaults\n  format: adapter\n  quantize: null\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantQuantize:       defaultOutputQuantize,
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
+		{
+			name:               "quantize uses scalar alias",
+			outputYAML:         "quantizeValue: &quantizeValue q8_0\noutput:\n  format: adapter\n  quantize: *quantizeValue\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantQuantize:       q8Quantize,
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
+		{
+			name:               "first merged mapping takes precedence",
+			outputYAML:         "firstOutput: &firstOutput\n  quantize: q8_0\nsecondOutput: &secondOutput\n  quantize: f16\noutput:\n  <<: [*firstOutput, *secondOutput]\n  format: adapter\n",
+			wantFormat:         FineTuneOutputFormatAdapter,
+			wantQuantize:       q8Quantize,
+			wantName:           defaultOutputName,
+			wantQuantizeConfig: true,
+		},
+		{
+			name:               "duplicate quantize keeps last value",
+			outputYAML:         "output:\n  format: adapter\n  quantize: q8_0\n  quantize: f16\n",
 			wantFormat:         FineTuneOutputFormatAdapter,
 			wantQuantize:       "f16",
 			wantName:           defaultOutputName,

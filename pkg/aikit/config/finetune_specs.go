@@ -272,14 +272,20 @@ func (o *rawFineTuneOutputSpec) UnmarshalYAML(unmarshal func(interface{}) error)
 		Quantize *string `yaml:"quantize"`
 		Name     *string `yaml:"name"`
 	}
+	type outputPresenceFields struct {
+		Format   interface{} `yaml:"format"`
+		Quantize interface{} `yaml:"quantize"`
+		Name     interface{} `yaml:"name"`
+	}
 
 	var fields outputFields
 	if err := unmarshal(&fields); err != nil {
 		return err
 	}
 
-	var effectiveFields map[interface{}]interface{}
-	if err := unmarshal(&effectiveFields); err != nil {
+	quantizeAbsent := &struct{}{}
+	presenceFields := outputPresenceFields{Quantize: quantizeAbsent}
+	if err := unmarshal(&presenceFields); err != nil {
 		return err
 	}
 
@@ -288,7 +294,7 @@ func (o *rawFineTuneOutputSpec) UnmarshalYAML(unmarshal func(interface{}) error)
 		Quantize: fields.Quantize,
 		Name:     fields.Name,
 	}
-	_, o.quantizeConfigured = effectiveFields["quantize"]
+	o.quantizeConfigured = presenceFields.Quantize != quantizeAbsent
 
 	return nil
 }
