@@ -5,6 +5,7 @@ import json
 import math
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import nullcontext, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -362,10 +363,26 @@ def preprocessing_tokenizer():
             return [11, 12, 13, tokenizer.eos_token_id]
         return [11, 12]
 
-    def tokenize(text, *, add_special_tokens):
+    def tokenize(
+        text,
+        *,
+        add_special_tokens,
+        truncation=False,
+        max_length=None,
+    ):
+        del add_special_tokens
+
+        def bounded_token_ids(item):
+            input_ids = token_ids(item)
+            if truncation:
+                if max_length is None:
+                    raise AssertionError("truncation requires max_length")
+                input_ids = input_ids[:max_length]
+            return input_ids
+
         if isinstance(text, list):
-            return {"input_ids": [token_ids(item) for item in text]}
-        return {"input_ids": token_ids(text)}
+            return {"input_ids": [bounded_token_ids(item) for item in text]}
+        return {"input_ids": bounded_token_ids(text)}
 
     tokenizer.side_effect = tokenize
     return tokenizer
@@ -1122,6 +1139,22 @@ class DatasetLoaderTest(unittest.TestCase):
             ),
         )
 
+    def test_rejects_dataset_source_surrounding_whitespace(self):
+        for source in (
+            " organization/dataset",
+            "organization/dataset ",
+            "\thttps://example.test/train.json",
+            "https://example.test/train.json\n",
+        ):
+            with self.subTest(source=repr(source)):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    r"datasets\[0\]\.source must not have leading or trailing whitespace",
+                ):
+                    target_unsloth.training_dataset_spec(
+                        {"datasets": [{"source": source, "type": "text"}]}
+                    )
+
     def test_legacy_url_still_uses_json_and_train_via_local_file(self):
         body = b'{"text":"legacy"}\n'
         with LocalDatasetServer({"/train.jsonl": body}) as server:
@@ -1545,40 +1578,54 @@ class DatasetLoaderTest(unittest.TestCase):
         self.assertNotIn("private", str(raised.exception))
         self.assertNotIn("fragment", str(raised.exception))
 
-    def test_per_digest_lock_serializes_corrupt_entry_replacement(self):
+    def test_same_digest_downloads_do_not_hold_lock_during_network_reads(self):
         body = b'{"text":"verified"}\n'
         digest = hashlib.sha256(body).hexdigest()
         checksum = f"sha256:{digest}"
-        cache_started = threading.Event()
-        release_download = threading.Event()
-        second_download = threading.Event()
+        first_read_started = threading.Event()
+        release_first_read = threading.Event()
+        second_download_started = threading.Event()
         call_lock = threading.Lock()
         open_calls = 0
 
-        def open_url(_request_url):
+        class BlockingResponse(io.BytesIO):
+            def __init__(self, content):
+                super().__init__(content)
+                self.blocked = False
+
+            def read(self, size=-1):
+                if not self.blocked:
+                    self.blocked = True
+                    first_read_started.set()
+                    if not release_first_read.wait(timeout=5):
+                        raise RuntimeError("test download was not released")
+                return super().read(size)
+
+            def read1(self, size=-1):
+                return self.read(size)
+
+        def open_url(_request_url, *, timeout):
             nonlocal open_calls
+            self.assertEqual(
+                timeout,
+                target_unsloth.REMOTE_DATASET_REQUEST_TIMEOUT_SECONDS,
+            )
             with call_lock:
                 open_calls += 1
                 call_number = open_calls
             if call_number == 1:
-                cache_started.set()
-            else:
-                second_download.set()
-            if not release_download.wait(timeout=5):
-                raise RuntimeError("test download was not released")
+                return BlockingResponse(body)
+            second_download_started.set()
             return io.BytesIO(body)
 
         with tempfile.TemporaryDirectory() as cache_directory_name:
             cache_directory = Path(cache_directory_name)
             cached_path = cache_directory / f"{digest}.json"
             cached_path.write_bytes(b"corrupt")
-            results = []
+            results = {}
             errors = []
-            second_started = threading.Event()
 
-            def materialize(*, second=False):
-                if second:
-                    second_started.set()
+            def materialize(name):
                 try:
                     with target_unsloth.materialize_remote_dataset_file(
                         "https://example.test/train.json",
@@ -1587,31 +1634,42 @@ class DatasetLoaderTest(unittest.TestCase):
                         cache_directory=cache_directory,
                         open_url=open_url,
                     ) as snapshot_path:
-                        results.append(snapshot_path.read_bytes())
+                        results[name] = snapshot_path.read_bytes()
                 except Exception as error:
                     errors.append(error)
 
-            first_thread = threading.Thread(target=materialize)
-            second_thread = threading.Thread(
-                target=materialize,
-                kwargs={"second": True},
-            )
-            first_thread.start()
-            self.assertTrue(cache_started.wait(timeout=2))
-            second_thread.start()
-            self.assertTrue(second_started.wait(timeout=2))
-            try:
-                self.assertFalse(second_download.wait(timeout=0.5))
-            finally:
-                release_download.set()
-            first_thread.join(timeout=5)
-            second_thread.join(timeout=5)
+            original_publish = target_unsloth.publish_cached_dataset_file
+            with mock.patch.object(
+                target_unsloth,
+                "publish_cached_dataset_file",
+                side_effect=original_publish,
+            ) as publish:
+                first_thread = threading.Thread(
+                    target=materialize,
+                    args=("first",),
+                )
+                second_thread = threading.Thread(
+                    target=materialize,
+                    args=("second",),
+                )
+                first_thread.start()
+                self.assertTrue(first_read_started.wait(timeout=2))
+                second_thread.start()
+                self.assertTrue(second_download_started.wait(timeout=2))
+                second_thread.join(timeout=2)
+                try:
+                    self.assertFalse(second_thread.is_alive())
+                    self.assertEqual(results.get("second"), body)
+                    self.assertTrue(first_thread.is_alive())
+                finally:
+                    release_first_read.set()
+                first_thread.join(timeout=5)
 
             self.assertFalse(first_thread.is_alive())
-            self.assertFalse(second_thread.is_alive())
             self.assertEqual(errors, [])
-            self.assertEqual(results, [body, body])
-            self.assertEqual(open_calls, 1)
+            self.assertEqual(results, {"second": body, "first": body})
+            self.assertEqual(open_calls, 2)
+            self.assertEqual(publish.call_count, 1)
             self.assertEqual(cached_path.read_bytes(), body)
 
     def test_unchecksummed_download_uses_actual_content_digest(self):
@@ -1703,7 +1761,11 @@ class DatasetLoaderTest(unittest.TestCase):
             "token=secret#fragment-marker"
         )
 
-        def fail_with_url(_url):
+        def fail_with_url(_url, *, timeout):
+            self.assertEqual(
+                timeout,
+                target_unsloth.REMOTE_DATASET_REQUEST_TIMEOUT_SECONDS,
+            )
             raise RuntimeError(f"failed to download {source}")
 
         with tempfile.TemporaryDirectory() as cache_directory:
@@ -1732,6 +1794,560 @@ class DatasetLoaderTest(unittest.TestCase):
             self.assertNotIn(secret, message)
         self.assertIsNone(raised.exception.__cause__)
         self.assertTrue(raised.exception.__suppress_context__)
+
+    def test_download_read_timeout_is_bounded_and_redacted(self):
+        source = (
+            "https://user:password@example.test/train.json?"
+            "token=secret#fragment-marker"
+        )
+        observed = {}
+
+        class TimedOutResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def settimeout(self, timeout):
+                observed.setdefault("fallback_read_timeouts", []).append(timeout)
+
+            def read(self, _size):
+                observed["fallback_read_calls"] = (
+                    observed.get("fallback_read_calls", 0) + 1
+                )
+                raise TimeoutError(f"timed out while reading {source}")
+
+        def open_url(request_url, *, timeout):
+            observed["request_url"] = request_url
+            observed["timeout"] = timeout
+            return TimedOutResponse()
+
+        with tempfile.TemporaryDirectory() as cache_directory:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "remote json dataset could not be downloaded",
+            ) as raised:
+                with target_unsloth.materialize_remote_dataset_file(
+                    source,
+                    loader_type="json",
+                    checksum=None,
+                    cache_directory=cache_directory,
+                    open_url=open_url,
+                ):
+                    self.fail("read timeout should prevent materialization")
+
+        self.assertEqual(
+            observed["request_url"],
+            source.removesuffix("#fragment-marker"),
+        )
+        self.assertEqual(
+            observed["timeout"],
+            target_unsloth.REMOTE_DATASET_REQUEST_TIMEOUT_SECONDS,
+        )
+        self.assertGreater(observed["timeout"], 0)
+        self.assertEqual(observed["fallback_read_calls"], 1)
+        self.assertEqual(
+            observed["fallback_read_timeouts"],
+            [target_unsloth.REMOTE_DATASET_REQUEST_TIMEOUT_SECONDS],
+        )
+        for secret in (
+            "user",
+            "password",
+            "example.test",
+            "token",
+            "secret",
+            "fragment-marker",
+        ):
+            self.assertNotIn(secret, str(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
+
+    def test_request_deadline_covers_blocked_open_and_closes_late_response(self):
+        source = (
+            "https://user:password@example.test/train.json?"
+            "token=secret#fragment-marker"
+        )
+        body = b'{"text":"late"}\n'
+        digest = hashlib.sha256(body).hexdigest()
+        checksum = f"sha256:{digest}"
+        open_started = threading.Event()
+        release_open = threading.Event()
+        late_response_closed = threading.Event()
+        observed = {}
+
+        class LateResponse:
+            def close(self):
+                late_response_closed.set()
+
+            def read1(self, _size):
+                raise AssertionError("a late response must never be read")
+
+        late_response = LateResponse()
+
+        def open_url(request_url, *, timeout):
+            observed["request_url"] = request_url
+            observed["timeout"] = timeout
+            observed["daemon"] = threading.current_thread().daemon
+            open_started.set()
+            if not release_open.wait(timeout=5):
+                raise RuntimeError("test opener was not released")
+            return late_response
+
+        request_timeout = 0.2
+        total_timeout = 5.0
+        with tempfile.TemporaryDirectory() as cache_directory_name:
+            cache_directory = Path(cache_directory_name)
+            started_at = time.monotonic()
+            try:
+                with mock.patch.object(
+                    target_unsloth,
+                    "REMOTE_DATASET_REQUEST_TIMEOUT_SECONDS",
+                    request_timeout,
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "remote json dataset could not be downloaded",
+                    ) as raised:
+                        with target_unsloth.materialize_remote_dataset_file(
+                            source,
+                            loader_type="json",
+                            checksum=checksum,
+                            cache_directory=cache_directory,
+                            open_url=open_url,
+                            total_timeout_seconds=total_timeout,
+                        ):
+                            self.fail(
+                                "blocked open must respect the request deadline"
+                            )
+                elapsed = time.monotonic() - started_at
+
+                self.assertTrue(open_started.wait(timeout=1))
+                self.assertGreaterEqual(elapsed, request_timeout * 0.75)
+                self.assertLess(elapsed, 1.0)
+                self.assertFalse(late_response_closed.is_set())
+                self.assertFalse((cache_directory / f"{digest}.json").exists())
+
+                lock_acquired = threading.Event()
+
+                def acquire_digest_lock():
+                    with target_unsloth.open_dataset_cache_directory(
+                        cache_directory
+                    ) as cache_descriptor:
+                        with target_unsloth.dataset_digest_lock(
+                            cache_descriptor,
+                            digest,
+                        ):
+                            lock_acquired.set()
+
+                lock_thread = threading.Thread(
+                    target=acquire_digest_lock,
+                    daemon=True,
+                )
+                lock_thread.start()
+                self.assertTrue(lock_acquired.wait(timeout=1))
+                lock_thread.join(timeout=1)
+                self.assertFalse(lock_thread.is_alive())
+            finally:
+                release_open.set()
+
+            self.assertTrue(late_response_closed.wait(timeout=2))
+            self.assertFalse((cache_directory / f"{digest}.json").exists())
+
+        self.assertEqual(
+            observed["request_url"],
+            source.removesuffix("#fragment-marker"),
+        )
+        self.assertGreater(observed["timeout"], request_timeout * 0.75)
+        self.assertLessEqual(observed["timeout"], request_timeout)
+        self.assertTrue(observed["daemon"])
+        for secret in (
+            "user",
+            "password",
+            "example.test",
+            "token",
+            "secret",
+            "fragment-marker",
+        ):
+            self.assertNotIn(secret, str(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
+
+    def test_total_deadline_interrupts_real_http_drip_feed(self):
+        body = b'{"text":"slow"}\n'
+        digest = hashlib.sha256(body).hexdigest()
+        checksum = f"sha256:{digest}"
+        request_seen = threading.Event()
+
+        class DripFeedHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                request_seen.set()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                for byte in body:
+                    try:
+                        self.wfile.write(bytes((byte,)))
+                        self.wfile.flush()
+                    except OSError:
+                        break
+                    time.sleep(0.04)
+
+            def log_message(self, _format, *args):
+                del args
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), DripFeedHandler)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        host, port = server.server_address
+        source = (
+            f"http://{host}:{port}/train.json?token=secret"
+            "#fragment-marker"
+        )
+        total_timeout = 0.12
+        started_at = time.monotonic()
+        try:
+            with tempfile.TemporaryDirectory() as cache_directory:
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "remote json dataset could not be downloaded",
+                ) as raised:
+                    with target_unsloth.materialize_remote_dataset_file(
+                        source,
+                        loader_type="json",
+                        checksum=checksum,
+                        cache_directory=cache_directory,
+                        total_timeout_seconds=total_timeout,
+                    ):
+                        self.fail("drip feed must respect the total deadline")
+                elapsed = time.monotonic() - started_at
+
+                self.assertTrue(request_seen.wait(timeout=1))
+                self.assertGreaterEqual(elapsed, total_timeout * 0.75)
+                self.assertLess(elapsed, 1.0)
+                self.assertFalse(
+                    (Path(cache_directory) / f"{digest}.json").exists()
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=2)
+
+        self.assertFalse(server_thread.is_alive())
+        for secret in ("token", "secret", "fragment-marker"):
+            self.assertNotIn(secret, str(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
+
+    def test_request_deadline_interrupts_chunked_framing_drip_feed(self):
+        body = b"x"
+        digest = hashlib.sha256(body).hexdigest()
+        checksum = f"sha256:{digest}"
+        request_seen = threading.Event()
+        handler_finished = threading.Event()
+        chunk_header = b"1;slow=" + (b"a" * 24) + b"\r\n"
+
+        class ChunkedDripFeedHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                request_seen.set()
+                try:
+                    self.send_response(200)
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    for byte in chunk_header:
+                        self.wfile.write(bytes((byte,)))
+                        self.wfile.flush()
+                        time.sleep(0.03)
+                    self.wfile.write(body + b"\r\n0\r\n\r\n")
+                    self.wfile.flush()
+                except OSError:
+                    pass
+                finally:
+                    handler_finished.set()
+
+            def log_message(self, _format, *args):
+                del args
+
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            ChunkedDripFeedHandler,
+        )
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        host, port = server.server_address
+        source = (
+            f"http://{host}:{port}/train.json?token=secret"
+            "#fragment-marker"
+        )
+        request_timeout = 0.12
+        total_timeout = 5.0
+        started_at = time.monotonic()
+        try:
+            with tempfile.TemporaryDirectory() as cache_directory:
+                with mock.patch.object(
+                    target_unsloth,
+                    "REMOTE_DATASET_REQUEST_TIMEOUT_SECONDS",
+                    request_timeout,
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "remote json dataset could not be downloaded",
+                    ) as raised:
+                        with target_unsloth.materialize_remote_dataset_file(
+                            source,
+                            loader_type="json",
+                            checksum=checksum,
+                            cache_directory=cache_directory,
+                            total_timeout_seconds=total_timeout,
+                        ):
+                            self.fail(
+                                "chunked framing drip feed must respect the request deadline"
+                            )
+                elapsed = time.monotonic() - started_at
+
+                self.assertTrue(request_seen.wait(timeout=1))
+                self.assertGreaterEqual(elapsed, request_timeout * 0.75)
+                self.assertLess(elapsed, 0.6)
+                self.assertFalse(
+                    (Path(cache_directory) / f"{digest}.json").exists()
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=2)
+
+        self.assertFalse(server_thread.is_alive())
+        self.assertTrue(handler_finished.wait(timeout=2))
+        for secret in ("token", "secret", "fragment-marker"):
+            self.assertNotIn(secret, str(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
+
+    def test_remaining_deadline_interrupts_blocking_read_and_redacts(self):
+        source = (
+            "https://user:password@example.test/train.json?"
+            "token=secret#fragment-marker"
+        )
+        expected_body = b"xy"
+        digest = hashlib.sha256(expected_body).hexdigest()
+        checksum = f"sha256:{digest}"
+        now = [100.0]
+        observed = {}
+
+        def monotonic():
+            return now[0]
+
+        class FakeSocket:
+            def __init__(self):
+                self.timeout = None
+                self.timeouts = []
+
+            def settimeout(self, timeout):
+                self.timeout = timeout
+                self.timeouts.append(timeout)
+
+        class FakeRaw:
+            def __init__(self, sock):
+                self._sock = sock
+
+        class FakeFP:
+            def __init__(self, sock):
+                self.raw = FakeRaw(sock)
+
+        class BlockingResponse:
+            def __init__(self):
+                self.socket = FakeSocket()
+                self.fp = FakeFP(self.socket)
+                self.read_calls = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def read1(self, _size):
+                self.read_calls += 1
+                if self.read_calls == 1:
+                    now[0] += 2.0
+                    return expected_body[:1]
+                now[0] += self.socket.timeout
+                raise TimeoutError(f"timed out while reading {source}")
+
+            def read(self, _size):
+                raise AssertionError("urllib-style responses must use read1")
+
+        response = BlockingResponse()
+
+        def open_url(request_url, *, timeout):
+            observed["request_url"] = request_url
+            observed["open_timeout"] = timeout
+            return response
+
+        with tempfile.TemporaryDirectory() as cache_directory:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "remote json dataset could not be downloaded",
+            ) as raised:
+                with target_unsloth.materialize_remote_dataset_file(
+                    source,
+                    loader_type="json",
+                    checksum=checksum,
+                    cache_directory=cache_directory,
+                    open_url=open_url,
+                    monotonic=monotonic,
+                    total_timeout_seconds=5.0,
+                ):
+                    self.fail("remaining deadline should interrupt the read")
+
+            self.assertFalse((Path(cache_directory) / f"{digest}.json").exists())
+            with target_unsloth.open_dataset_cache_directory(
+                Path(cache_directory)
+            ) as cache_descriptor:
+                with target_unsloth.dataset_digest_lock(
+                    cache_descriptor,
+                    digest,
+                ):
+                    pass
+
+        self.assertEqual(
+            observed["request_url"],
+            source.removesuffix("#fragment-marker"),
+        )
+        self.assertEqual(observed["open_timeout"], 5.0)
+        self.assertEqual(response.socket.timeouts, [5.0, 3.0])
+        self.assertEqual(response.read_calls, 2)
+        for secret in (
+            "user",
+            "password",
+            "example.test",
+            "token",
+            "secret",
+            "fragment-marker",
+        ):
+            self.assertNotIn(secret, str(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertTrue(raised.exception.__suppress_context__)
+
+    def test_exact_oversized_cached_file_is_redownloaded_and_rejected(self):
+        body = b"12345"
+        digest = hashlib.sha256(body).hexdigest()
+        checksum = f"sha256:{digest}"
+        max_file_bytes = len(body) - 1
+        source = "https://example.test/train.txt"
+        open_url = mock.Mock(return_value=io.BytesIO(body))
+
+        with tempfile.TemporaryDirectory() as cache_directory_name:
+            cache_directory = Path(cache_directory_name)
+            cached_path = cache_directory / f"{digest}.txt"
+            cached_path.write_bytes(body)
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "remote text dataset could not be downloaded",
+            ):
+                with target_unsloth.materialize_remote_dataset_file(
+                    source,
+                    loader_type="text",
+                    checksum=checksum,
+                    cache_directory=cache_directory,
+                    open_url=open_url,
+                    max_download_bytes=max_file_bytes,
+                ):
+                    self.fail("oversized source must not be materialized")
+
+            open_url.assert_called_once_with(
+                source,
+                timeout=target_unsloth.REMOTE_DATASET_REQUEST_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(cached_path.read_bytes(), body)
+            with target_unsloth.open_dataset_cache_directory(
+                cache_directory
+            ) as cache_descriptor:
+                with target_unsloth.dataset_digest_lock(
+                    cache_descriptor,
+                    digest,
+                ):
+                    pass
+
+    def test_growing_oversized_cache_entry_is_replaced_by_bounded_download(self):
+        body = b"1234"
+        cached_body = body + b"5"
+        digest = hashlib.sha256(body).hexdigest()
+        checksum = f"sha256:{digest}"
+        max_file_bytes = len(body)
+        source = "https://example.test/train.txt"
+        open_url = mock.Mock(return_value=io.BytesIO(body))
+
+        with tempfile.TemporaryDirectory() as cache_directory_name:
+            cache_directory = Path(cache_directory_name)
+            cached_path = cache_directory / f"{digest}.txt"
+            cached_path.write_bytes(cached_body)
+            cached_stat = cached_path.stat()
+            real_fstat = target_unsloth.os.fstat
+
+            def stale_cached_fstat(file_descriptor):
+                result = real_fstat(file_descriptor)
+                if (result.st_dev, result.st_ino) == (
+                    cached_stat.st_dev,
+                    cached_stat.st_ino,
+                ):
+                    return SimpleNamespace(
+                        st_mode=result.st_mode,
+                        st_nlink=result.st_nlink,
+                        st_dev=result.st_dev,
+                        st_ino=result.st_ino,
+                        st_size=max_file_bytes,
+                    )
+                return result
+
+            with mock.patch.object(
+                target_unsloth.os,
+                "fstat",
+                side_effect=stale_cached_fstat,
+            ):
+                with target_unsloth.materialize_remote_dataset_file(
+                    source,
+                    loader_type="text",
+                    checksum=checksum,
+                    cache_directory=cache_directory,
+                    open_url=open_url,
+                    max_download_bytes=max_file_bytes,
+                ) as snapshot_path:
+                    self.assertEqual(snapshot_path.read_bytes(), body)
+
+            open_url.assert_called_once_with(
+                source,
+                timeout=target_unsloth.REMOTE_DATASET_REQUEST_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(cached_path.read_bytes(), body)
+
+    def test_download_size_limit_prevents_unbounded_temporary_storage(self):
+        body = b"12345"
+
+        def open_url(_request_url, *, timeout):
+            self.assertEqual(
+                timeout,
+                target_unsloth.REMOTE_DATASET_REQUEST_TIMEOUT_SECONDS,
+            )
+            return io.BytesIO(body)
+
+        with tempfile.TemporaryDirectory() as cache_directory:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "remote text dataset could not be downloaded",
+            ):
+                with target_unsloth.materialize_remote_dataset_file(
+                    "https://example.test/train.txt",
+                    loader_type="text",
+                    checksum=None,
+                    cache_directory=cache_directory,
+                    open_url=open_url,
+                    max_download_bytes=len(body) - 1,
+                ):
+                    self.fail("oversized download should not be materialized")
+
+            self.assertEqual(list(Path(cache_directory).iterdir()), [])
 
 
 class MultipleDatasetConfigTest(unittest.TestCase):
@@ -3022,7 +3638,7 @@ class PromptCompletionPreprocessingContractTest(unittest.TestCase):
         tokenizer.return_value = {
             "input_ids": [
                 [11, 12, 99],
-                [11, 12, 13, tokenizer.eos_token_id, tokenizer.eos_token_id],
+                [11, 12, 13, tokenizer.eos_token_id],
             ]
         }
 
@@ -3050,8 +3666,8 @@ class PromptCompletionPreprocessingContractTest(unittest.TestCase):
         )
         tokenizer.return_value = {
             "input_ids": [
-                [11, 12, 13, 14],
-                [11, 12, 13, tokenizer.eos_token_id],
+                [11, 12, 13],
+                [11, 12, 13],
             ]
         }
 
@@ -3077,9 +3693,18 @@ class PromptCompletionPreprocessingContractTest(unittest.TestCase):
             chat_template="",
         )
 
-        def tokenize(texts, *, add_special_tokens):
+        def tokenize(
+            texts,
+            *,
+            add_special_tokens,
+            truncation,
+            max_length,
+        ):
+            del add_special_tokens
             self.assertIsInstance(texts, list)
             self.assertLessEqual(len(texts), 4)
+            self.assertTrue(truncation)
+            self.assertEqual(max_length, 3)
             token_rows = []
             for text in texts:
                 record_index = int(text.split("-", 1)[1].split(" ", 1)[0])
@@ -3117,7 +3742,16 @@ class PromptCompletionPreprocessingContractTest(unittest.TestCase):
             chat_template="",
         )
 
-        def tokenize(texts, *, add_special_tokens):
+        def tokenize(
+            texts,
+            *,
+            add_special_tokens,
+            truncation,
+            max_length,
+        ):
+            del add_special_tokens
+            self.assertTrue(truncation)
+            self.assertEqual(max_length, 2048)
             token_rows = []
             for text in texts:
                 record_index = int(text.split("-", 1)[1].split(" ", 1)[0])
@@ -3140,6 +3774,85 @@ class PromptCompletionPreprocessingContractTest(unittest.TestCase):
             [len(call.args[0]) for call in tokenizer.call_args_list],
             [128, 2],
         )
+
+    def test_bounds_all_policy_tokenization_and_preserves_right_prefix(self):
+        class BoundedTokenizer:
+            eos_token = "<eos>"
+            eos_token_id = 2
+            bos_token = "<bos>"
+            chat_template = ""
+
+            def __init__(self):
+                self.truncation_side = "left"
+                self.calls = []
+
+            def __call__(
+                self,
+                texts,
+                *,
+                add_special_tokens,
+                truncation,
+                max_length,
+            ):
+                self.calls.append(
+                    {
+                        "add_special_tokens": add_special_tokens,
+                        "truncation": truncation,
+                        "max_length": max_length,
+                        "truncation_side": self.truncation_side,
+                        "text_count": len(texts),
+                    }
+                )
+                token_rows = []
+                for text in texts:
+                    if text.endswith(self.eos_token):
+                        token_rows.append([11, 12, 13, self.eos_token_id])
+                    else:
+                        token_rows.append([11, 12])
+                return {"input_ids": token_rows}
+
+        tokenizer = BoundedTokenizer()
+        fingerprint = target_unsloth.validate_prompt_completion_tokenization(
+            [
+                {
+                    "prompt": tokenizer.bos_token + "p" * 100_000,
+                    "completion": " completion",
+                }
+            ],
+            processing_class=tokenizer,
+            max_seq_length=4,
+            add_special_tokens=True,
+        )
+
+        self.assertEqual(fingerprint.sequence_count, 1)
+        self.assertEqual(tokenizer.truncation_side, "left")
+        self.assertEqual(len(tokenizer.calls), 2)
+        for call in tokenizer.calls:
+            self.assertTrue(call["truncation"])
+            self.assertEqual(call["max_length"], 4)
+            self.assertEqual(call["truncation_side"], "right")
+            self.assertEqual(call["text_count"], 2)
+
+    def test_rejects_tokenizer_that_ignores_prompt_completion_limit(self):
+        tokenizer = mock.Mock(
+            eos_token="<eos>",
+            eos_token_id=2,
+            bos_token="<bos>",
+            chat_template="",
+        )
+        tokenizer.return_value = {
+            "input_ids": [[11, 12], [11, 12, 13, 14, 2]]
+        }
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "tokenization did not honor its truncation limit",
+        ):
+            target_unsloth.validate_prompt_completion_tokenization(
+                [{"prompt": "prompt", "completion": " completion"}],
+                processing_class=tokenizer,
+                max_seq_length=4,
+            )
 
     def test_verifies_prompt_mask_completion_labels_and_eos(self):
         prepared_record = {
@@ -3289,12 +4002,16 @@ class PromptCompletionPreprocessingContractTest(unittest.TestCase):
                 mock.call(
                     target_unsloth.PREPROCESSING_VERIFICATION_PROMPT,
                     add_special_tokens=False,
+                    truncation=True,
+                    max_length=target_unsloth.PROMPT_COMPLETION_PREPROCESSING_VERIFICATION_MAX_LENGTH,
                 ),
                 mock.call(
                     target_unsloth.PREPROCESSING_VERIFICATION_PROMPT
                     + target_unsloth.PREPROCESSING_VERIFICATION_COMPLETION
                     + processing_class.eos_token,
                     add_special_tokens=False,
+                    truncation=True,
+                    max_length=target_unsloth.PROMPT_COMPLETION_PREPROCESSING_VERIFICATION_MAX_LENGTH,
                 ),
             ],
         )
@@ -5461,7 +6178,13 @@ class TrainingPhaseTest(unittest.TestCase):
         }
         default_tokenize = tokenizer.side_effect
 
-        def tokenize(text, *, add_special_tokens):
+        def tokenize(
+            text,
+            *,
+            add_special_tokens,
+            truncation=False,
+            max_length=None,
+        ):
             if text == [
                 "Boundary-sensitive prompt",
                 "Boundary-sensitive prompt Answer.<eos>",
@@ -5470,6 +6193,8 @@ class TrainingPhaseTest(unittest.TestCase):
             return default_tokenize(
                 text,
                 add_special_tokens=add_special_tokens,
+                truncation=truncation,
+                max_length=max_length,
             )
 
         tokenizer.side_effect = tokenize
