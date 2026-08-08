@@ -83,7 +83,7 @@ docker run -e HF_TOKEN=hf_xxx -p 8080:8080 \
 
 ## Volume Caching
 
-Mount a volume to `/models` to cache downloaded models across container restarts. The llama.cpp runner stores GGUF files directly in `/models`; Diffusers and vLLM store their Hugging Face cache under `/models/.cache/huggingface`:
+Mount a volume to `/models` to cache downloaded models across container restarts. The llama.cpp and vllm.cpp runners keep their payloads in `/models/llama-cpp-model` and `/models/vllm-cpp-model`, respectively. Diffusers and Python vLLM store their Hugging Face cache under `/models/.cache/huggingface`:
 
 ```bash
 docker run -v models:/models -p 8080:8080 \
@@ -91,7 +91,7 @@ docker run -v models:/models -p 8080:8080 \
   https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf
 ```
 
-The llama.cpp runner detects when a different model is requested and re-downloads automatically. Diffusers and vLLM update their generated model configuration while retaining the shared Hugging Face cache for reuse.
+Native runners detect when a different model is requested and replace only their backend-owned cache. All runner images place their single active generated config under `/models/aikit-runner`; LocalAI scans that directory instead of unrelated YAML elsewhere in the mounted volume. Diffusers and Python vLLM update this config while retaining the shared Hugging Face cache for reuse.
 
 ## Kubernetes / kubeairunway
 

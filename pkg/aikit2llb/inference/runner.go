@@ -13,7 +13,10 @@ import (
 
 const (
 	runnerHuggingFaceHubVersion = "1.26.0"
+	runnerConfigDir             = "/models/aikit-runner"
+	runnerConfigPath            = runnerConfigDir + "/model.yaml"
 	runnerLegacyModelMarker     = "/models/.aikit-model-ref"
+	runnerLlamaCppModelDir      = "/models/llama-cpp-model"
 	runnerLlamaCppModelMarker   = "/models/.aikit-llama-cpp-model-ref"
 	runnerVLLMCppModelDir       = "/models/vllm-cpp-model"
 	runnerVLLMCppModelMarker    = "/models/.aikit-vllm-cpp-model-ref"
@@ -152,6 +155,12 @@ fi
 
 echo "AIKit Runner: backend=$BACKEND model=$MODEL"
 
+# Keep the one active generated config separate from cached model payloads and
+# user-provided files. This also makes a shared volume safe to reuse with a
+# different runner backend: LocalAI scans only the config generated below.
+RUNNER_CONFIG_DIR="` + runnerConfigDir + `"
+RUNNER_CONFIG="` + runnerConfigPath + `"
+
 # Strip URI scheme prefixes (e.g. huggingface://org/repo -> org/repo)
 # kubeairunway passes model IDs with the huggingface:// prefix.
 MODEL="${MODEL#huggingface://}"
@@ -171,7 +180,7 @@ MODEL="${MODEL#huggingface://}"
 	// Start LocalAI
 	sb.WriteString(`
 # Start local-ai
-LOCAL_AI_ARGS=("--models-path" "/models")
+LOCAL_AI_ARGS=("--models-path" "$RUNNER_CONFIG_DIR")
 `)
 
 	// If config was baked in at build time, use it
@@ -203,53 +212,77 @@ func generateLlamaCppDownload() string {
 # Write a marker file so we can detect model mismatches on reuse.
 MODEL_MARKER="` + runnerLlamaCppModelMarker + `"
 LEGACY_MODEL_MARKER="` + runnerLegacyModelMarker + `"
+LLAMA_CPP_MODEL_DIR="` + runnerLlamaCppModelDir + `"
+CACHED_GGUF=$(find "$LLAMA_CPP_MODEL_DIR" -type f -name "*.gguf" -print -quit 2>/dev/null || true)
 if [[ -f "$MODEL_MARKER" ]] && [[ "$(cat "$MODEL_MARKER")" == "$MODEL" ]] &&
-  [[ -n "$(find /models -maxdepth 1 -name "*.gguf" -type f -print -quit)" ]]; then
-  echo "Found cached model matching $MODEL in /models, skipping download"
+  [[ -n "$CACHED_GGUF" ]]; then
+  echo "Found cached model matching $MODEL in $LLAMA_CPP_MODEL_DIR, skipping download"
 else
   # Different model requested, missing payload, or a legacy marker — clean and
-  # re-download. Clearing root GGUF files unconditionally on a cache miss keeps
-  # upgraded persistent volumes from selecting a stale file.
+  # re-download only the runner-owned cache. Legacy root files have no reliable
+  # ownership metadata, so leave them untouched and outside LocalAI's config path.
   if [[ -f "$MODEL_MARKER" ]]; then
     echo "Cached model data for $(cat "$MODEL_MARKER") is missing or does not match requested model ($MODEL), re-downloading"
   elif [[ -f "$LEGACY_MODEL_MARKER" ]]; then
     echo "Migrating legacy cached model ($(cat "$LEGACY_MODEL_MARKER")) for requested model ($MODEL)"
   fi
-  rm -f /models/*.gguf "$MODEL_MARKER" "$LEGACY_MODEL_MARKER"
+  rm -rf "$LLAMA_CPP_MODEL_DIR"
+  rm -f "$MODEL_MARKER" "$LEGACY_MODEL_MARKER" "$RUNNER_CONFIG"
+  mkdir -p "$LLAMA_CPP_MODEL_DIR"
   if [[ "$MODEL" == http://* ]] || [[ "$MODEL" == https://* ]]; then
     # Direct HTTP/HTTPS download
     echo "Downloading model from URL: $MODEL"
-    FILENAME=$(basename "$MODEL")
-    curl -fL --progress-bar -o "/models/$FILENAME" "$MODEL"
+    MODEL_URL_PATH="${MODEL%%\#*}"
+    MODEL_URL_PATH="${MODEL_URL_PATH%%\?*}"
+    FILENAME="${MODEL_URL_PATH##*/}"
+    if [[ -z "$FILENAME" ]] || [[ "$FILENAME" == "." ]] || [[ "$FILENAME" == ".." ]]; then
+      echo "Error: cannot derive a model filename from $MODEL" >&2
+      exit 1
+    fi
+    curl -fL --progress-bar -o "$LLAMA_CPP_MODEL_DIR/$FILENAME" "$MODEL"
   else
     # HuggingFace repo - download GGUF files
     echo "Downloading GGUF files from HuggingFace: $MODEL"
-    HF_ARGS=("$MODEL" "--local-dir" "/models" "--include" "*.gguf")
+    HF_ARGS=("$MODEL" "--local-dir" "$LLAMA_CPP_MODEL_DIR" "--include" "*.gguf")
     if [[ -n "${HF_TOKEN:-}" ]]; then
       HF_ARGS+=("--token" "$HF_TOKEN")
     fi
     hf download "${HF_ARGS[@]}"
   fi
-  echo "$MODEL" > "$MODEL_MARKER"
+  DOWNLOADED_GGUF=$(find "$LLAMA_CPP_MODEL_DIR" -type f -name "*.gguf" -print -quit)
+  if [[ -z "$DOWNLOADED_GGUF" ]]; then
+    echo "Error: no GGUF file was downloaded for $MODEL" >&2
+    exit 1
+  fi
+  printf '%s\n' "$MODEL" > "$MODEL_MARKER"
   echo "Download complete"
 fi
 
 # Generate a minimal config file so LocalAI can map the model name to the GGUF file.
 # Without this, LocalAI looks for the model name as a filename (without .gguf extension).
-GGUF_FILE=$(find /models -maxdepth 1 -name "*.gguf" -type f | head -1)
-if [[ -n "$GGUF_FILE" ]]; then
-  GGUF_BASENAME=$(basename "$GGUF_FILE")
-  MODEL_NAME="${GGUF_BASENAME%.gguf}"
-  if [[ ! -f "/models/${MODEL_NAME}.yaml" ]]; then
-    echo "Generating config for model: $MODEL_NAME -> $GGUF_BASENAME"
-    cat > "/models/${MODEL_NAME}.yaml" <<CFGEOF
-name: ${MODEL_NAME}
+GGUF_FILE=$(find "$LLAMA_CPP_MODEL_DIR" -type f -name "*.gguf" -print -quit)
+if [[ -z "$GGUF_FILE" ]]; then
+  echo "Error: cached GGUF file for $MODEL is missing" >&2
+  exit 1
+fi
+GGUF_BASENAME=$(basename "$GGUF_FILE")
+MODEL_NAME="${GGUF_BASENAME%.gguf}"
+if [[ -z "$MODEL_NAME" ]]; then
+  echo "Error: cannot derive a LocalAI model name from $GGUF_BASENAME" >&2
+  exit 1
+fi
+YAML_MODEL_NAME=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$MODEL_NAME")
+YAML_MODEL_PATH=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$GGUF_FILE")
+mkdir -p "$RUNNER_CONFIG_DIR"
+echo "Generating config for model: $MODEL_NAME -> $GGUF_FILE"
+CONFIG_TMP=$(mktemp "$RUNNER_CONFIG_DIR/.model.yaml.XXXXXX")
+cat > "$CONFIG_TMP" <<CFGEOF
+name: ${YAML_MODEL_NAME}
 backend: llama-cpp
 parameters:
-  model: ${GGUF_BASENAME}
+  model: ${YAML_MODEL_PATH}
 CFGEOF
-  fi
-fi
+mv "$CONFIG_TMP" "$RUNNER_CONFIG"
 `
 }
 
@@ -260,7 +293,6 @@ func generateVLLMCppDownload() string {
 	return `# vllm.cpp requires the model to be materialized locally before startup.
 MODEL_MARKER="` + runnerVLLMCppModelMarker + `"
 VLLM_CPP_MODEL_DIR="` + runnerVLLMCppModelDir + `"
-VLLM_CPP_CONFIG="/models/aikit-model.yaml"
 MODEL_KIND=""
 LOCAL_MODEL_PATH=""
 
@@ -318,7 +350,7 @@ else
   # This fixed runner-owned directory avoids deriving filesystem paths from
   # untrusted model references and makes cache replacement deterministic.
   rm -rf ` + runnerVLLMCppModelDir + `
-  rm -f "$MODEL_MARKER" "$VLLM_CPP_CONFIG"
+  rm -f "$MODEL_MARKER" "$RUNNER_CONFIG"
   mkdir -p "$VLLM_CPP_MODEL_DIR"
 
   if [[ "$MODEL_KIND" == "gguf" ]]; then
@@ -347,15 +379,18 @@ fi
 
 # Always point LocalAI at the validated local payload. A bare Hugging Face ID
 # is valid for the Python vLLM backend but is not valid for vllm.cpp.
-cat > "$VLLM_CPP_CONFIG" <<MODELEOF
-name: ${MODEL_NAME}
+mkdir -p "$RUNNER_CONFIG_DIR"
+CONFIG_TMP=$(mktemp "$RUNNER_CONFIG_DIR/.model.yaml.XXXXXX")
+cat > "$CONFIG_TMP" <<MODELEOF
+name: '${MODEL_NAME}'
 backend: vllm-cpp
 parameters:
-  model: ${LOCAL_MODEL_PATH}
+  model: '${LOCAL_MODEL_PATH}'
 template:
   use_tokenizer_template: true
 MODELEOF
-echo "Config generated at $VLLM_CPP_CONFIG"
+mv "$CONFIG_TMP" "$RUNNER_CONFIG"
+echo "Config generated at $RUNNER_CONFIG"
 `
 }
 
@@ -375,24 +410,27 @@ fi`
 func generateHFModelConfig(backend string) string {
 	return fmt.Sprintf(`# Check if model config matches the requested name, backend, and source (volume mount caching)
 %[1]s
-if [[ -f "/models/aikit-model.yaml" ]] &&
-  grep -qxF "name: ${MODEL_NAME}" /models/aikit-model.yaml 2>/dev/null &&
-  grep -qxF "backend: %[2]s" /models/aikit-model.yaml 2>/dev/null &&
-  grep -qxF "  model: ${MODEL}" /models/aikit-model.yaml 2>/dev/null; then
+if [[ -f "$RUNNER_CONFIG" ]] &&
+  grep -qxF "name: ${MODEL_NAME}" "$RUNNER_CONFIG" 2>/dev/null &&
+  grep -qxF "backend: %[2]s" "$RUNNER_CONFIG" 2>/dev/null &&
+  grep -qxF "  model: ${MODEL}" "$RUNNER_CONFIG" 2>/dev/null; then
   echo "Found existing %[2]s model config matching $MODEL in /models, skipping setup"
 else
-  if [[ -f "/models/aikit-model.yaml" ]]; then
+  if [[ -f "$RUNNER_CONFIG" ]]; then
     echo "Cached config does not match requested backend/model (%[2]s, $MODEL), regenerating"
   fi
   # For %[2]s backend, generate a LocalAI model config pointing to the HF model
   echo "Generating LocalAI config for %[2]s backend with model: $MODEL"
-  cat > /models/aikit-model.yaml <<MODELEOF
+  mkdir -p "$RUNNER_CONFIG_DIR"
+  CONFIG_TMP=$(mktemp "$RUNNER_CONFIG_DIR/.model.yaml.XXXXXX")
+  cat > "$CONFIG_TMP" <<MODELEOF
 name: ${MODEL_NAME}
 backend: %[2]s
 parameters:
   model: ${MODEL}
 MODELEOF
-  echo "Config generated at /models/aikit-model.yaml"
+  mv "$CONFIG_TMP" "$RUNNER_CONFIG"
+  echo "Config generated at $RUNNER_CONFIG"
 fi
 `, runnerModelNameScript, backend)
 }
