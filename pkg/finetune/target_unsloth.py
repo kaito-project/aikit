@@ -490,7 +490,35 @@ def resolve_model_snapshot(
         configured_model_name,
         load_in_4bit=load_in_4bit,
     )
-    revision = getattr(model_info(repo_id=resolved_model_name), "sha", None)
+    resolved_model_info = model_info(repo_id=resolved_model_name)
+    resolved_config = getattr(resolved_model_info, "config", None)
+    quantization_config = (
+        resolved_config.get("quantization_config")
+        if isinstance(resolved_config, Mapping)
+        else None
+    )
+    if isinstance(quantization_config, Mapping):
+        quantization_method = quantization_config.get("quant_method")
+        quantization_type = quantization_config.get("bnb_4bit_quant_type")
+        is_bitsandbytes = (
+            isinstance(quantization_method, str)
+            and quantization_method.lower() == "bitsandbytes"
+        )
+        is_4bit = (
+            quantization_config.get("load_in_4bit") is True
+            or quantization_config.get("_load_in_4bit") is True
+            or (
+                isinstance(quantization_type, str)
+                and quantization_type.lower() in {"fp4", "nf4"}
+            )
+        )
+        if is_bitsandbytes and is_4bit:
+            raise RuntimeError(
+                "resolved training base model is still a prequantized "
+                "bitsandbytes 4-bit checkpoint"
+            )
+
+    revision = getattr(resolved_model_info, "sha", None)
 
     return resolved_model_name, require_hf_commit_hash(
         revision,

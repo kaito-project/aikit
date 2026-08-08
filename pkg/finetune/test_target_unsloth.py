@@ -6680,6 +6680,51 @@ class TrainingPhaseTest(unittest.TestCase):
         dataset.map.assert_not_called()
         dataset.projected_dataset.map.assert_not_called()
 
+    def test_rejects_prequantized_training_base_before_model_load(self):
+        train_config = example_train_config()
+        dataset = in_memory_dataset(
+            [
+                {
+                    "instruction": "Summarize",
+                    "input": "A long passage",
+                    "output": "A summary",
+                }
+            ]
+        )
+        dependencies = example_train_dependencies(dataset)
+        dependencies.resolve_model_name.side_effect = None
+        dependencies.resolve_model_name.return_value = train_config["baseModel"]
+        dependencies.model_info.return_value = SimpleNamespace(
+            sha="a" * 40,
+            config={
+                "quantization_config": {
+                    "quant_method": "bitsandbytes",
+                    "load_in_4bit": True,
+                    "bnb_4bit_quant_type": "nf4",
+                }
+            },
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "still a prequantized bitsandbytes 4-bit checkpoint",
+        ):
+            target_unsloth.train_model(
+                train_config,
+                dependencies=dependencies,
+            )
+
+        dependencies.resolve_model_name.assert_called_once_with(
+            "example/model",
+            load_in_4bit=False,
+        )
+        dependencies.model_info.assert_called_once_with(
+            repo_id="example/model"
+        )
+        dependencies.fast_language_model.from_pretrained.assert_not_called()
+        dependencies.fast_language_model.get_peft_model.assert_not_called()
+        dependencies.sft_trainer.assert_not_called()
+
 
 class DPOTrainingPhaseTest(unittest.TestCase):
     def preference_rows(self):
