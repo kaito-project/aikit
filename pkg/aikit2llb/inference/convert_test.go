@@ -191,6 +191,14 @@ func TestGetBaseImageUsesMinimalCompatibleRuntime(t *testing.T) {
 			want: utils.UbuntuBase,
 		},
 		{
+			name: "standard vllm-cpp",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendVLLMCpp},
+				Models:   []config.Model{{Name: testInferenceModelName, Source: "model.gguf"}},
+			},
+			want: distrolessBase,
+		},
+		{
 			name:   "Apple Silicon",
 			config: &config.InferenceConfig{Runtime: utils.RuntimeAppleSilicon},
 			want:   utils.AppleSiliconBase,

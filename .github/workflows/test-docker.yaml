@@ -34,6 +34,7 @@ jobs:
         backend:
           - llama
           - llama-cuda # this tests cpu inference with cuda libraries present in the image
+          - vllm-cpp-cpu
         arch:
           - amd64
           - arm64
@@ -117,6 +118,7 @@ jobs:
         run: docker run --name testmodel -d -p 8080:8080 --platform "linux/${{ matrix.arch }}" testmodel:test
 
       - name: run llama test
+        if: matrix.backend != 'vllm-cpp-cpu'
         run: |
           result=$(curl --fail --retry 10 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
             "model": "llama-3.2-1b-instruct",
@@ -130,6 +132,7 @@ jobs:
           fi
 
       - name: run tool calling test
+        if: matrix.backend != 'vllm-cpp-cpu'
         run: |
           result=$(curl --fail --retry 10 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
             "model": "llama-3.2-1b-instruct",
@@ -158,6 +161,21 @@ jobs:
           fi
 
           echo "Tool calling test passed"
+
+      - name: run vllm-cpp test
+        if: matrix.backend == 'vllm-cpp-cpu'
+        run: |
+          result=$(curl --fail --show-error --max-time 300 --retry 10 --retry-all-errors \
+            http://127.0.0.1:8080/v1/completions \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "qwen35-vllmcpp-smoke",
+              "prompt": "The capital of France is",
+              "max_tokens": 8,
+              "temperature": 0
+            }')
+          echo "$result"
+          echo "$result" | jq -e '.choices[0].text | type == "string" and length > 0'
 
       - name: save logs
         if: always()

@@ -851,7 +851,7 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 		}
 	}
 
-	backends := []string{utils.BackendLlamaCpp, utils.BackendDiffusers, utils.BackendVLLM}
+	backends := []string{utils.BackendLlamaCpp, utils.BackendDiffusers, utils.BackendVLLM, utils.BackendVLLMCpp}
 	for _, b := range c.Backends {
 		if !slices.Contains(backends, b) {
 			return errors.Errorf("backend %s is not supported", b)
@@ -868,6 +868,31 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 
 // validateBackendPlatformCompatibility validates that backends are compatible with target platforms.
 func validateBackendPlatformCompatibility(c *config.InferenceConfig, targetPlatforms []*specs.Platform) error {
+	if slices.Contains(c.Backends, utils.BackendVLLMCpp) {
+		for _, tp := range targetPlatforms {
+			if tp != nil && tp.OS != utils.PlatformLinux {
+				return errors.Errorf("vllm-cpp backend is not supported on %s. only linux is supported", tp.OS)
+			}
+		}
+
+		switch c.Runtime {
+		case "":
+			for _, tp := range targetPlatforms {
+				if tp != nil && tp.Architecture != utils.PlatformAMD64 && tp.Architecture != utils.PlatformARM64 {
+					return errors.Errorf("vllm-cpp backend with CPU runtime is not supported on %s architecture", tp.Architecture)
+				}
+			}
+		case utils.RuntimeNVIDIA:
+			for _, tp := range targetPlatforms {
+				if tp != nil && tp.Architecture != utils.PlatformAMD64 {
+					return errors.Errorf("vllm-cpp backend with cuda runtime is not supported on %s architecture. only amd64 is supported", tp.Architecture)
+				}
+			}
+		default:
+			return errors.Errorf("vllm-cpp backend does not support %s runtime", c.Runtime)
+		}
+	}
+
 	// Check if any target platform is ARM64
 	hasARM64Platform := false
 	for _, tp := range targetPlatforms {
@@ -882,12 +907,16 @@ func validateBackendPlatformCompatibility(c *config.InferenceConfig, targetPlatf
 		return errors.New("rocm runtime is only supported on linux/amd64 platform")
 	}
 
-	// If we have ARM64 platforms, validate backend compatibility
+	// If we have ARM64 platforms, validate backend compatibility.
 	if hasARM64Platform {
 		for _, backend := range c.Backends {
-			if backend != utils.BackendLlamaCpp {
-				return errors.Errorf("backend %s is not supported on arm64 platform. only llama-cpp backend supports arm64", backend)
+			if backend == utils.BackendLlamaCpp {
+				continue
 			}
+			if backend == utils.BackendVLLMCpp && c.Runtime == "" {
+				continue
+			}
+			return errors.Errorf("backend %s with runtime %q is not supported on arm64 platform. only llama-cpp and CPU vllm-cpp support arm64", backend, c.Runtime)
 		}
 	}
 

@@ -14,6 +14,8 @@ Pre-built runner images are available at `ghcr.io/kaito-project/aikit/runners/`:
 | `ghcr.io/kaito-project/aikit/runners/llama-cpp-cuda:latest` | NVIDIA CUDA + CPU fallback llama.cpp runner (amd64) |
 | `ghcr.io/kaito-project/aikit/runners/diffusers-cuda:latest` | NVIDIA CUDA diffusers runner (amd64) |
 | `ghcr.io/kaito-project/aikit/runners/vllm-cuda:latest` | NVIDIA CUDA vLLM runner (amd64) |
+| `ghcr.io/kaito-project/aikit/runners/vllm-cpp-cpu:latest` | Experimental native vllm.cpp CPU runner (amd64, arm64) |
+| `ghcr.io/kaito-project/aikit/runners/vllm-cpp-cuda:latest` | Experimental native vllm.cpp CUDA 13 runner for Blackwell GPUs (amd64) |
 
 :::note
 Pre-built runner images are currently published for CPU and NVIDIA CUDA only. For AMD GPUs, build a custom `llama-cpp` runner with `runtime: rocm`.
@@ -155,3 +157,4 @@ For AMD GPUs, run the resulting image with the ROCm device flags described in [G
 | `llama-cpp` | GGUF models via llama.cpp (CPU, NVIDIA CUDA, or ROCm) |
 | `diffusers` | HuggingFace diffusers models (requires NVIDIA CUDA) |
 | `vllm` | HuggingFace safetensors models via vLLM (requires NVIDIA CUDA) |
+| `vllm-cpp` | Local GGUF files or materialized Hugging Face repositories via the experimental native engine (CPU, or CUDA 13 on amd64 Blackwell GPUs) |

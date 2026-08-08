@@ -8,6 +8,7 @@ const (
 	BackendDiffusers = "diffusers"
 	BackendLlamaCpp  = "llama-cpp"
 	BackendVLLM      = "vllm"
+	BackendVLLMCpp   = "vllm-cpp"
 
 	BackendOCIRegistry = "quay.io/go-skynet/local-ai-backends"
 

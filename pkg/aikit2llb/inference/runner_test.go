@@ -2,7 +2,9 @@ package inference
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -17,6 +19,7 @@ const (
 	runnerHFArgsAssignment    = "HF_ARGS="
 	runnerHFCLIInvocation     = "hf download"
 	runnerLegacyHFCLICommand  = "huggingface-cli"
+	runnerCurlInvocation      = "curl -fL"
 	runnerLocalAIExec         = "exec /usr/bin/local-ai"
 	runnerLocalDirFlag        = "--local-dir"
 	runnerPredownloadMessage  = "Pre-downloading model"
@@ -75,6 +78,13 @@ func TestIsRunnerMode(t *testing.T) {
 			},
 			expected: true,
 		},
+		{
+			name: "runner mode - vllm-cpp backend with no models",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendVLLMCpp},
+			},
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -106,6 +116,11 @@ func TestInstallRunnerDependencies(t *testing.T) {
 		{
 			name:    "vllm uses bundled downloader",
 			backend: utils.BackendVLLM,
+		},
+		{
+			name:             "vllm-cpp installs downloader dependencies",
+			backend:          utils.BackendVLLMCpp,
+			wantDependencies: true,
 		},
 	}
 
@@ -171,9 +186,9 @@ func TestGenerateRunnerScript(t *testing.T) {
 			},
 			expectContains: []string{
 				`BACKEND="llama-cpp"`,
-				".aikit-model-ref",
+				runnerLlamaCppModelMarker,
 				runnerHFCLIInvocation,
-				"curl -fL",
+				runnerCurlInvocation,
 				runnerLocalAIExec,
 			},
 			expectMissing: []string{
@@ -218,6 +233,26 @@ func TestGenerateRunnerScript(t *testing.T) {
 				runnerPredownloadMessage,
 				runnerHFArgsAssignment,
 				runnerLocalDirFlag,
+			},
+		},
+		{
+			name: "vllm-cpp backend script",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendVLLMCpp},
+			},
+			expectContains: []string{
+				`BACKEND="vllm-cpp"`,
+				runnerVLLMCppModelDir,
+				runnerVLLMCppModelMarker,
+				runnerHFCLIInvocation,
+				runnerCurlInvocation,
+				"backend: vllm-cpp",
+				"use_tokenizer_template: true",
+				runnerLocalAIExec,
+			},
+			expectMissing: []string{
+				runnerLegacyHFCLICommand,
+				`model: ${MODEL}`,
 			},
 		},
 		{
@@ -308,18 +343,49 @@ func TestGenerateRunnerScriptModelConfig(t *testing.T) {
 }
 
 func TestGenerateRunnerScriptUsageMessage(t *testing.T) {
-	config := &config.InferenceConfig{
-		Backends: []string{utils.BackendLlamaCpp},
+	tests := []struct {
+		name          string
+		backend       string
+		wantExample   string
+		rejectExample string
+	}{
+		{
+			name:        utils.BackendLlamaCpp,
+			backend:     utils.BackendLlamaCpp,
+			wantExample: "--model org/model",
+		},
+		{
+			name:          "vllm-cpp",
+			backend:       utils.BackendVLLMCpp,
+			wantExample:   "--model org/safetensors-model",
+			rejectExample: "--model org/model\n",
+		},
 	}
 
-	script := generateRunnerScript(config)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			script := generateRunnerScript(&config.InferenceConfig{Backends: []string{tt.backend}})
+			cmd := exec.Command("bash")
+			cmd.Stdin = strings.NewReader(script)
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatal("runner without a model unexpectedly succeeded")
+			}
 
-	// Verify the usage message is present
-	if !strings.Contains(script, "Usage: docker run") {
-		t.Error("script should contain usage instructions")
-	}
-	if !strings.Contains(script, "HF_TOKEN") {
-		t.Error("script should mention HF_TOKEN environment variable")
+			usage := string(output)
+			if !strings.Contains(usage, "Usage: docker run") {
+				t.Error("script should contain usage instructions")
+			}
+			if !strings.Contains(usage, "HF_TOKEN") {
+				t.Error("script should mention HF_TOKEN environment variable")
+			}
+			if !strings.Contains(usage, tt.wantExample) {
+				t.Errorf("usage does not contain backend-compatible example %q: %s", tt.wantExample, usage)
+			}
+			if tt.rejectExample != "" && strings.Contains(usage, tt.rejectExample) {
+				t.Errorf("usage contains incompatible example %q: %s", tt.rejectExample, usage)
+			}
+		})
 	}
 }
 
@@ -327,8 +393,11 @@ func TestGenerateLlamaCppDownload(t *testing.T) {
 	script := generateLlamaCppDownload()
 
 	// Should use marker file for model-aware caching
-	if !strings.Contains(script, ".aikit-model-ref") {
+	if !strings.Contains(script, runnerLlamaCppModelMarker) {
 		t.Error("should use marker file for model-aware caching")
+	}
+	if !strings.Contains(script, runnerLegacyModelMarker) {
+		t.Error("should migrate the legacy model marker")
 	}
 
 	// Should detect model mismatch and re-download
@@ -352,6 +421,281 @@ func TestGenerateLlamaCppDownload(t *testing.T) {
 	// Should respect HF_TOKEN
 	if !strings.Contains(script, "HF_TOKEN") {
 		t.Error("should respect HF_TOKEN")
+	}
+}
+
+func TestLlamaCppRunnerMigratesLegacyModelCache(t *testing.T) {
+	testRoot := t.TempDir()
+	modelsDir := filepath.Join(testRoot, "models")
+	binDir := filepath.Join(testRoot, "bin")
+	for _, dir := range []string{modelsDir, binDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create runner test directory %q: %v", dir, err)
+		}
+	}
+
+	legacyMarker := filepath.Join(modelsDir, filepath.Base(runnerLegacyModelMarker))
+	staleModel := filepath.Join(modelsDir, "stale.gguf")
+	if err := os.WriteFile(legacyMarker, []byte("https://example.com/stale.gguf\n"), 0o600); err != nil {
+		t.Fatalf("write legacy marker: %v", err)
+	}
+	if err := os.WriteFile(staleModel, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("write stale model: %v", err)
+	}
+
+	writeRunnerStub(t, binDir, "curl", `#!/bin/bash
+set -euo pipefail
+output=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "-o" ]]; then
+    output="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[[ -n "$output" ]]
+printf 'fresh' > "$output"
+`)
+
+	script := generateRunnerScript(&config.InferenceConfig{Backends: []string{utils.BackendLlamaCpp}})
+	script = strings.ReplaceAll(script, "/models", modelsDir)
+	script = strings.Replace(script, "exec /usr/bin/local-ai", "exec true", 1)
+	model := "https://example.com/fresh.gguf"
+	output, err := executeRunnerScript(t, script, binDir, model)
+	if err != nil {
+		t.Fatalf("run llama-cpp legacy cache migration: %v: %s", err, output)
+	}
+
+	if _, err := os.Stat(staleModel); !os.IsNotExist(err) {
+		t.Fatalf("stale GGUF remains after legacy cache migration; stat error = %v", err)
+	}
+	if _, err := os.Stat(legacyMarker); !os.IsNotExist(err) {
+		t.Fatalf("legacy marker remains after migration; stat error = %v", err)
+	}
+	assertRunnerFileContent(t, filepath.Join(modelsDir, "fresh.gguf"), "fresh")
+	assertRunnerFileContent(t, filepath.Join(modelsDir, filepath.Base(runnerLlamaCppModelMarker)), model+"\n")
+	assertRunnerFileContent(t, filepath.Join(modelsDir, "fresh.yaml"), "name: fresh\nbackend: llama-cpp\nparameters:\n  model: fresh.gguf\n")
+}
+
+func TestGenerateVLLMCppDownload(t *testing.T) {
+	script := generateVLLMCppDownload()
+
+	for _, expected := range []string{
+		runnerVLLMCppModelMarker,
+		`VLLM_CPP_MODEL_DIR="` + runnerVLLMCppModelDir + `"`,
+		`hf download`,
+		`--local-dir`,
+		runnerCurlInvocation,
+		`\.gguf$`,
+		`backend: vllm-cpp`,
+		`model: ${LOCAL_MODEL_PATH}`,
+		`use_tokenizer_template: true`,
+	} {
+		if !strings.Contains(script, expected) {
+			t.Errorf("vllm-cpp download script does not contain %q", expected)
+		}
+	}
+
+	for _, unexpected := range []string{
+		`model: ${MODEL}`,
+		runnerLegacyHFCLICommand,
+		`--include`,
+	} {
+		if strings.Contains(script, unexpected) {
+			t.Errorf("vllm-cpp download script should not contain %q", unexpected)
+		}
+	}
+
+	cmd := exec.Command("bash", "-n")
+	cmd.Stdin = strings.NewReader(generateRunnerScript(&config.InferenceConfig{Backends: []string{utils.BackendVLLMCpp}}))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("vllm-cpp runner script has invalid shell syntax: %v: %s", err, output)
+	}
+}
+
+func TestRunnerBackendsUseSeparateModelMarkers(t *testing.T) {
+	if runnerLlamaCppModelMarker == runnerVLLMCppModelMarker {
+		t.Fatal("llama-cpp and vllm-cpp must not share a model cache marker")
+	}
+
+	llamaScript := generateLlamaCppDownload()
+	vllmCppScript := generateVLLMCppDownload()
+	if !strings.Contains(llamaScript, runnerLlamaCppModelMarker) || strings.Contains(llamaScript, runnerVLLMCppModelMarker) {
+		t.Fatal("llama-cpp download script does not use only its backend-scoped marker")
+	}
+	if !strings.Contains(vllmCppScript, runnerVLLMCppModelMarker) || strings.Contains(vllmCppScript, runnerLlamaCppModelMarker) {
+		t.Fatal("vllm-cpp download script does not use only its backend-scoped marker")
+	}
+	if !strings.Contains(llamaScript, "find /models -maxdepth 1") {
+		t.Fatal("llama-cpp cache lookup must ignore nested payloads owned by other backends")
+	}
+}
+
+func TestVLLMCppRunnerDownloadsHuggingFaceRepositoryLocally(t *testing.T) {
+	script, modelsDir, binDir := prepareVLLMCppRunnerScript(t)
+	hfArgsLog := filepath.Join(t.TempDir(), "hf-args")
+	writeRunnerStub(t, binDir, "hf", `#!/bin/bash
+set -euo pipefail
+printf '%s\n' "$@" > "$HF_ARGS_LOG"
+local_dir=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--local-dir" ]]; then
+    local_dir="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[[ -n "$local_dir" ]]
+mkdir -p "$local_dir"
+printf '{}\n' > "$local_dir/config.json"
+printf 'weights\n' > "$local_dir/model.safetensors"
+`)
+
+	model := "huggingface://org/repo"
+	output, err := executeRunnerScript(t, script, binDir, model, "HF_ARGS_LOG="+hfArgsLog, "HF_TOKEN=test-token")
+	if err != nil {
+		t.Fatalf("run vllm-cpp Hugging Face flow: %v: %s", err, output)
+	}
+
+	localModelDir := filepath.Join(modelsDir, strings.TrimPrefix(runnerVLLMCppModelDir, "/models/"))
+	wantConfig := "name: repo\n" +
+		"backend: vllm-cpp\n" +
+		"parameters:\n" +
+		"  model: " + localModelDir + "\n" +
+		"template:\n" +
+		"  use_tokenizer_template: true\n"
+	assertRunnerFileContent(t, filepath.Join(modelsDir, "aikit-model.yaml"), wantConfig)
+	assertRunnerFileContent(t, filepath.Join(modelsDir, filepath.Base(runnerVLLMCppModelMarker)), "org/repo\n")
+
+	hfArgs, err := os.ReadFile(hfArgsLog)
+	if err != nil {
+		t.Fatalf("read hf arguments: %v", err)
+	}
+	for _, expected := range []string{"download\n", "org/repo\n", "--local-dir\n", localModelDir + "\n", "--exclude\n", "*.gguf\n", "--token\n", "test-token\n"} {
+		if !strings.Contains(string(hfArgs), expected) {
+			t.Errorf("hf arguments do not contain %q: %s", expected, hfArgs)
+		}
+	}
+
+	if err := os.Remove(hfArgsLog); err != nil {
+		t.Fatalf("remove first-run hf log: %v", err)
+	}
+	writeRunnerStub(t, binDir, "hf", "#!/bin/bash\nexit 91\n")
+	output, err = executeRunnerScript(t, script, binDir, model)
+	if err != nil {
+		t.Fatalf("reuse cached vllm-cpp Hugging Face model: %v: %s", err, output)
+	}
+	if !strings.Contains(string(output), "Found cached vllm-cpp model matching org/repo") {
+		t.Errorf("cache-hit output missing expected message: %s", output)
+	}
+	if _, err := os.Stat(hfArgsLog); !os.IsNotExist(err) {
+		t.Errorf("hf downloader ran on cache hit; stat error = %v", err)
+	}
+}
+
+func TestVLLMCppRunnerDownloadsDirectGGUFLocally(t *testing.T) {
+	script, modelsDir, binDir := prepareVLLMCppRunnerScript(t)
+	writeRunnerStub(t, binDir, "curl", `#!/bin/bash
+set -euo pipefail
+output=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--output" ]]; then
+    output="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[[ -n "$output" ]]
+printf 'GGUF' > "$output"
+`)
+
+	model := "https://example.com/model.gguf?download=1#weights"
+	output, err := executeRunnerScript(t, script, binDir, model)
+	if err != nil {
+		t.Fatalf("run vllm-cpp GGUF flow: %v: %s", err, output)
+	}
+
+	localModelPath := filepath.Join(modelsDir, strings.TrimPrefix(runnerVLLMCppModelDir, "/models/"), "model.gguf")
+	wantConfig := "name: model\n" +
+		"backend: vllm-cpp\n" +
+		"parameters:\n" +
+		"  model: " + localModelPath + "\n" +
+		"template:\n" +
+		"  use_tokenizer_template: true\n"
+	assertRunnerFileContent(t, filepath.Join(modelsDir, "aikit-model.yaml"), wantConfig)
+	assertRunnerFileContent(t, localModelPath, "GGUF")
+}
+
+func TestVLLMCppRunnerRejectsRepositoryWithoutSafetensors(t *testing.T) {
+	script, _, binDir := prepareVLLMCppRunnerScript(t)
+	writeRunnerStub(t, binDir, "hf", `#!/bin/bash
+set -euo pipefail
+local_dir=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--local-dir" ]]; then
+    local_dir="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[[ -n "$local_dir" ]]
+mkdir -p "$local_dir"
+printf '{}\n' > "$local_dir/config.json"
+printf 'GGUF' > "$local_dir/model.gguf"
+`)
+
+	output, err := executeRunnerScript(t, script, binDir, "huggingface://org/gguf-repo")
+	if err == nil {
+		t.Fatalf("GGUF-only Hugging Face repository unexpectedly succeeded: %s", output)
+	}
+	if !strings.Contains(string(output), "must contain config.json and safetensors weights") {
+		t.Fatalf("unexpected GGUF-only repository error: %s", output)
+	}
+}
+
+func TestVLLMCppRunnerRejectsUnsupportedModelReferences(t *testing.T) {
+	tests := []struct {
+		name      string
+		model     string
+		wantError string
+	}{
+		{
+			name:      "non-GGUF direct URL",
+			model:     "https://example.com/model.safetensors",
+			wantError: "direct URLs must point to a .gguf file",
+		},
+		{
+			name:      "unsafe GGUF filename",
+			model:     "https://example.com/model name.gguf",
+			wantError: "direct URLs must point to a .gguf file",
+		},
+		{
+			name:      "unsupported URL scheme",
+			model:     "s3://bucket/model.gguf",
+			wantError: "supports only huggingface:// repository references or HTTP(S) .gguf URLs",
+		},
+		{
+			name:      "unsafe repository ID",
+			model:     "org/repo/extra",
+			wantError: "invalid Hugging Face repository ID",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			script, _, binDir := prepareVLLMCppRunnerScript(t)
+			output, err := executeRunnerScript(t, script, binDir, tt.model)
+			if err == nil {
+				t.Fatalf("model reference %q unexpectedly succeeded: %s", tt.model, output)
+			}
+			if !strings.Contains(string(output), tt.wantError) {
+				t.Errorf("error output does not contain %q: %s", tt.wantError, output)
+			}
+		})
 	}
 }
 
@@ -450,6 +794,55 @@ func TestRunnerModelNameScript(t *testing.T) {
 				t.Fatalf("normalize model %q = %q, want %q", tt.model, got, tt.want)
 			}
 		})
+	}
+}
+
+func prepareVLLMCppRunnerScript(t *testing.T) (string, string, string) {
+	t.Helper()
+
+	testRoot := t.TempDir()
+	modelsDir := filepath.Join(testRoot, "models")
+	binDir := filepath.Join(testRoot, "bin")
+	for _, dir := range []string{modelsDir, binDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create runner test directory %q: %v", dir, err)
+		}
+	}
+
+	script := generateRunnerScript(&config.InferenceConfig{Backends: []string{utils.BackendVLLMCpp}})
+	script = strings.ReplaceAll(script, "/models", modelsDir)
+	script = strings.Replace(script, "exec /usr/bin/local-ai", "exec true", 1)
+
+	return script, modelsDir, binDir
+}
+
+func executeRunnerScript(t *testing.T, script, binDir, model string, extraEnv ...string) ([]byte, error) {
+	t.Helper()
+
+	cmd := exec.Command("bash", "-c", script, "aikit-runner", model)
+	cmd.Env = append([]string{"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH")}, extraEnv...)
+
+	return cmd.CombinedOutput()
+}
+
+func writeRunnerStub(t *testing.T, binDir, name, content string) {
+	t.Helper()
+
+	//nolint:gosec // Runner command stubs must be executable by the test shell.
+	if err := os.WriteFile(filepath.Join(binDir, name), []byte(content), 0o755); err != nil {
+		t.Fatalf("write %s runner stub: %v", name, err)
+	}
+}
+
+func assertRunnerFileContent(t *testing.T, path, want string) {
+	t.Helper()
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read runner file %q: %v", path, err)
+	}
+	if got := string(content); got != want {
+		t.Fatalf("runner file %q = %q, want %q", path, got, want)
 	}
 }
 

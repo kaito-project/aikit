@@ -13,6 +13,10 @@ import (
 
 const (
 	runnerHuggingFaceHubVersion = "1.26.0"
+	runnerLegacyModelMarker     = "/models/.aikit-model-ref"
+	runnerLlamaCppModelMarker   = "/models/.aikit-llama-cpp-model-ref"
+	runnerVLLMCppModelDir       = "/models/vllm-cpp-model"
+	runnerVLLMCppModelMarker    = "/models/.aikit-vllm-cpp-model-ref"
 	runnerDependenciesCommand   = "sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g; " +
 		"s|http://security.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list && " +
 		"apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update && " +
@@ -30,7 +34,7 @@ func isRunnerMode(c *config.InferenceConfig) bool {
 
 // installRunnerDependencies installs packages needed for runtime model downloading.
 func installRunnerDependencies(c *config.InferenceConfig, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State) {
-	if runnerBackend(c) != utils.BackendLlamaCpp {
+	if !slices.Contains([]string{utils.BackendLlamaCpp, utils.BackendVLLMCpp}, runnerBackend(c)) {
 		return s, merge
 	}
 
@@ -131,9 +135,15 @@ if [[ -z "$MODEL" ]]; then
   echo "Usage: docker run <image> <model-ref>"
   echo ""
   echo "Examples:"
-  echo "  docker run -p 8080:8080 <image> unsloth/gemma-3-1b-it-GGUF"
-  echo "  docker run -p 8080:8080 <image> https://example.com/model.gguf"
-  echo "  docker run -p 8080:8080 <image> --model unsloth/gemma-3-1b-it-GGUF"
+  if [[ "$BACKEND" == "vllm-cpp" ]]; then
+    echo "  docker run -p 8080:8080 <image> org/safetensors-model"
+    echo "  docker run -p 8080:8080 <image> https://example.com/model.gguf"
+    echo "  docker run -p 8080:8080 <image> --model org/safetensors-model"
+  else
+    echo "  docker run -p 8080:8080 <image> org/model"
+    echo "  docker run -p 8080:8080 <image> https://example.com/model.gguf"
+    echo "  docker run -p 8080:8080 <image> --model org/model"
+  fi
   echo ""
   echo "Environment variables:"
   echo "  HF_TOKEN    - HuggingFace token for gated models"
@@ -149,9 +159,12 @@ MODEL="${MODEL#huggingface://}"
 `)
 
 	// Backend-specific download logic
-	if backend == utils.BackendLlamaCpp {
+	switch backend {
+	case utils.BackendLlamaCpp:
 		sb.WriteString(generateLlamaCppDownload())
-	} else if slices.Contains([]string{utils.BackendDiffusers, utils.BackendVLLM}, backend) {
+	case utils.BackendVLLMCpp:
+		sb.WriteString(generateVLLMCppDownload())
+	case utils.BackendDiffusers, utils.BackendVLLM:
 		sb.WriteString(generateHFModelConfig(backend))
 	}
 
@@ -188,15 +201,21 @@ exec /usr/bin/local-ai "${LOCAL_AI_ARGS[@]}"
 func generateLlamaCppDownload() string {
 	return `# Check if the requested model already exists (volume mount caching)
 # Write a marker file so we can detect model mismatches on reuse.
-MODEL_MARKER="/models/.aikit-model-ref"
-if [[ -f "$MODEL_MARKER" ]] && [[ "$(cat "$MODEL_MARKER")" == "$MODEL" ]]; then
+MODEL_MARKER="` + runnerLlamaCppModelMarker + `"
+LEGACY_MODEL_MARKER="` + runnerLegacyModelMarker + `"
+if [[ -f "$MODEL_MARKER" ]] && [[ "$(cat "$MODEL_MARKER")" == "$MODEL" ]] &&
+  [[ -n "$(find /models -maxdepth 1 -name "*.gguf" -type f -print -quit)" ]]; then
   echo "Found cached model matching $MODEL in /models, skipping download"
 else
-  # Different model requested or no marker — clean and re-download
+  # Different model requested, missing payload, or a legacy marker — clean and
+  # re-download. Clearing root GGUF files unconditionally on a cache miss keeps
+  # upgraded persistent volumes from selecting a stale file.
   if [[ -f "$MODEL_MARKER" ]]; then
-    echo "Cached model ($(cat "$MODEL_MARKER")) does not match requested model ($MODEL), re-downloading"
-    rm -f /models/*.gguf "$MODEL_MARKER"
+    echo "Cached model data for $(cat "$MODEL_MARKER") is missing or does not match requested model ($MODEL), re-downloading"
+  elif [[ -f "$LEGACY_MODEL_MARKER" ]]; then
+    echo "Migrating legacy cached model ($(cat "$LEGACY_MODEL_MARKER")) for requested model ($MODEL)"
   fi
+  rm -f /models/*.gguf "$MODEL_MARKER" "$LEGACY_MODEL_MARKER"
   if [[ "$MODEL" == http://* ]] || [[ "$MODEL" == https://* ]]; then
     # Direct HTTP/HTTPS download
     echo "Downloading model from URL: $MODEL"
@@ -217,7 +236,7 @@ fi
 
 # Generate a minimal config file so LocalAI can map the model name to the GGUF file.
 # Without this, LocalAI looks for the model name as a filename (without .gguf extension).
-GGUF_FILE=$(find /models -name "*.gguf" -type f | head -1)
+GGUF_FILE=$(find /models -maxdepth 1 -name "*.gguf" -type f | head -1)
 if [[ -n "$GGUF_FILE" ]]; then
   GGUF_BASENAME=$(basename "$GGUF_FILE")
   MODEL_NAME="${GGUF_BASENAME%.gguf}"
@@ -231,6 +250,112 @@ parameters:
 CFGEOF
   fi
 fi
+`
+}
+
+// generateVLLMCppDownload generates download and configuration logic for the
+// vllm.cpp backend. Unlike the Python vLLM backend, vllm.cpp requires a local
+// model path rather than a Hugging Face repository ID.
+func generateVLLMCppDownload() string {
+	return `# vllm.cpp requires the model to be materialized locally before startup.
+MODEL_MARKER="` + runnerVLLMCppModelMarker + `"
+VLLM_CPP_MODEL_DIR="` + runnerVLLMCppModelDir + `"
+VLLM_CPP_CONFIG="/models/aikit-model.yaml"
+MODEL_KIND=""
+LOCAL_MODEL_PATH=""
+
+case "$MODEL" in
+  http://*|https://*)
+    # Direct URLs are supported only for a single GGUF file. Strip query and
+    # fragment components before validating and deriving the local filename.
+    MODEL_URL_PATH="${MODEL%%\#*}"
+    MODEL_URL_PATH="${MODEL_URL_PATH%%\?*}"
+    GGUF_FILENAME="${MODEL_URL_PATH##*/}"
+    if [[ ! "$GGUF_FILENAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.gguf$ ]]; then
+      echo "Error: vllm-cpp direct URLs must point to a .gguf file with a safe filename" >&2
+      exit 1
+    fi
+    MODEL_KIND="gguf"
+    MODEL_NAME="${GGUF_FILENAME%.gguf}"
+    LOCAL_MODEL_PATH="${VLLM_CPP_MODEL_DIR}/${GGUF_FILENAME}"
+    ;;
+  *://*)
+    echo "Error: vllm-cpp supports only huggingface:// repository references or HTTP(S) .gguf URLs" >&2
+    exit 1
+    ;;
+  *)
+    # Restrict repository IDs to safe Hugging Face path components. Besides
+    # rejecting unsupported URLs, this prevents option and YAML injection.
+    if [[ ! "$MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?$ ]]; then
+      echo "Error: invalid Hugging Face repository ID for vllm-cpp: $MODEL" >&2
+      exit 1
+    fi
+    MODEL_KIND="repository"
+    MODEL_NAME="${MODEL##*/}"
+    LOCAL_MODEL_PATH="$VLLM_CPP_MODEL_DIR"
+    ;;
+esac
+
+# Reuse a materialized model only when both its source marker and local payload
+# match. This keeps a mounted /models volume model-aware across runner restarts.
+CACHE_HIT="false"
+if [[ -f "$MODEL_MARKER" ]] && [[ "$(cat "$MODEL_MARKER")" == "$MODEL" ]]; then
+  if [[ "$MODEL_KIND" == "gguf" ]] && [[ -f "$LOCAL_MODEL_PATH" ]]; then
+    CACHE_HIT="true"
+  elif [[ "$MODEL_KIND" == "repository" ]] && [[ -f "$VLLM_CPP_MODEL_DIR/config.json" ]] &&
+    [[ -n "$(find "$VLLM_CPP_MODEL_DIR" -type f -name "*.safetensors" -print -quit)" ]]; then
+    CACHE_HIT="true"
+  fi
+fi
+
+if [[ "$CACHE_HIT" == "true" ]]; then
+  echo "Found cached vllm-cpp model matching $MODEL in $VLLM_CPP_MODEL_DIR, skipping download"
+else
+  if [[ -f "$MODEL_MARKER" ]]; then
+    echo "Cached model ($(cat "$MODEL_MARKER")) does not match requested vllm-cpp model ($MODEL), re-downloading"
+  fi
+
+  # This fixed runner-owned directory avoids deriving filesystem paths from
+  # untrusted model references and makes cache replacement deterministic.
+  rm -rf ` + runnerVLLMCppModelDir + `
+  rm -f "$MODEL_MARKER" "$VLLM_CPP_CONFIG"
+  mkdir -p "$VLLM_CPP_MODEL_DIR"
+
+  if [[ "$MODEL_KIND" == "gguf" ]]; then
+    echo "Downloading vllm-cpp GGUF model from URL: $MODEL"
+    PARTIAL_PATH="${LOCAL_MODEL_PATH}.part"
+    curl -fL --progress-bar --output "$PARTIAL_PATH" "$MODEL"
+    mv "$PARTIAL_PATH" "$LOCAL_MODEL_PATH"
+  else
+    echo "Downloading Hugging Face repository for vllm-cpp: $MODEL"
+    HF_ARGS=("$MODEL" "--local-dir" "$VLLM_CPP_MODEL_DIR" "--exclude" "*.gguf")
+    if [[ -n "${HF_TOKEN:-}" ]]; then
+      HF_ARGS+=("--token" "$HF_TOKEN")
+    fi
+    hf download "${HF_ARGS[@]}"
+
+    if [[ ! -f "$VLLM_CPP_MODEL_DIR/config.json" ]] ||
+      [[ -z "$(find "$VLLM_CPP_MODEL_DIR" -type f -name "*.safetensors" -print -quit)" ]]; then
+      echo "Error: vllm-cpp Hugging Face repositories must contain config.json and safetensors weights; use a direct HTTP(S) .gguf URL for GGUF models" >&2
+      exit 1
+    fi
+  fi
+
+  printf '%s\n' "$MODEL" > "$MODEL_MARKER"
+  echo "Download complete"
+fi
+
+# Always point LocalAI at the validated local payload. A bare Hugging Face ID
+# is valid for the Python vLLM backend but is not valid for vllm.cpp.
+cat > "$VLLM_CPP_CONFIG" <<MODELEOF
+name: ${MODEL_NAME}
+backend: vllm-cpp
+parameters:
+  model: ${LOCAL_MODEL_PATH}
+template:
+  use_tokenizer_template: true
+MODELEOF
+echo "Config generated at $VLLM_CPP_CONFIG"
 `
 }
 

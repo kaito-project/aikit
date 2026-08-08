@@ -1,6 +1,7 @@
 package inference
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
@@ -69,8 +70,12 @@ func emptyImage(c *config.InferenceConfig, platform *specs.Platform) *specs.Imag
 		img.Config.Env = append(img.Config.Env, localAILoadToMemoryEnv+strings.Join(c.LoadToMemory, ","))
 	}
 
+	minimumCUDAVersion := "12.0"
+	if slices.Contains(c.Backends, utils.BackendVLLMCpp) {
+		minimumCUDAVersion = "13.0"
+	}
 	cudaEnv := []string{
-		"NVIDIA_REQUIRE_CUDA=cuda>=12.0",
+		"NVIDIA_REQUIRE_CUDA=cuda>=" + minimumCUDAVersion,
 		"NVIDIA_DRIVER_CAPABILITIES=compute,utility",
 		"NVIDIA_VISIBLE_DEVICES=all",
 		"BUILD_TYPE=cublas",
