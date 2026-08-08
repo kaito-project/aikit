@@ -159,7 +159,7 @@ jobs:
             '.error == null and .object == "chat.completion" and .model == $model and (.choices | length > 0) and
              .choices[0].message.role == "assistant" and
              (((.choices[0].message.content // "") | type == "string" and length > 0) or
-              ((.choices[0].message.reasoning_content // "") | type == "string" and length > 0))'
+              ((.choices[0].message.reasoning_content // .choices[0].message.reasoning // "") | type == "string" and length > 0))'
 
       - name: save logs
         if: always()
