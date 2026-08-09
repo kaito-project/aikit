@@ -4,7 +4,9 @@ title: Runner Images
 
 Runner images are reusable AIKit images that download models at runtime instead of embedding them at build time. This is useful when you want a single image that can serve different models without rebuilding.
 
-Runner mode is available only for backend catalog entries that name an audited runner profile. A backend being usable in a model image does not by itself mean its runtime downloader, cache layout, input validation, and startup behavior have been audited for runner mode. The catalog embedded in the selected frontend release is the authority for the exact backend, runtime, capability, and platform tuple.
+Runner mode is available only for a resolved catalog entry with an explicit `runnerProfile`. The profile selects a reviewed AIKit adapter for model download, cache layout, input validation, generated configuration, and startup behavior. It is an internal catalog field, not a value users can add to an aikitfile.
+
+A backend being installable in a standard model image does not make it runner-capable. When `backends` is set and `models` is empty, AIKit requests runner mode and fails if that exact family, selector, runtime, and platform tuple has `runnerProfile: unsupported`. There is no silent switch back to standard mode or to a different runner.
 
 ## Pre-built Runner Images
 
@@ -13,14 +15,14 @@ Pre-built runner images are available at `ghcr.io/kaito-project/aikit/runners/`:
 | Image | Description |
 |---|---|
 | `ghcr.io/kaito-project/aikit/runners/llama-cpp-cpu:latest` | CPU-only llama.cpp runner (amd64, arm64) |
-| `ghcr.io/kaito-project/aikit/runners/llama-cpp-cuda:latest` | NVIDIA CUDA + CPU fallback llama.cpp runner (amd64) |
+| `ghcr.io/kaito-project/aikit/runners/llama-cpp-cuda:latest` | NVIDIA CUDA llama.cpp runner with a catalog-declared CPU companion backend (amd64) |
 | `ghcr.io/kaito-project/aikit/runners/diffusers-cuda:latest` | NVIDIA CUDA diffusers runner (amd64) |
 | `ghcr.io/kaito-project/aikit/runners/vllm-cuda:latest` | NVIDIA CUDA vLLM runner (amd64) |
 | `ghcr.io/kaito-project/aikit/runners/vllm-cpp-cpu:latest` | Experimental native vllm.cpp CPU runner (amd64, arm64) |
 | `ghcr.io/kaito-project/aikit/runners/vllm-cpp-cuda:latest` | Experimental native vllm.cpp CUDA 13 runner for Blackwell GPUs (amd64) |
 
 :::note
-Pre-built runner images are currently published for CPU and NVIDIA CUDA only. ROCm catalog entries do not yet have an audited runner profile, so runner-mode builds for AMD GPUs fail closed.
+Pre-built runner images are currently published for CPU and NVIDIA CUDA only. ROCm catalog entries currently declare `runnerProfile: unsupported`, so runner-mode builds for AMD GPUs fail closed.
 
 Published image names describe the intended runner families, not every possible backend capability. Consult the generated catalog lock for the selected frontend release before relying on a specific CUDA major, L4T variant, architecture, or experimental integration.
 :::
@@ -65,7 +67,7 @@ The model name in the API request is the GGUF filename without the `.gguf` exten
 
 ## GPU Support
 
-The NVIDIA CUDA llama.cpp runner automatically detects whether an NVIDIA GPU is present at runtime. If no GPU is found, it falls back to CPU inference — no configuration needed. The Diffusers and vLLM runners require an NVIDIA GPU. ROCm runner images are not published yet.
+The NVIDIA CUDA llama.cpp runner automatically detects whether an NVIDIA GPU is present at runtime. If no GPU is found, LocalAI can use the CPU companion artifact already declared and installed by that CUDA catalog plan. This is runtime behavior inside one selected plan, not catalog resolution falling back to a CPU tuple. The Diffusers and vLLM runners require an NVIDIA GPU. ROCm runner images are not published yet.
 
 ```bash
 # With GPU
@@ -146,15 +148,16 @@ Build:
 docker buildx build -t my-runner -f runner.yaml .
 ```
 
-Each example is a catalog request, not an open-ended backend download. The build succeeds only when the exact tuple has an audited runner profile with `supported` or `experimental` status. Missing, `quarantined`, and `deprecated` profiles fail the build; AIKit does not fall back to another runner or backend. Use `backendCapability` when an audited profile requires an exact selector, as described in the [Inference API Specifications](specs-inference.md#backend-catalog-selection).
+Each example is a catalog request, not an open-ended backend download. The build succeeds only when the exact entry is selectable (`supported` or `experimental`) and its `runnerProfile` is not `unsupported`. Missing tuples and `quarantined` or `deprecated` entries fail the build; AIKit does not fall back to another runner, family, or selector. Use `backendCapability` to request an exact selector, as described in the [Inference API Specifications](specs-inference.md#backend-catalog-selection).
 
-### Runner-capable backend families
+### Explicit runner adapters
 
-This table describes the runner interface implemented by each backend family. Actual release availability is limited to the audited profiles in the embedded catalog.
+AIKit implements the following runner adapter behaviors. The embedded catalog decides which exact tuples may use them; the family names below describe the current assignments, not a general promise for every selector or platform.
 
-| Backend | Description |
-|---|---|
-| `llama-cpp` | GGUF models via llama.cpp (CPU or NVIDIA CUDA; ROCm is not runner-enabled in the current catalog) |
-| `diffusers` | HuggingFace diffusers models (requires NVIDIA CUDA) |
-| `vllm` | HuggingFace safetensors models via vLLM (requires NVIDIA CUDA) |
-| `vllm-cpp` | Direct HTTP(S) GGUF URLs or Hugging Face safetensors repositories via the experimental native engine (CPU, or CUDA 13 on amd64 Blackwell GPUs) |
+| `runnerProfile` | Current family assignment | Behavior |
+|---|---|---|
+| `llama-cpp` | `llama-cpp` | GGUF repositories or direct HTTP(S) GGUF files, with a runner-owned model cache. |
+| `hf-config` | `diffusers`, `vllm` | Generates a LocalAI config that lets the backend use its Hugging Face integration. |
+| `vllm-cpp` | `vllm-cpp` | Direct HTTP(S) GGUF files or Hugging Face safetensors repositories; pin a repository commit for reproducibility. |
+
+A family without a runner adapter can still be installed in standard mode when its exact catalog tuple is selectable, but it cannot enter runner mode until a frontend release explicitly assigns and implements a suitable `runnerProfile`.

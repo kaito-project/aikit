@@ -3,13 +3,13 @@ package inference
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/kaito-project/aikit/pkg/backendcatalog"
+	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
-
-const defaultBackendName = "llama-cpp"
 
 type backendMetadata struct {
 	Alias         string `json:"alias"`
@@ -26,16 +26,8 @@ type backendMetadata struct {
 
 // installBackends installs the exact primary and fallback artifacts from a resolved catalog entry.
 func installBackends(backend backendcatalog.Resolution, platform specs.Platform, s llb.State, merge llb.State) llb.State {
-	switch backend.DependencyProfile {
-	case backendcatalog.DependencyProfileDiffusers:
-		merge = installDiffusersDependencies(s, merge)
-	case backendcatalog.DependencyProfileVLLM:
-		merge = installVLLMDependencies(s, merge)
-	case backendcatalog.DependencyProfileNone:
-		// No dependency layer is required.
-	default:
-		panic(fmt.Sprintf("unsupported validated dependency profile %q", backend.DependencyProfile))
-	}
+	merge = installSystemPackages(backend.SystemPackages, s, merge)
+	merge = installRuntimeSymlinks(backend.RuntimeSymlinks, s, merge)
 
 	merge = installBackendArtifact(backend, backend.Backend, true, platform, s, merge)
 	for _, fallback := range backend.Fallbacks {
@@ -43,6 +35,44 @@ func installBackends(backend backendcatalog.Resolution, platform specs.Platform,
 	}
 
 	return merge
+}
+
+func installSystemPackages(packages []string, s llb.State, merge llb.State) llb.State {
+	if len(packages) == 0 {
+		return merge
+	}
+
+	savedState := s
+	command := "apt-get update && apt-get install --no-install-recommends -y " + strings.Join(packages, " ") +
+		" && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*"
+	s = s.Run(
+		utils.Sh(command),
+		llb.WithCustomName("Installing catalog system packages: "+strings.Join(packages, ", ")),
+		llb.IgnoreCache,
+	).Root()
+
+	diff := llb.Diff(savedState, s)
+	return llb.Merge([]llb.State{merge, diff})
+}
+
+func installRuntimeSymlinks(symlinks []backendcatalog.RuntimeSymlink, s llb.State, merge llb.State) llb.State {
+	if len(symlinks) == 0 {
+		return merge
+	}
+
+	savedState := s
+	var actions *llb.FileAction
+	for _, symlink := range symlinks {
+		if actions == nil {
+			actions = llb.Symlink(symlink.Target, symlink.Path)
+		} else {
+			actions = actions.Symlink(symlink.Target, symlink.Path)
+		}
+	}
+	s = s.File(actions, llb.WithCustomName("Creating catalog runtime compatibility symlinks"))
+
+	diff := llb.Diff(savedState, s)
+	return llb.Merge([]llb.State{merge, diff})
 }
 
 func installBackendArtifact(

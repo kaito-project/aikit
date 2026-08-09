@@ -2,11 +2,11 @@
 title: Diffusion
 ---
 
-AIKit supports [`diffusers`](#diffusers) backend.
+AIKit documents the [`diffusers`](#diffusers) catalog family for image generation.
 
 ## diffusers
 
-`diffusers` backend uses the huggingface [`diffusers`](https://huggingface.co/docs/diffusers/en/index) library to generate images. This backend only supports the NVIDIA CUDA runtime today; AMD ROCm is not supported.
+The `diffusers` backend uses the Hugging Face [`diffusers`](https://huggingface.co/docs/diffusers/en/index) library to generate images. The currently supported default and runner-enabled plan targets NVIDIA CUDA on Linux AMD64. A frontend release can also contain experimental `diffusers` plans for other selectors or runtimes in standard mode; catalog presence means AIKit can materialize that install plan, not that every model and device combination has been validated end to end. See [Backend catalog selection](specs-inference.md#backend-catalog-selection).
 
 ### Example
 

@@ -76,13 +76,13 @@ The `model` build argument is the model URL to download and use. You can use any
 
 #### `runtime`
 
-The `runtime` build argument adds the applicable runtimes to the image. By default, aikit will automatically choose the most optimized CPU runtime.
+The `runtime` build argument requests a runtime from the frontend's embedded backend catalog. By default, AIKit selects the catalog's CPU runtime and default backend family.
 
 You can use `cuda` to include NVIDIA CUDA runtime libraries. For example:
 
 `--build-arg="runtime=cuda"`.
 
-You can use `rocm` to include AMD ROCm runtime libraries for the `llama-cpp` backend on Linux AMD64. For example:
+You can use `rocm` to request an AMD ROCm catalog plan. This guide's ROCm example uses `llama-cpp` on Linux AMD64. For example:
 
 `--build-arg="runtime=rocm"`.
 
@@ -92,7 +92,7 @@ Or use `applesilicon` to include Apple Silicon runtime libraries. For example:
 
 ### Multi-Platform Support
 
-AIKit supports AMD64 and ARM64 multi-platform images. To build a multi-platform image, you can simply add `--platform linux/amd64,linux/arm64` to the build command. For example:
+AIKit can build AMD64 and ARM64 multi-platform images when the requested catalog tuple exists for every target. To request both platforms, add `--platform linux/amd64,linux/arm64` to the build command. For example:
 
 ```bash
 docker buildx build -t my-model --load \
@@ -104,7 +104,7 @@ docker buildx build -t my-model --load \
 [Pre-made models](https://kaito-project.github.io/aikit/docs/premade-models) are offered with multi-platform support. Docker runtime will automatically choose the correct platform to run the image. For more information, please see [multi-platform images documentation](https://docs.docker.com/build/building/multi-platform/).
 
 :::note
-Please note that ARM64 support only applies to the `llama.cpp` backend with CPU inference. NVIDIA CUDA and AMD ROCm are not supported on ARM64 at this time.
+The default CPU `llama-cpp` tuple supports both Linux AMD64 and ARM64. Other combinations are release-specific: for example, an embedded catalog can contain explicit NVIDIA L4T selectors for ARM64, while a default CUDA or ROCm request may not resolve on both architectures. AIKit preflights every requested platform and fails the whole request if any tuple is unavailable; it does not silently choose a different backend or selector.
 :::
 
 ## Advanced Usage
@@ -122,7 +122,7 @@ models:
 ```
 
 :::tip
-For full `aikitfile` inference specifications, see [Inference API Specifications](docs/specs-inference.md).
+For full `aikitfile` inference specifications, see [Inference API Specifications](specs-inference.md).
 :::
 
 Then build your image with:

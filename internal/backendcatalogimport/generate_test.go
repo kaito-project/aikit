@@ -42,7 +42,27 @@ func TestGenerateDeterministicCatalog(t *testing.T) {
 		t.Fatal("Generate() output is not deterministic")
 	}
 	if _, err := backendcatalog.Parse(firstJSON); err != nil {
-		t.Fatalf("generated output does not parse as pkg/backendcatalog v1: %v\n%s", err, firstJSON)
+		t.Fatalf("generated output does not parse as pkg/backendcatalog v2: %v\n%s", err, firstJSON)
+	}
+	if first.SchemaVersion != SchemaVersion {
+		t.Fatalf("schemaVersion = %q, want %q", first.SchemaVersion, SchemaVersion)
+	}
+	if first.Defaults.Family != defaultFamily {
+		t.Fatalf("defaults.family = %q, want %q", first.Defaults.Family, defaultFamily)
+	}
+	wantDefaults := []DefaultSelector{
+		{Runtime: runtimeApple, Selector: targetVulkan},
+		{Runtime: runtimeCPU, Selector: selectorDefault},
+		{Runtime: runtimeCUDA, Selector: selectorNVIDIA},
+		{Runtime: runtimeROCm, Selector: selectorAMD},
+	}
+	if len(first.Defaults.Selectors) != len(wantDefaults) {
+		t.Fatalf("defaults.selectors = %#v, want %#v", first.Defaults.Selectors, wantDefaults)
+	}
+	for index, want := range wantDefaults {
+		if first.Defaults.Selectors[index] != want {
+			t.Fatalf("defaults.selectors[%d] = %#v, want %#v", index, first.Defaults.Selectors[index], want)
+		}
 	}
 
 	if len(first.Entries) != 3 {
@@ -58,6 +78,12 @@ func TestGenerateDeterministicCatalog(t *testing.T) {
 	if amd64CPU.Core.Ref != "registry.example/core@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" {
 		t.Errorf("CPU core ref = %q", amd64CPU.Core.Ref)
 	}
+	if amd64CPU.RuntimeBase.Ref != "docker.io/library/ubuntu@"+fixtureUbuntuAMD64 {
+		t.Errorf("CPU runtime base ref = %q", amd64CPU.RuntimeBase.Ref)
+	}
+	if len(amd64CPU.SystemPackages) != 0 || len(amd64CPU.Environment) != 0 {
+		t.Errorf("CPU packages/environment = %v/%v, want empty", amd64CPU.SystemPackages, amd64CPU.Environment)
+	}
 	if got, want := strings.Join(amd64CPU.Workloads, ","), "cpu,llm,text-to-text"; got != want {
 		t.Errorf("workloads = %q, want %q", got, want)
 	}
@@ -71,16 +97,78 @@ func TestGenerateDeterministicCatalog(t *testing.T) {
 	if arm64CPU.Core.Ref != "registry.example/core@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" {
 		t.Errorf("arm64 core ref = %q", arm64CPU.Core.Ref)
 	}
+	if arm64CPU.RuntimeBase.Ref != "docker.io/library/ubuntu@"+fixtureUbuntuARM64 {
+		t.Errorf("arm64 runtime base ref = %q", arm64CPU.RuntimeBase.Ref)
+	}
 
 	nvidia := first.Entries[2]
-	if nvidia.Selector != selectorNVIDIA || nvidia.TargetProfile != targetCUDA12 || nvidia.MinimumCUDA != minimumCUDA12 {
-		t.Fatalf("NVIDIA policy = selector %q target %q minimumCUDA %q", nvidia.Selector, nvidia.TargetProfile, nvidia.MinimumCUDA)
+	if nvidia.Selector != selectorNVIDIA || nvidia.TargetProfile != targetCUDA12 {
+		t.Fatalf("NVIDIA policy = selector %q target %q", nvidia.Selector, nvidia.TargetProfile)
+	}
+	if nvidia.RuntimeBase.Ref != "docker.io/library/ubuntu@"+fixtureUbuntuAMD64 {
+		t.Errorf("NVIDIA runtime base ref = %q", nvidia.RuntimeBase.Ref)
+	}
+	if got, want := strings.Join(nvidia.Environment, ","), strings.Join(cudaEnvironment(minimumCUDA12), ","); got != want {
+		t.Errorf("NVIDIA environment = %q, want %q", got, want)
 	}
 	if len(nvidia.Fallbacks) != 1 || nvidia.Fallbacks[0] != amd64CPU.Backend {
 		t.Fatalf("NVIDIA fallbacks = %#v, want %#v", nvidia.Fallbacks, amd64CPU.Backend)
 	}
 	if strings.Contains(string(firstJSON), "development") || strings.Contains(string(firstJSON), "latest-") {
 		t.Fatalf("generated catalog contains development or mutable latest data:\n%s", firstJSON)
+	}
+}
+
+func TestRuntimeBaseResolutionFixtures(t *testing.T) {
+	resolver := newCachedResolver(readSnapshot(t, "testdata/resolutions.json"))
+	tests := []struct {
+		name      string
+		reference string
+		platform  Platform
+		want      string
+	}{
+		{
+			name:      "Ubuntu 24.04 amd64",
+			reference: ubuntuRuntimeBase,
+			platform:  Platform{OS: platformLinux, Architecture: architectureAMD64},
+			want:      "docker.io/library/ubuntu@" + fixtureUbuntuAMD64,
+		},
+		{
+			name:      "Ubuntu 24.04 arm64",
+			reference: ubuntuRuntimeBase,
+			platform:  Platform{OS: platformLinux, Architecture: architectureARM64},
+			want:      "docker.io/library/ubuntu@" + fixtureUbuntuARM64,
+		},
+		{
+			name:      "ROCm amd64",
+			reference: rocmRuntimeBase,
+			platform:  Platform{OS: platformLinux, Architecture: architectureAMD64},
+			want:      "docker.io/rocm/dev-ubuntu-24.04@" + fixtureROCmAMD64,
+		},
+		{
+			name:      fixtureVulkanARM64Name,
+			reference: vulkanRuntimeBase,
+			platform:  Platform{OS: platformLinux, Architecture: architectureARM64},
+			want:      "ghcr.io/kaito-project/aikit/applesilicon/base@" + fixtureVulkanARM64,
+		},
+		{
+			name:      "L4T arm64",
+			reference: l4tRuntimeBase,
+			platform:  Platform{OS: platformLinux, Architecture: architectureARM64},
+			want:      "nvcr.io/nvidia/l4t-jetpack@" + fixtureL4TARM64,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := resolvePlatformReference(context.Background(), resolver, test.reference, test.platform, false)
+			if err != nil {
+				t.Fatalf("resolvePlatformReference() error = %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("resolvePlatformReference() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
@@ -137,19 +225,63 @@ func TestVerifySourceRejectsWrongPinAndUnknownYAMLFields(t *testing.T) {
 
 func TestPolicyInferencePreservesAcceleratorSemantics(t *testing.T) {
 	tests := []struct {
-		name        string
-		selector    string
-		target      string
-		platform    Platform
-		wantRuntime string
-		wantTarget  string
-		wantCUDA    string
+		name            string
+		selector        string
+		target          string
+		platform        Platform
+		wantRuntime     string
+		wantTarget      string
+		wantRuntimeBase string
+		wantEnvironment []string
 	}{
-		{name: "Intel", selector: targetIntel, target: "intel-sycl-f16-demo", platform: Platform{OS: platformLinux, Architecture: architectureAMD64}, wantRuntime: runtimeCPU, wantTarget: targetIntel},
-		{name: "Metal", selector: "metal-darwin-arm64", target: "metal-demo", platform: Platform{OS: fixtureOSDarwin, Architecture: architectureARM64}, wantRuntime: runtimeApple, wantTarget: targetMetal},
-		{name: "Vulkan", selector: targetVulkan, target: "vulkan-demo", platform: Platform{OS: platformLinux, Architecture: architectureAMD64}, wantRuntime: runtimeApple, wantTarget: targetVulkan},
-		{name: "L4T CUDA 12", selector: "nvidia-l4t", target: "nvidia-l4t-arm64-demo", platform: Platform{OS: platformLinux, Architecture: architectureARM64}, wantRuntime: runtimeCUDA, wantTarget: targetL4TCUDA12, wantCUDA: minimumCUDA12},
-		{name: "L4T CUDA 13", selector: "nvidia-l4t-cuda-13", target: "cuda13-nvidia-l4t-arm64-demo", platform: Platform{OS: platformLinux, Architecture: architectureARM64}, wantRuntime: runtimeCUDA, wantTarget: targetL4TCUDA13, wantCUDA: minimumCUDA13},
+		{
+			name:            "Intel",
+			selector:        targetIntel,
+			target:          "intel-sycl-f16-demo",
+			platform:        Platform{OS: platformLinux, Architecture: architectureAMD64},
+			wantRuntime:     runtimeCPU,
+			wantTarget:      targetIntel,
+			wantRuntimeBase: ubuntuRuntimeBase,
+		},
+		{
+			name:            "Metal",
+			selector:        "metal-darwin-arm64",
+			target:          "metal-demo",
+			platform:        Platform{OS: fixtureOSDarwin, Architecture: architectureARM64},
+			wantRuntime:     runtimeApple,
+			wantTarget:      targetMetal,
+			wantRuntimeBase: vulkanRuntimeBase,
+			wantEnvironment: []string{vulkanEnvironment},
+		},
+		{
+			name:            "Vulkan",
+			selector:        targetVulkan,
+			target:          fixtureVulkanTarget,
+			platform:        Platform{OS: platformLinux, Architecture: architectureAMD64},
+			wantRuntime:     runtimeCPU,
+			wantTarget:      targetVulkan,
+			wantRuntimeBase: ubuntuRuntimeBase,
+		},
+		{
+			name:            "L4T CUDA 12",
+			selector:        selectorNVIDIAL4T,
+			target:          "nvidia-l4t-arm64-demo",
+			platform:        Platform{OS: platformLinux, Architecture: architectureARM64},
+			wantRuntime:     runtimeCUDA,
+			wantTarget:      targetL4TCUDA12,
+			wantRuntimeBase: l4tRuntimeBase,
+			wantEnvironment: l4tEnvironment(minimumCUDA12),
+		},
+		{
+			name:            "L4T CUDA 13",
+			selector:        selectorL4TCUDA13,
+			target:          "cuda13-nvidia-l4t-arm64-demo",
+			platform:        Platform{OS: platformLinux, Architecture: architectureARM64},
+			wantRuntime:     runtimeCUDA,
+			wantTarget:      targetL4TCUDA13,
+			wantRuntimeBase: l4tRuntimeBase,
+			wantEnvironment: l4tEnvironment(minimumCUDA13),
+		},
 	}
 
 	for _, test := range tests {
@@ -158,8 +290,9 @@ func TestPolicyInferencePreservesAcceleratorSemantics(t *testing.T) {
 			if err != nil {
 				t.Fatalf("policyFor() error = %v", err)
 			}
-			if policy.Runtime != test.wantRuntime || policy.TargetProfile != test.wantTarget || policy.MinimumCUDA != test.wantCUDA {
-				t.Fatalf("policyFor() = runtime %q target %q CUDA %q, want %q %q %q", policy.Runtime, policy.TargetProfile, policy.MinimumCUDA, test.wantRuntime, test.wantTarget, test.wantCUDA)
+			if policy.Runtime != test.wantRuntime || policy.TargetProfile != test.wantTarget || policy.RuntimeBaseRef != test.wantRuntimeBase ||
+				strings.Join(policy.Environment, "\x00") != strings.Join(test.wantEnvironment, "\x00") {
+				t.Fatalf("policyFor() = %#v, want runtime %q target %q runtime base %q environment %v", policy, test.wantRuntime, test.wantTarget, test.wantRuntimeBase, test.wantEnvironment)
 			}
 		})
 	}
@@ -227,6 +360,10 @@ func TestGenerateAcceptsMissingWorkloadsAndPlatformlessSpecializedCore(t *testin
 			Digest:   fixtureDigestA,
 			Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
 		}},
+		ubuntuRuntimeBase: {{
+			Digest:   fixtureUbuntuAMD64,
+			Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
+		}},
 		"registry.example/core:v4.8.2-amd64": {{
 			Digest: fixtureDigestB,
 		}},
@@ -276,6 +413,10 @@ func TestGenerateAppliesReviewedUnavailableSourcePolicyStrictly(t *testing.T) {
 	coreManifest := ResolvedManifest{
 		Digest: fixtureDigestB,
 	}
+	runtimeBaseManifest := ResolvedManifest{
+		Digest:   fixtureUbuntuAMD64,
+		Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
+	}
 	options := GenerateOptions{
 		Source:          fixturePin(source),
 		Version:         LocalAIVersion,
@@ -284,7 +425,7 @@ func TestGenerateAppliesReviewedUnavailableSourcePolicyStrictly(t *testing.T) {
 
 	t.Run("expected missing", func(t *testing.T) {
 		options.Resolver = scriptedResolver{
-			manifests: staticResolver{availableRef: {manifest}, coreRef: {coreManifest}},
+			manifests: staticResolver{availableRef: {manifest}, coreRef: {coreManifest}, ubuntuRuntimeBase: {runtimeBaseManifest}},
 			errors: map[string]error{
 				missingRef: &ResolutionError{Reference: missingRef, Class: resolutionErrorNotFound, Err: os.ErrNotExist},
 			},
@@ -300,9 +441,10 @@ func TestGenerateAppliesReviewedUnavailableSourcePolicyStrictly(t *testing.T) {
 
 	t.Run("stale policy resolved", func(t *testing.T) {
 		options.Resolver = scriptedResolver{manifests: staticResolver{
-			availableRef: {manifest},
-			missingRef:   {manifest},
-			coreRef:      {coreManifest},
+			availableRef:      {manifest},
+			missingRef:        {manifest},
+			coreRef:           {coreManifest},
+			ubuntuRuntimeBase: {runtimeBaseManifest},
 		}}
 		_, err := Generate(context.Background(), source, options)
 		if err == nil || !strings.Contains(err.Error(), "resolved successfully; remove stale exclusion policy") {
@@ -312,7 +454,7 @@ func TestGenerateAppliesReviewedUnavailableSourcePolicyStrictly(t *testing.T) {
 
 	t.Run("unexpected error class", func(t *testing.T) {
 		options.Resolver = scriptedResolver{
-			manifests: staticResolver{availableRef: {manifest}, coreRef: {coreManifest}},
+			manifests: staticResolver{availableRef: {manifest}, coreRef: {coreManifest}, ubuntuRuntimeBase: {runtimeBaseManifest}},
 			errors:    map[string]error{missingRef: os.ErrPermission},
 		}
 		_, err := Generate(context.Background(), source, options)
@@ -352,6 +494,10 @@ func TestGenerateExcludesNonLinuxManifests(t *testing.T) {
 			Digest:   fixtureDigestA,
 			Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
 		}},
+		ubuntuRuntimeBase: {{
+			Digest:   fixtureUbuntuAMD64,
+			Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
+		}},
 		"registry.example/repo:v4.8.2-metal-darwin-arm64-demo": {{
 			Digest:   fixtureDigestB,
 			Platform: Platform{OS: "darwin", Architecture: architectureARM64},
@@ -386,8 +532,11 @@ func TestEntryEligibilityMatchesAIKitRuntimePlatforms(t *testing.T) {
 		{name: "CPU arm64", platform: Platform{OS: platformLinux, Architecture: architectureARM64}, runtime: runtimeCPU, targetProfile: runtimeCPU, want: true},
 		{name: "non-Linux", platform: Platform{OS: fixtureOSDarwin, Architecture: architectureARM64}, runtime: runtimeApple, targetProfile: targetMetal},
 		{name: "unsupported architecture", platform: Platform{OS: platformLinux, Architecture: "ppc64le"}, runtime: runtimeCPU, targetProfile: runtimeCPU},
-		{name: "Apple Silicon amd64", platform: Platform{OS: platformLinux, Architecture: architectureAMD64}, runtime: runtimeApple, targetProfile: targetVulkan},
-		{name: "Apple Silicon arm64", platform: Platform{OS: platformLinux, Architecture: architectureARM64}, runtime: runtimeApple, targetProfile: targetVulkan, want: true},
+		{name: "Vulkan amd64", platform: Platform{OS: platformLinux, Architecture: architectureAMD64}, runtime: runtimeCPU, targetProfile: targetVulkan, want: true},
+		{name: fixtureVulkanARM64Name, platform: Platform{OS: platformLinux, Architecture: architectureARM64}, runtime: runtimeApple, targetProfile: targetVulkan, want: true},
+		{name: "Vulkan amd64 mislabeled Apple Silicon", platform: Platform{OS: platformLinux, Architecture: architectureAMD64}, runtime: runtimeApple, targetProfile: targetVulkan},
+		{name: "Vulkan arm64 mislabeled CPU", platform: Platform{OS: platformLinux, Architecture: architectureARM64}, runtime: runtimeCPU, targetProfile: targetVulkan},
+		{name: "Metal mislabeled CPU", platform: Platform{OS: platformLinux, Architecture: architectureARM64}, runtime: runtimeCPU, targetProfile: targetMetal},
 		{name: "ROCm amd64", platform: Platform{OS: platformLinux, Architecture: architectureAMD64}, runtime: runtimeROCm, targetProfile: targetROCm, want: true},
 		{name: "ROCm arm64", platform: Platform{OS: platformLinux, Architecture: architectureARM64}, runtime: runtimeROCm, targetProfile: targetROCm},
 		{name: "L4T amd64", platform: Platform{OS: platformLinux, Architecture: architectureAMD64}, runtime: runtimeCUDA, targetProfile: targetL4TCUDA12},

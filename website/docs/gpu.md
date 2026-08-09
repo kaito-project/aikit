@@ -4,6 +4,8 @@ title: GPU Acceleration
 
 :::note
 AIKit supports NVIDIA GPU acceleration, AMD GPU acceleration via ROCm, and experimental support for Apple Silicon. Please open an issue if you'd like to see support for other GPU vendors.
+
+The examples on this page describe documented paths, not a hardcoded backend matrix. The catalog embedded in the selected frontend release is authoritative for each backend family, selector, runtime, and platform tuple. A selectable experimental tuple can be installed in a standard model image without implying end-to-end validation or runner support. See [Backend catalog selection](specs-inference.md#backend-catalog-selection).
 :::
 
 ## NVIDIA
@@ -59,7 +61,7 @@ https://www.youtube.com/watch?v=yFh_Zfk34PE
 
 ### vLLM Backend
 
-AIKit supports the [vLLM](https://docs.vllm.ai/) backend for high-throughput GPU inference with HuggingFace safetensors models. vLLM requires NVIDIA CUDA runtime and only supports amd64 architecture.
+This guide uses the supported default [vLLM](https://docs.vllm.ai/) catalog plan for high-throughput NVIDIA CUDA inference with Hugging Face safetensors models on Linux AMD64. A frontend release can contain experimental vLLM plans for other selectors, runtimes, or platforms in standard mode; their presence is not a promise of end-to-end workload compatibility.
 
 Example aikitfile:
 
@@ -78,7 +80,7 @@ config: |
     use_tokenizer_template: true
 ```
 
-vLLM will download the model from HuggingFace at container startup. You can also embed models at build time using the `models` section with a `huggingface://` source.
+Because this example explicitly sets `backends` and has no `models`, it requests runner mode. It succeeds only when the resolved tuple has the `hf-config` runner profile, and vLLM downloads the model from Hugging Face at container startup. You can instead embed models at build time using the `models` section with a `huggingface://` source.
 
 After building, run with GPU support:
 
@@ -96,16 +98,17 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 ## AMD GPU (ROCm - Experimental)
 
-AIKit supports AMD GPU acceleration using [ROCm 7.2](https://rocm.docs.amd.com/en/latest/). This implementation leverages LocalAI's `hipblas` backend for ROCm acceleration.
+This guide uses AIKit's experimental `llama-cpp` plan with [ROCm 7.2](https://rocm.docs.amd.com/en/latest/) on Linux AMD64. The selected LocalAI backend uses HIP for ROCm acceleration.
 
-**Supported AMD GPUs:**
+**Common ROCm hardware targets (verify against the selected backend artifact):**
+
 - **AMD Instinct** - MI250, MI300 series (gfx90a, gfx940, gfx941, gfx942)
 - **AMD Radeon RX 7000 series (RDNA3)** - gfx1100, gfx1101
 - **AMD Radeon RX 6000 series (RDNA2)** - gfx1030, gfx1031
 - **AMD Ryzen AI Max+ (Strix Halo)** - gfx1151
 - Other architectures listed in the [ROCm compatibility matrix](https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html)
 
-Currently, only the `llama-cpp` backend supports ROCm acceleration.
+The catalog can expose additional ROCm families as experimental standard-build plans. They are not covered by this guide and are not runner-enabled unless their exact entries name a runner profile.
 
 ### Prerequisites
 
@@ -127,7 +130,7 @@ To enable ROCm GPU acceleration, set the following in your `aikitfile`:
 ```yaml
 runtime: rocm         # use AMD ROCm runtime
 backends:
-  - llama-cpp        # only llama-cpp backend supports ROCm
+  - llama-cpp        # select the family documented by this guide
 ```
 
 For the `llama-cpp` backend, configure GPU acceleration in your `config`:
@@ -145,7 +148,7 @@ Setting `gpu_layers: 99` with `mmap: true` works well for small models (1-3B) wh
 :::
 
 :::note
-AIKit automatically configures ROCm runtime environment variables during the image build. The ROCm backend is pre-compiled with support for common GPU architectures, so no runtime recompilation is needed.
+AIKit applies the environment and precompiled backend artifact declared by the resolved ROCm catalog plan, so no runtime recompilation is performed. The catalog identifies the OCI artifact but does not enumerate or validate every GPU architecture compiled into it; verify device support against ROCm and the selected LocalAI backend.
 
 For GPUs that require `HSA_OVERRIDE_GFX_VERSION` or other device-specific environment variables, pass them at container runtime with `docker run -e`.
 :::
@@ -272,7 +275,7 @@ To get started with Apple Silicon GPU-accelerated inferencing, make sure to set 
 runtime: applesilicon         # use Apple Silicon runtime
 ```
 
-Please note that only the default `llama.cpp` backend with `gguf` models are supported for Apple Silicon.
+This guide and the published Apple Silicon model images use the default `llama-cpp` Vulkan plan with GGUF models. A frontend release can contain other experimental Apple Silicon tuples for standard builds; catalog presence does not promise a published image or a validated end-to-end workflow, and runner mode still requires an explicit runner profile.
 
 After building the model, you can run it with:
 

@@ -2,7 +2,6 @@ package inference
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
@@ -74,98 +73,79 @@ func TestNewImageConfigEntrypoint(t *testing.T) {
 	}
 }
 
-func TestNewImageConfigEnvironment(t *testing.T) {
+func TestNewImageConfigEnvironmentUsesCatalogPlan(t *testing.T) {
 	platform := &specs.Platform{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux}
 	defaultEnv := []string{
 		"PATH=" + system.DefaultPathEnv(utils.PlatformLinux),
 		"CONFIG_FILE=/config.yaml",
 	}
-	nvidiaEnv := []string{
-		"NVIDIA_REQUIRE_CUDA=cuda>=12.0",
-		nvidiaCapabilitiesEnv,
-		nvidiaVisibleDevicesEnv,
-		nvidiaBuildTypeEnv,
-	}
-	vllmCppNVIDIAEnv := []string{
-		"NVIDIA_REQUIRE_CUDA=cuda>=13.0",
-		nvidiaCapabilitiesEnv,
-		nvidiaVisibleDevicesEnv,
-		nvidiaBuildTypeEnv,
-	}
+	catalogEnv := []string{"ARBITRARY_ACCELERATOR=enabled", "ARBITRARY_CACHE=/var/cache/arbitrary"}
 
 	tests := []struct {
-		name    string
-		config  *config.InferenceConfig
-		wantEnv []string
+		name        string
+		config      *config.InferenceConfig
+		environment []string
+		wantEnv     []string
 	}{
 		{
-			name: "standard NVIDIA image uses only runtime interface variables",
-			config: &config.InferenceConfig{
-				Runtime: utils.RuntimeNVIDIA,
-				Models:  []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
-			},
-			wantEnv: append(append([]string{}, defaultEnv...), nvidiaEnv...),
-		},
-		{
-			name: "runner adds Hugging Face cache on models volume",
-			config: &config.InferenceConfig{
-				Runtime:  utils.RuntimeNVIDIA,
-				Backends: []string{utils.BackendVLLM},
-			},
-			wantEnv: append(append(append([]string{}, defaultEnv...), nvidiaEnv...), runnerHFHomeEnv),
-		},
-		{
-			name: "vllm-cpp NVIDIA image requires CUDA 13",
-			config: &config.InferenceConfig{
-				Runtime:  utils.RuntimeNVIDIA,
-				Backends: []string{utils.BackendVLLMCpp},
-				Models:   []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
-			},
-			wantEnv: append(append([]string{}, defaultEnv...), vllmCppNVIDIAEnv...),
-		},
-		{
-			name: "standard CPU image does not add runner cache",
+			name: "standard image uses catalog environment",
 			config: &config.InferenceConfig{
 				Models: []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
 			},
-			wantEnv: append([]string{}, defaultEnv...),
+			environment: catalogEnv,
+			wantEnv:     append(append([]string{}, defaultEnv...), catalogEnv...),
 		},
 		{
-			name: "standard image loads configured models at startup",
+			name: "runner appends Hugging Face cache after catalog environment",
+			config: &config.InferenceConfig{
+				Backends: []string{testArbitraryFamily},
+			},
+			environment: catalogEnv,
+			wantEnv:     append(append(append([]string{}, defaultEnv...), catalogEnv...), runnerHFHomeEnv),
+		},
+		{
+			name: "standard image with empty plan environment",
+			config: &config.InferenceConfig{
+				Models: []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
+			},
+			wantEnv: defaultEnv,
+		},
+		{
+			name: "load-to-memory precedes catalog environment",
 			config: &config.InferenceConfig{
 				Models:       []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
 				LoadToMemory: []string{"chat", "embeddings"},
 			},
-			wantEnv: append(append([]string{}, defaultEnv...), localAILoadToMemoryEnv+"chat,embeddings"),
+			environment: catalogEnv,
+			wantEnv: append(
+				append(append([]string{}, defaultEnv...), localAILoadToMemoryEnv+"chat,embeddings"),
+				catalogEnv...,
+			),
 		},
 		{
-			name: "CPU runner adds Hugging Face cache on models volume",
+			name: "runner retains load-to-memory and catalog environment",
 			config: &config.InferenceConfig{
-				Backends: []string{utils.BackendLlamaCpp},
-			},
-			wantEnv: append(append([]string{}, defaultEnv...), runnerHFHomeEnv),
-		},
-		{
-			name: "runner loads configured model at startup",
-			config: &config.InferenceConfig{
-				Backends:     []string{utils.BackendLlamaCpp},
+				Backends:     []string{testArbitraryFamily},
 				LoadToMemory: []string{imageTestLoadToMemoryModel},
 			},
-			wantEnv: append(append(append([]string{}, defaultEnv...), localAILoadToMemoryEnv+imageTestLoadToMemoryModel), runnerHFHomeEnv),
+			environment: catalogEnv,
+			wantEnv: append(
+				append(
+					append(append([]string{}, defaultEnv...), localAILoadToMemoryEnv+imageTestLoadToMemoryModel),
+					catalogEnv...,
+				),
+				runnerHFHomeEnv,
+			),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			img := NewImageConfig(tt.config, platform)
+			backend := testArbitraryBackendPlan(*platform)
+			backend.Environment = tt.environment
+			img := NewImageConfigWithBackend(tt.config, backend, platform)
 			if !reflect.DeepEqual(img.Config.Env, tt.wantEnv) {
 				t.Errorf("environment = %v, want %v", img.Config.Env, tt.wantEnv)
-			}
-
-			for _, env := range img.Config.Env {
-				if strings.Contains(env, "/usr/local/cuda") || strings.HasPrefix(env, "CUDA_HOME=") {
-					t.Errorf("environment should not assume a system CUDA installation: %q", env)
-				}
 			}
 		})
 	}

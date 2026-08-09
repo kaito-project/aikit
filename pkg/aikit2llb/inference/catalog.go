@@ -5,7 +5,6 @@ import (
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	"github.com/kaito-project/aikit/pkg/backendcatalog"
-	"github.com/kaito-project/aikit/pkg/utils"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 )
@@ -35,19 +34,21 @@ func ResolveBackendWithResolver(c *config.InferenceConfig, platform specs.Platfo
 		return backendcatalog.Resolution{}, errors.New("backend catalog resolver is nil")
 	}
 
-	family := defaultBackendName
+	family := ""
 	if len(c.Backends) > 0 {
 		family = c.Backends[0]
 	}
 
 	selector := backendcatalog.Selector(c.BackendCapability)
-	if selector == "" {
-		selector = defaultSelectorForRuntime(c.Runtime)
+	runtime := backendcatalog.Runtime(c.Runtime)
+	if runtime == "" {
+		runtime = backendcatalog.RuntimeCPU
 	}
 
 	resolution, err := resolver.Resolve(backendcatalog.Request{
 		Family:   family,
 		Selector: selector,
+		Runtime:  runtime,
 		Platform: backendcatalog.Platform{
 			OS:           platform.OS,
 			Architecture: platform.Architecture,
@@ -65,24 +66,11 @@ func ResolveBackendWithResolver(c *config.InferenceConfig, platform specs.Platfo
 		)
 	}
 
-	expectedRuntime, err := catalogRuntime(c.Runtime)
-	if err != nil {
-		return backendcatalog.Resolution{}, err
-	}
-	if resolution.Runtime != expectedRuntime {
-		return backendcatalog.Resolution{}, errors.Errorf(
-			"backend %q selector %q requires runtime %q, but aikitfile runtime is %q",
-			family,
-			selector,
-			resolution.Runtime,
-			c.Runtime,
-		)
-	}
 	if isRunnerMode(c) && resolution.RunnerProfile == backendcatalog.RunnerProfileUnsupported {
 		return backendcatalog.Resolution{}, errors.Errorf(
 			"backend %q selector %q does not have an audited runner profile for %s/%s",
-			family,
-			selector,
+			resolution.Family,
+			resolution.Selector,
 			platform.OS,
 			platform.Architecture,
 		)
@@ -106,32 +94,4 @@ func getDefaultResolver() (*backendcatalog.Resolver, error) {
 	})
 
 	return defaultResolver, defaultResolverErr
-}
-
-func defaultSelectorForRuntime(runtime string) backendcatalog.Selector {
-	switch runtime {
-	case utils.RuntimeNVIDIA:
-		return backendcatalog.SelectorNVIDIA
-	case utils.RuntimeROCm:
-		return backendcatalog.SelectorAMD
-	case utils.RuntimeAppleSilicon:
-		return backendcatalog.SelectorVulkan
-	default:
-		return backendcatalog.SelectorDefault
-	}
-}
-
-func catalogRuntime(runtime string) (backendcatalog.Runtime, error) {
-	switch runtime {
-	case "":
-		return backendcatalog.RuntimeCPU, nil
-	case utils.RuntimeNVIDIA:
-		return backendcatalog.RuntimeCUDA, nil
-	case utils.RuntimeROCm:
-		return backendcatalog.RuntimeROCm, nil
-	case utils.RuntimeAppleSilicon:
-		return backendcatalog.RuntimeAppleSilicon, nil
-	default:
-		return "", errors.Errorf("runtime %q is not supported", runtime)
-	}
 }

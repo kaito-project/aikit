@@ -21,8 +21,10 @@ const (
 	runnerLlamaCppModelMarker   = "/models/.aikit-llama-cpp-model-ref"
 	runnerVLLMCppModelDir       = "/models/vllm-cpp-model"
 	runnerVLLMCppModelMarker    = "/models/.aikit-vllm-cpp-model-ref"
-	runnerDependenciesCommand   = "sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g; " +
-		"s|http://security.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list && " +
+	runnerDependenciesCommand   = "if [ -f /etc/apt/sources.list ]; then sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g; " +
+		"s|http://security.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list; fi && " +
+		"if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g; " +
+		"s|http://security.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources; fi && " +
 		"apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update && " +
 		"apt-get install --no-install-recommends -y curl ca-certificates python3 python3-pip && " +
 		"(pip install --no-cache-dir --no-compile --break-system-packages huggingface-hub==" + runnerHuggingFaceHubVersion + " 2>/dev/null || " +
@@ -34,16 +36,6 @@ const (
 // indicating a "runner" image that resolves models at runtime.
 func isRunnerMode(c *config.InferenceConfig) bool {
 	return len(c.Backends) > 0 && len(c.Models) == 0
-}
-
-// installRunnerDependencies installs packages needed for runtime model downloading.
-func installRunnerDependencies(c *config.InferenceConfig, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State) {
-	backend, err := ResolveBackend(c, platform)
-	if err != nil {
-		panic("resolving backend for runner dependencies: " + err.Error())
-	}
-
-	return installRunnerDependenciesWithBackend(backend, s, merge, platform)
 }
 
 func installRunnerDependenciesWithBackend(backend backendcatalog.Resolution, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State) {
@@ -105,12 +97,20 @@ func generateRunnerScript(c *config.InferenceConfig) string {
 
 func generateRunnerScriptWithBackend(c *config.InferenceConfig, backend backendcatalog.Resolution) string {
 	backendName := backend.Family
+	configDirectory := runnerConfigDir
+	switch backend.RunnerProfile {
+	case backendcatalog.RunnerProfileLlamaCpp:
+		configDirectory = runnerLlamaCppModelDir
+	case backendcatalog.RunnerProfileVLLMCpp:
+		configDirectory = runnerVLLMCppModelDir
+	}
 
 	var sb strings.Builder
 	sb.WriteString(`#!/bin/bash
 set -euo pipefail
 
 BACKEND="` + backendName + `"
+RUNNER_PROFILE="` + string(backend.RunnerProfile) + `"
 
 # Parse arguments: accept model as positional arg or --model flag
 MODEL=""
@@ -154,7 +154,7 @@ if [[ -z "$MODEL" ]]; then
   echo "Usage: docker run <image> <model-ref>"
   echo ""
   echo "Examples:"
-  if [[ "$BACKEND" == "vllm-cpp" ]]; then
+  if [[ "$RUNNER_PROFILE" == "vllm-cpp" ]]; then
     echo "  docker run -p 8080:8080 <image> org/safetensors-model@0123456789abcdef0123456789abcdef01234567"
     echo "  docker run -p 8080:8080 <image> https://example.com/model.gguf"
     echo "  docker run -p 8080:8080 <image> --model org/safetensors-model"
@@ -172,15 +172,7 @@ fi
 # Keep generated configs and payloads inside backend-owned directories. Native
 # backends scan their cache directory because LocalAI requires model paths to be
 # relative to --models-path; other backends use the config-only directory.
-RUNNER_CONFIG_DIR="` + runnerConfigDir + `"
-case "$BACKEND" in
-  llama-cpp)
-    RUNNER_CONFIG_DIR="` + runnerLlamaCppModelDir + `"
-    ;;
-  vllm-cpp)
-    RUNNER_CONFIG_DIR="` + runnerVLLMCppModelDir + `"
-    ;;
-esac
+RUNNER_CONFIG_DIR="` + configDirectory + `"
 RUNNER_CONFIG="$RUNNER_CONFIG_DIR/` + runnerConfigFilename + `"
 
 # Strip URI scheme prefixes (e.g. huggingface://org/repo -> org/repo)

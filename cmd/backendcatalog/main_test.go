@@ -47,8 +47,41 @@ func TestRunWritesAndChecksCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read generated catalog: %v", err)
 	}
-	if _, err := backendcatalog.Parse(generated); err != nil {
+	catalog, err := backendcatalog.Parse(generated)
+	if err != nil {
 		t.Fatalf("generated catalog is invalid: %v", err)
+	}
+	if catalog.SchemaVersion != "v2" {
+		t.Fatalf("schemaVersion = %q, want v2", catalog.SchemaVersion)
+	}
+	if catalog.Defaults.Family != "llama-cpp" || len(catalog.Defaults.Selectors) != 4 {
+		t.Fatalf("defaults = %#v, want llama-cpp and four runtime selectors", catalog.Defaults)
+	}
+	if len(catalog.Entries) != 3 {
+		t.Fatalf("entry count = %d, want 3", len(catalog.Entries))
+	}
+	var foundNVIDIA bool
+	for _, entry := range catalog.Entries {
+		if !strings.Contains(entry.RuntimeBase.Ref, "@sha256:") {
+			t.Errorf("runtimeBase.ref = %q, want immutable digest reference", entry.RuntimeBase.Ref)
+		}
+		if len(entry.SystemPackages) != 0 {
+			t.Errorf("systemPackages for %s/%s = %v, want empty", entry.Family, entry.Selector, entry.SystemPackages)
+		}
+		if entry.Selector == backendcatalog.SelectorNVIDIA {
+			foundNVIDIA = true
+			if got, want := strings.Join(entry.Environment, ","), "BUILD_TYPE=cublas,NVIDIA_DRIVER_CAPABILITIES=compute,utility,NVIDIA_REQUIRE_CUDA=cuda>=12.0,NVIDIA_VISIBLE_DEVICES=all"; got != want {
+				t.Errorf("NVIDIA environment = %q, want %q", got, want)
+			}
+		}
+	}
+	if !foundNVIDIA {
+		t.Fatal("generated catalog has no NVIDIA entry")
+	}
+	for _, legacyField := range [][]byte{[]byte(`"dependencyProfile"`), []byte(`"base"`), []byte(`"selfContained"`), []byte(`"minimumCUDA"`)} {
+		if bytes.Contains(generated, legacyField) {
+			t.Errorf("generated v2 catalog contains legacy field %s", legacyField)
+		}
 	}
 
 	if err := run(context.Background(), append(arguments, "--check"), config); err != nil {

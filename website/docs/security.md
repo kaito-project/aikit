@@ -34,13 +34,13 @@ This command will output a JSON file containing the build provenance details, in
 
 ## Backend catalog trust
 
-AIKit selects LocalAI core and backend artifacts through a generated catalog lock embedded in the frontend image. Catalog-managed artifact references are pinned by OCI digest, so a mutable upstream tag cannot change the bytes selected by an already published frontend.
+Every inference build first resolves a plan from a generated catalog lock embedded in the frontend image. In standard mode, that plan supplies the runtime base, LocalAI core, backend artifacts, system-package names, compatibility symlinks, and runtime environment; runner mode uses the same plan but additionally requires the entry's explicit `runnerProfile` adapter. The runtime base, core, primary backend, and any companion backend references are pinned by OCI digest, so a mutable upstream tag cannot change the OCI manifests selected by an already published frontend.
 
-Catalog generation verifies the pinned LocalAI source file against its recorded commit and SHA-256 digest, resolves backend and core images to platform-specific OCI digests, and validates every declared compatibility tuple before replacing the embedded lock. Entries are then marked `supported`, `experimental`, `quarantined`, or `deprecated`; quarantined and deprecated entries are not selectable.
+Catalog generation requires a full upstream LocalAI commit and an expected SHA-256 for `backend/index.yaml`, rejects source bytes whose digest differs, resolves the runtime base, core, and backend references to platform-specific OCI digests, and validates every declared tuple before replacing the lock. The recorded commit and digest are reviewed promotion inputs; the generator does not fetch the commit to independently prove that relationship. Entries are marked `supported`, `experimental`, `quarantined`, or `deprecated`; quarantined and deprecated entries are not selectable.
 
-The current promotion path does not independently verify upstream backend signatures or the checksum of the mirrored LocalAI binary. Digest pinning prevents tag movement after a frontend is published, but it does not establish the original artifact's provenance. Treat the signed frontend and its reviewed lock as the current trust boundary rather than assuming transitive verification of every upstream artifact.
+The current promotion path does not independently verify upstream OCI signatures or attestations, or the payload checksum of the mirrored LocalAI binary. Digest pinning prevents tag movement after a frontend is published, but it does not establish who produced the original artifact. Treat the signed frontend and its reviewed lock as the current trust boundary rather than assuming transitive provenance verification for every upstream artifact.
 
-Model builds read the embedded snapshot and fetch artifact content by digest when it is not already cached. They do not download mutable catalog metadata, resolve a catalog channel, or silently replace a rejected selection with another backend or runtime. Updating the catalog therefore requires a newly promoted and signed frontend release.
+Builds read the embedded snapshot and fetch catalog-managed OCI content by digest when it is not already cached. They do not download mutable catalog metadata, resolve a catalog channel, or silently replace a rejected selection with another family, selector, runtime, or platform. Updating the catalog therefore requires a newly promoted and signed frontend release.
 
 The signed frontend image is the trust boundary for its embedded catalog. For reproducible or policy-controlled builds, pin the frontend by digest in the syntax directive and verify that digest's signature:
 
@@ -48,7 +48,7 @@ The signed frontend image is the trust boundary for its embedded catalog. For re
 #syntax=ghcr.io/kaito-project/aikit/aikit@sha256:<frontend-digest>
 ```
 
-This lock covers catalog-managed LocalAI artifacts. Model files, base images, and other user-selected inputs retain their own pinning and verification requirements; use immutable revisions and checksums where AIKit supports them.
+Pinning the frontend freezes the catalog plan, but does not by itself make the complete build hermetic. Catalog `systemPackages` are package names, not package-file digests or version locks; `apt` resolves them from the selected runtime base's configured repositories at build time. Runner-only OS and Python dependencies are also installed from their package repositories. Model sources and other user-selected inputs retain their own pinning and verification requirements. Use immutable model revisions and checksums where AIKit supports them, and control or snapshot package repositories when byte-for-byte reproducibility is required.
 
 ## Vulnerability Patching
 

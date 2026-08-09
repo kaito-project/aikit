@@ -49,7 +49,7 @@ Please see [models folder](https://github.com/kaito-project/aikit/tree/main/mode
 
 If not being offloaded to GPU VRAM, minimum of 8GB of RAM is required for 7B models, 16GB of RAM to run 13B models, and 32GB of RAM to run 8x7B models.
 
-The published model images in the NVIDIA CUDA section above include CUDA v12 libraries. If a supported NVIDIA GPU is not found in your system, AIKit will automatically fallback to CPU with the most optimized runtime (`avx2`, `avx`, or `fallback`).
+The published model images in the NVIDIA CUDA section above use a CUDA 12 catalog plan that deliberately includes a digest-pinned CPU companion backend. When no compatible NVIDIA GPU is available, LocalAI can use that installed CPU backend. This is runtime behavior inside the selected CUDA plan, not catalog resolution silently changing to a CPU tuple.
 :::
 
 ## AMD ROCm (experimental)
@@ -59,7 +59,7 @@ Published pre-made model images are currently CUDA-based, so ROCm-accelerated im
 
 To use AMD GPUs, create your own `llama-cpp` image with `runtime: rocm`, then run it with the ROCm device flags described in [GPU Acceleration](gpu.md). See [Creating Model Images](./create-images.md) for build examples.
 
-ROCm support currently applies to `llama-cpp` on `linux/amd64`.
+The documented ROCm image path uses `llama-cpp` on `linux/amd64`. Other experimental ROCm tuples can appear in a frontend's catalog for standard builds; consult that release's lock before relying on one.
 :::
 
 ## Apple Silicon (experimental)
@@ -69,7 +69,7 @@ To enable GPU acceleration on Apple Silicon, please see [Podman Desktop document
 
 Apple Silicon is an _experimental_ runtime and it may change in the future. This runtime is specific to Apple Silicon only, and it will not work as expected on other architectures, including Intel Macs.
 
-Only `gguf` models are supported on Apple Silicon.
+The published Apple Silicon images use the experimental `llama-cpp` Vulkan plan with GGUF models. Other experimental catalog tuples, if present, are not a promise that a published image or end-to-end model workflow is available.
 :::
 
 | Model       | Optimization | Parameters | Command                                                                                                  | Model Name              | License                                                            |

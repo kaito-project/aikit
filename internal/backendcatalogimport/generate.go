@@ -104,29 +104,33 @@ func Generate(ctx context.Context, source []byte, options GenerateOptions) (Cata
 				if !entryEligibleForAIKit(manifest.Platform, policy.Runtime, policy.TargetProfile) {
 					continue
 				}
+				runtimeBaseRef, err := resolvePlatformReference(ctx, resolver, policy.RuntimeBaseRef, manifest.Platform, false)
+				if err != nil {
+					return Catalog{}, errors.Wrapf(err, "resolve runtime base for %s", manifest.Platform.key())
+				}
 				coreRef, err := resolveCore(ctx, resolver, options.CoreRefTemplate, manifest.Platform)
 				if err != nil {
 					return Catalog{}, errors.Wrapf(err, "resolve LocalAI core for %s", manifest.Platform.key())
 				}
 				entry := Entry{
-					Family:            family,
-					Selector:          selector,
-					Platform:          manifest.Platform,
-					Runtime:           policy.Runtime,
-					TargetProfile:     policy.TargetProfile,
-					Status:            policy.Status,
-					Channel:           "stable",
-					Core:              Artifact{Ref: coreRef},
-					Backend:           BackendArtifact{Ref: immutableReference(sourceRef, manifest.Digest), InstallName: targetName},
-					Fallbacks:         []BackendArtifact{},
-					Version:           options.Version,
-					SourceRef:         sourceRef,
-					DependencyProfile: policy.DependencyProfile,
-					RunnerProfile:     policy.RunnerProfile,
-					Base:              policy.Base,
-					SelfContained:     policy.SelfContained,
-					MinimumCUDA:       policy.MinimumCUDA,
-					Workloads:         normalizeWorkloads(selectorEntry.Tags),
+					Family:          family,
+					Selector:        selector,
+					Platform:        manifest.Platform,
+					Runtime:         policy.Runtime,
+					TargetProfile:   policy.TargetProfile,
+					Status:          policy.Status,
+					Channel:         "stable",
+					RuntimeBase:     Artifact{Ref: runtimeBaseRef},
+					Core:            Artifact{Ref: coreRef},
+					Backend:         BackendArtifact{Ref: immutableReference(sourceRef, manifest.Digest), InstallName: targetName},
+					Fallbacks:       []BackendArtifact{},
+					Version:         options.Version,
+					SourceRef:       sourceRef,
+					SystemPackages:  append([]string(nil), policy.SystemPackages...),
+					RuntimeSymlinks: append([]RuntimeSymlink(nil), policy.RuntimeSymlinks...),
+					Environment:     append([]string(nil), policy.Environment...),
+					RunnerProfile:   policy.RunnerProfile,
+					Workloads:       normalizeWorkloads(selectorEntry.Tags),
 				}
 				encoded, err := json.Marshal(entry)
 				if err != nil {
@@ -173,7 +177,20 @@ func Generate(ctx context.Context, source []byte, options GenerateOptions) (Cata
 	}
 	sortEntries(entries)
 
-	return Catalog{SchemaVersion: SchemaVersion, Source: options.Source, Entries: entries}, nil
+	return Catalog{
+		SchemaVersion: SchemaVersion,
+		Source:        options.Source,
+		Defaults: Defaults{
+			Family: defaultFamily,
+			Selectors: []DefaultSelector{
+				{Runtime: runtimeApple, Selector: targetVulkan},
+				{Runtime: runtimeCPU, Selector: selectorDefault},
+				{Runtime: runtimeCUDA, Selector: selectorNVIDIA},
+				{Runtime: runtimeROCm, Selector: selectorAMD},
+			},
+		},
+		Entries: entries,
+	}, nil
 }
 
 // Marshal returns canonical, indented JSON with a final newline.
@@ -220,6 +237,10 @@ func resolveCore(ctx context.Context, resolver *cachedResolver, template string,
 	if err != nil {
 		return "", err
 	}
+	return resolvePlatformReference(ctx, resolver, reference, platform, specialized)
+}
+
+func resolvePlatformReference(ctx context.Context, resolver *cachedResolver, reference string, platform Platform, allowPlatformless bool) (string, error) {
 	manifests, err := resolver.resolve(ctx, reference)
 	if err != nil {
 		return "", err
@@ -230,7 +251,7 @@ func resolveCore(ctx context.Context, resolver *cachedResolver, template string,
 			return immutableReference(reference, manifest.Digest), nil
 		}
 	}
-	if specialized && len(manifests) == 1 && manifests[0].Platform.key() == "//" {
+	if allowPlatformless && len(manifests) == 1 && manifests[0].Platform.key() == "//" {
 		return immutableReference(reference, manifests[0].Digest), nil
 	}
 

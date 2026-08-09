@@ -56,6 +56,62 @@
           }
         }
       ]
+    },
+    {
+      "sourceRef": "docker.io/library/ubuntu:24.04",
+      "manifests": [
+        {
+          "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "platform": {
+            "os": "linux",
+            "architecture": "aarch64",
+            "variant": "v8"
+          }
+        },
+        {
+          "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "platform": {
+            "os": "linux",
+            "architecture": "x86_64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "docker.io/rocm/dev-ubuntu-24.04:7.2.1",
+      "manifests": [
+        {
+          "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "platform": {
+            "os": "linux",
+            "architecture": "amd64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "ghcr.io/kaito-project/aikit/applesilicon/base:latest",
+      "manifests": [
+        {
+          "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "platform": {
+            "os": "linux",
+            "architecture": "arm64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "nvcr.io/nvidia/l4t-jetpack:r36.4.0",
+      "manifests": [
+        {
+          "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "platform": {
+            "os": "linux",
+            "architecture": "arm64"
+          }
+        }
+      ]
     }
   ]
 }

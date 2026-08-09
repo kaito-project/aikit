@@ -8,54 +8,79 @@ title: Inference API Specifications
 apiVersion: # required. only v1alpha1 is supported at the moment
 debug: # optional. if set to true, debug logs will be printed
 runtime: # optional. omit for the default CPU runtime. can be "cuda", "rocm", or "applesilicon"
-backends: # optional. list of additional backends. can be "llama-cpp" (default), "diffusers", "vllm", "vllm-cpp"
-backendCapability: # optional. exact LocalAI selector from the frontend's embedded backend catalog
+backends: # optional. list containing at most one family from the embedded catalog; omit for the catalog default
+backendCapability: # optional. exact LocalAI selector from the embedded catalog; despite the name, this is not a GPU compute capability
 loadToMemory: # optional. list of LocalAI model config names to load when the container starts
   - model-name
-models: # optional. list of models to build. omit for runner mode (see runners.md)
+models: # optional. list of models to embed. an explicit backend with no models requests runner mode (see runners.md)
   - name: # required. name of the model
     source: # required. source of the model. can be a url or a local file
     sha256: # optional. sha256 hash of the model file
     promptTemplates: # optional. list of prompt templates for a model
       - name: # required. name of the template
         template: # required. template string
-config: # optional. list of config files
+config: # optional. inline LocalAI YAML configuration
 ```
 
 :::note
-If omitted, `runtime` uses the default CPU runtime. `rocm` currently supports only the `llama-cpp` backend on `linux/amd64`. The experimental `vllm-cpp` backend supports CPU on `linux/amd64` and `linux/arm64`, or CUDA 13 on Blackwell-class `linux/amd64` GPUs.
+If omitted, `runtime` uses CPU. Backend, selector, runtime, and platform compatibility comes from the catalog embedded in the selected frontend release; the API does not maintain a separate hardcoded backend allowlist.
 :::
 
 :::tip
-When `backends` is specified without `models`, AIKit requests **runner mode**, which downloads models at container startup. Runner mode is available only when the exact catalog entry names an audited runner profile. See [Runner Images](runners.md) for details.
+AIKit enters **runner mode** only when `backends` is explicitly set and `models` is empty. Every other inference build uses standard mode. Runner mode is available only when the resolved catalog entry has an explicit `runnerProfile`; this is catalog policy, not an aikitfile field. See [Runner Images](runners.md).
 :::
 
 ### Backend catalog selection
 
-Existing `backends` and `runtime` configurations remain compatible. They select the logical backend and runtime, and AIKit chooses the default matching entry from the backend catalog embedded in the frontend release. `backendCapability` optionally narrows that choice to an exact LocalAI selector, such as a particular CUDA major or an L4T-specific build:
+The existing `backends` and `runtime` fields remain source-compatible. `backends` selects one logical LocalAI family and `runtime` selects `cpu`, `cuda`, `rocm`, or `applesilicon`. Omitting `backends` uses the catalog's default family; omitting `backendCapability` uses the catalog's default selector for the requested runtime.
+
+Source compatibility does not guarantee identical image contents across frontend releases. A newer frontend can embed different artifact digests, defaults, statuses, or install instructions. Pin the frontend by digest when those choices must remain fixed.
+
+For every standard build, AIKit resolves one exact plan for each target platform. The plan, rather than backend-family branches in the frontend, supplies:
+
+| Catalog field | Build behavior |
+|---|---|
+| `runtimeBase` | Base image used by the resulting model image. |
+| `core` | LocalAI executable artifact. |
+| `backend` and `fallbacks` | Primary backend and any explicitly declared companion backend artifacts. |
+| `systemPackages` | OS package names installed from the runtime base's configured repositories for that exact tuple. |
+| `runtimeSymlinks` | Compatibility symlinks created inside the runtime image for that exact tuple. |
+| `environment` | Runtime environment added to the image. |
+| `runnerProfile` | Explicit runner adapter, consulted only in runner mode. |
+
+The runtime base, LocalAI core, and backend artifacts are all OCI digest-pinned. Package names in `systemPackages` are resolved at build time and are not version- or digest-locked by the catalog. Any `supported` or `experimental` catalog tuple can be materialized in standard mode, including families not covered by a dedicated AIKit guide. Generic installation does not prove that a particular model format or LocalAI configuration works end to end; the model and `config` must still match the selected LocalAI backend.
+
+`backendCapability` optionally requests an exact LocalAI selector, such as a particular CUDA major or an L4T-specific build:
 
 ```yaml
 #syntax=ghcr.io/kaito-project/aikit/aikit:latest
 apiVersion: v1alpha1
 runtime: cuda
 backends:
-  - vllm-cpp
-# The promoted vllm-cpp NVIDIA selector resolves to its catalog-pinned CUDA 13 target.
-backendCapability: nvidia
+  - llama-cpp
+# This build succeeds only if the selected frontend contains this exact tuple.
+backendCapability: nvidia-cuda-13
+models:
+  - name: model.gguf
+    source: https://example.com/model.gguf
 ```
 
-Capability names and availability are release-specific. The generated catalog lock embedded in the selected frontend is authoritative; an example in the documentation does not guarantee that an integration has been promoted in every release.
+Selector names and availability are release-specific. The generated catalog lock embedded in the selected frontend is authoritative; a documentation example does not guarantee that the tuple exists in every release.
 
 Catalog entries have one of these statuses:
 
 | Status | Build behavior |
 |---|---|
-| `supported` | Available for its exact backend, runtime, capability, and target platform tuple. |
-| `experimental` | Available for the exact listed tuple, but its compatibility or interface may still change. |
-| `quarantined` | Disabled because provenance, compatibility, or validation did not pass; builds cannot select it. |
+| `supported` | Selectable for the exact family, selector, runtime, and platform tuple under AIKit's current support policy. |
+| `experimental` | Selectable for the exact tuple, but has less compatibility assurance and may change. |
+| `quarantined` | Disabled by catalog policy; builds cannot select it. |
 | `deprecated` | Retained as catalog history but unavailable for new builds. |
 
-AIKit does not silently substitute another backend, CUDA major, capability, runtime, or platform. A missing, incompatible, ambiguous, quarantined, or deprecated selection fails the build with an error. Omitting `backendCapability` selects only the catalog-defined default for the requested `backends` and `runtime`; it is not permission to fall back to a different tuple.
+Status describes tuple selection, not end-to-end validation of every workload, and it does not make a tuple runner-capable. Runner mode separately requires `runnerProfile`.
+
+AIKit does not silently substitute another family, selector, CUDA major, runtime, or platform. A missing, incompatible, quarantined, or deprecated selection fails the build. Omitting `backendCapability` selects only the catalog-defined default; it is not permission to try other selectors. For a multi-platform build, every requested platform must resolve before the build proceeds.
+
+Catalog `fallbacks` are different from selection fallback. They are digest-pinned companion artifacts deliberately installed by the selected plan—for example, a CUDA llama.cpp plan can include its CPU backend for runtime use without a GPU. AIKit never reaches for an undeclared artifact or changes the requested tuple to make resolution succeed.
 
 ### Loading models at startup
 

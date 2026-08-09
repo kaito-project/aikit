@@ -2,13 +2,16 @@
 title: llama.cpp (GGUF and GGML)
 ---
 
-AIKit utilizes and depends on [llama.cpp](https://github.com/ggerganov/llama.cpp), which provides inference of Meta's LLaMA model (and others) in pure C/C++, for the `llama` backend.
+AIKit's default catalog family is `llama-cpp`, backed by [llama.cpp](https://github.com/ggerganov/llama.cpp) through LocalAI. It provides inference for LLaMA and many other model architectures in C/C++.
 
-This is the default backend for `aikit`. No additional configuration is required.
+No `backends` field is required to select the catalog default.
 
 This backend:
+
 - provides support for GGUF (recommended) and GGML models
-- supports both CPU (`avx2`, `avx` or `fallback`), NVIDIA CUDA, and ROCm runtimes
+- has catalog plans for CPU and accelerator runtimes on selected platforms
+
+Exact runtime, selector, platform, and status availability is defined by the catalog embedded in the selected frontend release. CPU dispatch such as AVX2 happens inside the selected LocalAI backend; values such as `nvidia-cuda-13` or `nvidia-l4t` are catalog selectors requested with `backendCapability`. See [Backend catalog selection](specs-inference.md#backend-catalog-selection).
 
 ## Example
 

@@ -13,26 +13,31 @@ import (
 const (
 	maximumNameLength         = 128
 	maximumReferenceLength    = 512
+	maximumEnvironmentLength  = 2048
 	platformArchitectureAMD64 = "amd64"
 	platformArchitectureARM64 = "arm64"
 	platformOSLinux           = "linux"
 )
 
 var (
-	safeNamePattern       = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$`)
-	safeTokenPattern      = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._+-]*[a-z0-9])?$`)
-	digestPattern         = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	l4tSelectorPattern    = regexp.MustCompile(`^nvidia-l4t-[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
-	minimumCUDAPattern    = regexp.MustCompile(`^[0-9]+\.[0-9]+(?:\.[0-9]+)?$`)
-	repositoryPartPattern = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
-	registryPattern       = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?$`)
+	safeNamePattern        = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$`)
+	safeTokenPattern       = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._+-]*[a-z0-9])?$`)
+	digestPattern          = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	l4tSelectorPattern     = regexp.MustCompile(`^nvidia-l4t-[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
+	environmentNamePattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+	packageNamePattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]*$`)
+	repositoryPartPattern  = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
+	registryPattern        = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?$`)
 )
 
 func validateCatalog(catalog *Catalog) error {
-	if catalog.SchemaVersion != schemaVersionV1 {
-		return errors.Wrapf(ErrInvalidCatalog, "schemaVersion must be %q", schemaVersionV1)
+	if catalog.SchemaVersion != schemaVersionV2 {
+		return errors.Wrapf(ErrInvalidCatalog, "schemaVersion must be %q", schemaVersionV2)
 	}
 	if err := validateSource(catalog.Source); err != nil {
+		return err
+	}
+	if err := validateDefaults(catalog.Defaults); err != nil {
 		return err
 	}
 	if catalog.Entries == nil {
@@ -106,38 +111,40 @@ func validateEntry(entry Entry) error {
 	if err := validateAuditValue("sourceRef", entry.SourceRef); err != nil {
 		return err
 	}
+	if err := validateArtifact("runtimeBase", entry.RuntimeBase.Ref); err != nil {
+		return err
+	}
 	if err := validateArtifact("core", entry.Core.Ref); err != nil {
 		return err
 	}
 	if err := validateBackendArtifact("backend", entry.Backend); err != nil {
 		return err
 	}
+	installNames := map[string]string{entry.Backend.InstallName: "backend"}
 	for i, fallback := range entry.Fallbacks {
-		if err := validateBackendArtifact(fmt.Sprintf("fallbacks[%d]", i), fallback); err != nil {
+		field := fmt.Sprintf("fallbacks[%d]", i)
+		if err := validateBackendArtifact(field, fallback); err != nil {
 			return err
 		}
+		if previous, ok := installNames[fallback.InstallName]; ok {
+			return errors.Wrapf(ErrInvalidCatalog, "%s.installName %q collides with %s", field, fallback.InstallName, previous)
+		}
+		installNames[fallback.InstallName] = field
 	}
-	if !validDependencyProfile(entry.DependencyProfile) {
-		return errors.Wrapf(ErrInvalidCatalog, "dependencyProfile %q is not supported", entry.DependencyProfile)
+	if err := validateSystemPackages(entry.SystemPackages); err != nil {
+		return err
+	}
+	if err := validateRuntimeSymlinks(entry.RuntimeSymlinks); err != nil {
+		return err
+	}
+	if err := validateEnvironment(entry.Environment); err != nil {
+		return err
 	}
 	if !validRunnerProfile(entry.RunnerProfile) {
 		return errors.Wrapf(ErrInvalidCatalog, "runnerProfile %q is not supported", entry.RunnerProfile)
 	}
-	if !validBase(entry.Base) {
-		return errors.Wrapf(ErrInvalidCatalog, "base %q is not supported", entry.Base)
-	}
-	if !baseMatchesRuntime(entry.Base, entry.Runtime) {
-		return errors.Wrapf(ErrInvalidCatalog, "base %q does not match runtime %q", entry.Base, entry.Runtime)
-	}
-	if entry.Base == BaseDistroless && !entry.SelfContained {
-		return errors.Wrap(ErrInvalidCatalog, "distroless entries must be selfContained")
-	}
-	if entry.Runtime == RuntimeCUDA {
-		if !minimumCUDAPattern.MatchString(entry.MinimumCUDA) {
-			return errors.Wrap(ErrInvalidCatalog, "CUDA entries require minimumCUDA in major.minor or major.minor.patch form")
-		}
-	} else if entry.MinimumCUDA != "" {
-		return errors.Wrap(ErrInvalidCatalog, "minimumCUDA is only valid for CUDA entries")
+	if !runnerProfileMatchesFamily(entry.RunnerProfile, entry.Family) {
+		return errors.Wrapf(ErrInvalidCatalog, "runnerProfile %q does not match family %q", entry.RunnerProfile, entry.Family)
 	}
 	if err := validateWorkloads(entry.Workloads); err != nil {
 		return err
@@ -153,8 +160,40 @@ func validateRequest(request Request) error {
 	if err := validateSelector(request.Selector); err != nil {
 		return errors.Wrap(ErrInvalidRequest, err.Error())
 	}
+	if !validRuntime(request.Runtime) {
+		return errors.Wrapf(ErrInvalidRequest, "runtime %q is not supported", request.Runtime)
+	}
 	if err := validatePlatform(request.Platform); err != nil {
 		return errors.Wrap(ErrInvalidRequest, err.Error())
+	}
+
+	return nil
+}
+
+func validateDefaults(defaults Defaults) error {
+	if err := validateSafeName("defaults.family", defaults.Family); err != nil {
+		return err
+	}
+	if defaults.Selectors == nil {
+		return errors.Wrap(ErrInvalidCatalog, "defaults.selectors must be an array")
+	}
+	seen := make(map[Runtime]struct{}, len(defaults.Selectors))
+	for i, selection := range defaults.Selectors {
+		if !validRuntime(selection.Runtime) {
+			return errors.Wrapf(ErrInvalidCatalog, "defaults.selectors[%d].runtime %q is not supported", i, selection.Runtime)
+		}
+		if err := validateSelector(selection.Selector); err != nil {
+			return errors.Wrapf(err, "defaults.selectors[%d]", i)
+		}
+		if _, ok := seen[selection.Runtime]; ok {
+			return errors.Wrapf(ErrInvalidCatalog, "defaults.selectors runtime %q is duplicated", selection.Runtime)
+		}
+		seen[selection.Runtime] = struct{}{}
+	}
+	for _, runtime := range []Runtime{RuntimeCPU, RuntimeCUDA, RuntimeROCm, RuntimeAppleSilicon} {
+		if _, ok := seen[runtime]; !ok {
+			return errors.Wrapf(ErrInvalidCatalog, "defaults.selectors is missing runtime %q", runtime)
+		}
 	}
 
 	return nil
@@ -208,6 +247,9 @@ func validatePlatform(platform Platform) error {
 		if err := validateSafeToken("platform.variant", platform.Variant); err != nil {
 			return err
 		}
+	}
+	if normalized := normalizeRequestPlatform(platform); normalized != platform {
+		return errors.Wrapf(ErrInvalidCatalog, "platform %q must use canonical OCI names", formatPlatform(platform))
 	}
 
 	return nil
@@ -285,6 +327,59 @@ func validateWorkloads(workloads []string) error {
 	return nil
 }
 
+func validateSystemPackages(packages []string) error {
+	seen := make(map[string]struct{}, len(packages))
+	for i, name := range packages {
+		if len(name) == 0 || len(name) > maximumNameLength || !packageNamePattern.MatchString(name) {
+			return errors.Wrapf(ErrInvalidCatalog, "systemPackages[%d] %q is not a safe package name", i, name)
+		}
+		if _, ok := seen[name]; ok {
+			return errors.Wrapf(ErrInvalidCatalog, "system package %q is duplicated", name)
+		}
+		seen[name] = struct{}{}
+	}
+
+	return nil
+}
+
+func validateEnvironment(environment []string) error {
+	seen := make(map[string]struct{}, len(environment))
+	for i, variable := range environment {
+		if len(variable) == 0 || len(variable) > maximumEnvironmentLength || strings.ContainsAny(variable, "\x00\r\n") {
+			return errors.Wrapf(ErrInvalidCatalog, "environment[%d] must be a non-empty single-line KEY=value", i)
+		}
+		name, _, found := strings.Cut(variable, "=")
+		if !found || !environmentNamePattern.MatchString(name) {
+			return errors.Wrapf(ErrInvalidCatalog, "environment[%d] %q has an invalid variable name", i, variable)
+		}
+		if _, ok := seen[name]; ok {
+			return errors.Wrapf(ErrInvalidCatalog, "environment variable %q is duplicated", name)
+		}
+		seen[name] = struct{}{}
+	}
+
+	return nil
+}
+
+func validateRuntimeSymlinks(symlinks []RuntimeSymlink) error {
+	seen := make(map[string]struct{}, len(symlinks))
+	for i, symlink := range symlinks {
+		if err := validateSafeName(fmt.Sprintf("runtimeSymlinks[%d].target", i), symlink.Target); err != nil {
+			return err
+		}
+		if len(symlink.Path) == 0 || len(symlink.Path) > maximumReferenceLength || !path.IsAbs(symlink.Path) || path.Clean(symlink.Path) != symlink.Path ||
+			symlink.Path == "/" || strings.ContainsAny(symlink.Path, "\x00\r\n\\") {
+			return errors.Wrapf(ErrInvalidCatalog, "runtimeSymlinks[%d].path %q must be a clean absolute path", i, symlink.Path)
+		}
+		if _, ok := seen[symlink.Path]; ok {
+			return errors.Wrapf(ErrInvalidCatalog, "runtime symlink path %q is duplicated", symlink.Path)
+		}
+		seen[symlink.Path] = struct{}{}
+	}
+
+	return nil
+}
+
 func validRuntime(runtime Runtime) bool {
 	switch runtime {
 	case RuntimeCPU, RuntimeCUDA, RuntimeROCm, RuntimeAppleSilicon:
@@ -307,7 +402,7 @@ func validTargetProfile(profile TargetProfile) bool {
 func runtimeMatchesTarget(runtime Runtime, target TargetProfile) bool {
 	switch runtime {
 	case RuntimeCPU:
-		return target == TargetProfileCPU || target == TargetProfileIntel
+		return target == TargetProfileCPU || target == TargetProfileIntel || target == TargetProfileVulkan
 	case RuntimeCUDA:
 		return target == TargetProfileCUDA12 || target == TargetProfileCUDA13 ||
 			target == TargetProfileL4TCUDA12 || target == TargetProfileL4TCUDA13
@@ -326,6 +421,10 @@ func runtimeSupportsPlatform(runtime Runtime, target TargetProfile, platform Pla
 	}
 	if platform.Architecture != platformArchitectureAMD64 && platform.Architecture != platformArchitectureARM64 {
 		return false
+	}
+	if target == TargetProfileVulkan {
+		return platform.Architecture == platformArchitectureAMD64 && runtime == RuntimeCPU ||
+			platform.Architecture == platformArchitectureARM64 && runtime == RuntimeAppleSilicon
 	}
 	if runtime == RuntimeAppleSilicon && platform.Architecture != platformArchitectureARM64 {
 		return false
@@ -388,15 +487,6 @@ func validStatus(status Status) bool {
 	}
 }
 
-func validDependencyProfile(profile DependencyProfile) bool {
-	switch profile {
-	case DependencyProfileNone, DependencyProfileDiffusers, DependencyProfileVLLM:
-		return true
-	default:
-		return false
-	}
-}
-
 func validRunnerProfile(profile RunnerProfile) bool {
 	switch profile {
 	case RunnerProfileUnsupported, RunnerProfileLlamaCpp, RunnerProfileVLLMCpp, RunnerProfileHFConfig:
@@ -406,23 +496,14 @@ func validRunnerProfile(profile RunnerProfile) bool {
 	}
 }
 
-func validBase(base Base) bool {
-	switch base {
-	case BaseDistroless, BaseUbuntu, BaseUbuntu24, BaseAppleSilicon:
+func runnerProfileMatchesFamily(profile RunnerProfile, family string) bool {
+	switch profile {
+	case RunnerProfileLlamaCpp:
+		return family == string(RunnerProfileLlamaCpp)
+	case RunnerProfileVLLMCpp:
+		return family == string(RunnerProfileVLLMCpp)
+	default:
 		return true
-	default:
-		return false
-	}
-}
-
-func baseMatchesRuntime(base Base, runtime Runtime) bool {
-	switch runtime {
-	case RuntimeAppleSilicon:
-		return base == BaseAppleSilicon
-	case RuntimeROCm:
-		return base == BaseUbuntu24
-	default:
-		return base != BaseAppleSilicon
 	}
 }
 

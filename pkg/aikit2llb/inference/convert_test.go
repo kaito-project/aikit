@@ -17,35 +17,6 @@ const (
 	testInferenceModelSource = "model.gguf"
 )
 
-func TestInstallRocmInstallsPciutilsForLlamaCpp(t *testing.T) {
-	base := llb.Image(utils.Ubuntu24Base)
-	_, merged := installRocm(base, base)
-
-	def, err := merged.Marshal(context.Background())
-	if err != nil {
-		t.Fatalf("marshal failed: %v", err)
-	}
-
-	combined := marshalDefinitionToString(def)
-	wantInstall := "apt-get install -y --no-install-recommends pciutils rocm && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*"
-	if !strings.Contains(combined, wantInstall) {
-		t.Fatalf("expected ROCm install to contain %q, got: %s", wantInstall, combined)
-	}
-}
-
-func marshalDefinitionToString(def *llb.Definition) string {
-	if def == nil {
-		return ""
-	}
-
-	var combined strings.Builder
-	for _, d := range def.ToPB().Def {
-		combined.Write(d)
-	}
-
-	return combined.String()
-}
-
 func TestAikit2LLBWithPlatformsSeparatesHelperAndTargetPlatforms(t *testing.T) {
 	buildPlatform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformARM64}
 	targetPlatform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
@@ -103,10 +74,7 @@ func TestAikit2LLBWithPlatformsSeparatesHelperAndTargetPlatforms(t *testing.T) {
 		t.Fatalf("LocalAI artifact command = %q, want digest-qualified artifact", command)
 	}
 
-	buildBaseSource := findInferenceSourceOp(t, definition, "ubuntu:22.04")
-	assertInferenceOpPlatform(t, buildBaseSource, *targetPlatform)
-
-	runtimeBaseSource := findInferenceSourceOp(t, definition, distrolessBase)
+	runtimeBaseSource := findInferenceSourceOp(t, definition, backend.RuntimeBase.Ref)
 	assertInferenceOpPlatform(t, runtimeBaseSource, *targetPlatform)
 
 	backendSources := findInferenceSourceOps(t, definition, utils.BackendOCIRegistry)
@@ -116,91 +84,30 @@ func TestAikit2LLBWithPlatformsSeparatesHelperAndTargetPlatforms(t *testing.T) {
 	for _, backendSource := range backendSources {
 		assertInferenceOpPlatform(t, backendSource, *targetPlatform)
 	}
-
-	for _, graphOp := range decodeInferenceDefinition(t, definition) {
-		exec := graphOp.op.GetExec()
-		if exec == nil {
-			continue
-		}
-		command := strings.Join(exec.Meta.Args, "\x00")
-		for _, duplicateRuntime := range []string{"cuda-keyring", "libcublas", "cuda-cudart", "pciutils"} {
-			if strings.Contains(command, duplicateRuntime) {
-				t.Fatalf("llama-cpp CUDA graph unexpectedly installs %q in command %q", duplicateRuntime, command)
-			}
-		}
-	}
 }
 
-func TestGetBaseImageUsesMinimalCompatibleRuntime(t *testing.T) {
+func TestAikit2LLBUsesCatalogRuntimeBaseForArbitraryFamily(t *testing.T) {
 	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
-	tests := []struct {
-		name   string
-		config *config.InferenceConfig
-		want   string
-	}{
-		{
-			name: "default standard llama-cpp",
-			config: &config.InferenceConfig{Models: []config.Model{{
-				Name: testInferenceModelName, Source: testInferenceModelSource,
-			}}},
-			want: distrolessBase,
-		},
-		{
-			name: "explicit standard llama-cpp",
-			config: &config.InferenceConfig{
-				Backends: []string{utils.BackendLlamaCpp},
-				Models:   []config.Model{{Name: testInferenceModelName, Source: testInferenceModelSource}},
-			},
-			want: distrolessBase,
-		},
-		{
-			name:   "llama-cpp runner",
-			config: &config.InferenceConfig{Backends: []string{utils.BackendLlamaCpp}},
-			want:   utils.UbuntuBase,
-		},
-		{
-			name: "standard Diffusers",
-			config: &config.InferenceConfig{
-				Runtime:  utils.RuntimeNVIDIA,
-				Backends: []string{utils.BackendDiffusers},
-				Models:   []config.Model{{Name: testInferenceModelName, Source: "model.safetensors"}},
-			},
-			want: utils.UbuntuBase,
-		},
-		{
-			name: "standard vLLM",
-			config: &config.InferenceConfig{
-				Runtime:  utils.RuntimeNVIDIA,
-				Backends: []string{utils.BackendVLLM},
-				Models:   []config.Model{{Name: testInferenceModelName, Source: "model.safetensors"}},
-			},
-			want: utils.UbuntuBase,
-		},
-		{
-			name: "standard vllm-cpp",
-			config: &config.InferenceConfig{
-				Backends: []string{utils.BackendVLLMCpp},
-				Models:   []config.Model{{Name: testInferenceModelName, Source: testInferenceModelSource}},
-			},
-			want: distrolessBase,
-		},
+	backend := testArbitraryBackendPlan(*platform)
+	backend.SystemPackages = nil
+	cfg := &config.InferenceConfig{
+		Backends: []string{backend.Family},
+		Models: []config.Model{{
+			Name: testInferenceModelName, Source: testInferenceModelSource,
+		}},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			backend, err := ResolveBackend(tt.config, *platform)
-			if err != nil {
-				t.Fatalf("resolve backend: %v", err)
-			}
-			state := getBaseImage(tt.config, backend, platform)
-			definition, err := state.Marshal(context.Background())
-			if err != nil {
-				t.Fatalf("marshal base image: %v", err)
-			}
-			source := findInferenceSourceOp(t, definition, tt.want)
-			assertInferenceOpPlatform(t, source, *platform)
-		})
+	state, _, err := aikit2LLBWithResolvedBackend(cfg, platform, platform, backend)
+	if err != nil {
+		t.Fatalf("convert inference config: %v", err)
 	}
+	definition, err := state.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal inference definition: %v", err)
+	}
+
+	runtimeBase := findInferenceSourceOp(t, definition, backend.RuntimeBase.Ref)
+	assertInferenceOpPlatform(t, runtimeBase, *platform)
 }
 
 func TestAikit2LLBPreservesSinglePlatformBehavior(t *testing.T) {

@@ -112,7 +112,7 @@ func TestBuildInferenceUsesBuildPlatformForArtifactHelpers(t *testing.T) {
 
 		assertBuildOpPlatform(t, backendSource, targetPlatform)
 
-		baseSource := findBuildSourceOp(t, definition, "ubuntu:22.04")
+		baseSource := findBuildSourceOp(t, definition, "docker.io/library/ubuntu@sha256:")
 		assertBuildOpPlatform(t, baseSource, targetPlatform)
 	}
 

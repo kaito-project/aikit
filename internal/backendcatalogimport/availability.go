@@ -73,6 +73,17 @@ func entryEligibleForAIKit(platform Platform, runtime, targetProfile string) boo
 	if platform.Architecture != architectureAMD64 && platform.Architecture != architectureARM64 {
 		return false
 	}
+	if targetProfile == targetVulkan {
+		if platform.Architecture == architectureAMD64 && runtime != runtimeCPU {
+			return false
+		}
+		if platform.Architecture == architectureARM64 && runtime != runtimeApple {
+			return false
+		}
+	}
+	if targetProfile == targetMetal && runtime != runtimeApple {
+		return false
+	}
 	if runtime == runtimeApple && platform.Architecture != architectureARM64 {
 		return false
 	}

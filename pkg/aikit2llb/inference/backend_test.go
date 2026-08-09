@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	stderrors "errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,8 +18,23 @@ import (
 
 const (
 	testCPULlamaCppBackend = "cpu-llama-cpp"
-	testMinimumCUDA12      = "12.0"
 	testLocalAIVersion     = "v4.8.2"
+	testArbitraryFamily    = "arbitrary-family"
+)
+
+var (
+	testCUDA12Environment = []string{
+		"BUILD_TYPE=cublas",
+		"NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+		"NVIDIA_REQUIRE_CUDA=cuda>=12.0",
+		"NVIDIA_VISIBLE_DEVICES=all",
+	}
+	testCUDA13Environment = []string{
+		"BUILD_TYPE=cublas",
+		"NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+		"NVIDIA_REQUIRE_CUDA=cuda>=13.0",
+		"NVIDIA_VISIBLE_DEVICES=all",
+	}
 )
 
 func TestResolveBackendCurrentCompatibility(t *testing.T) {
@@ -31,7 +47,8 @@ func TestResolveBackendCurrentCompatibility(t *testing.T) {
 		wantProfile     backendcatalog.TargetProfile
 		wantRunner      backendcatalog.RunnerProfile
 		wantFallbacks   int
-		wantMinimumCUDA string
+		wantPackages    []string
+		wantEnvironment []string
 	}{
 		{
 			name:        "default CPU llama-cpp amd64",
@@ -62,7 +79,7 @@ func TestResolveBackendCurrentCompatibility(t *testing.T) {
 			wantProfile:     backendcatalog.TargetProfileCUDA12,
 			wantRunner:      backendcatalog.RunnerProfileLlamaCpp,
 			wantFallbacks:   1,
-			wantMinimumCUDA: testMinimumCUDA12,
+			wantEnvironment: testCUDA12Environment,
 		},
 		{
 			name: "CUDA diffusers uses promoted release entry",
@@ -75,7 +92,7 @@ func TestResolveBackendCurrentCompatibility(t *testing.T) {
 			wantVersion:     testLocalAIVersion,
 			wantProfile:     backendcatalog.TargetProfileCUDA12,
 			wantRunner:      backendcatalog.RunnerProfileHFConfig,
-			wantMinimumCUDA: testMinimumCUDA12,
+			wantEnvironment: testCUDA12Environment,
 		},
 		{
 			name: "CUDA vllm",
@@ -88,7 +105,8 @@ func TestResolveBackendCurrentCompatibility(t *testing.T) {
 			wantVersion:     testLocalAIVersion,
 			wantProfile:     backendcatalog.TargetProfileCUDA12,
 			wantRunner:      backendcatalog.RunnerProfileHFConfig,
-			wantMinimumCUDA: testMinimumCUDA12,
+			wantPackages:    []string{"gcc", "libc6-dev"},
+			wantEnvironment: testCUDA12Environment,
 		},
 		{
 			name: "CPU vllm-cpp arm64",
@@ -112,7 +130,7 @@ func TestResolveBackendCurrentCompatibility(t *testing.T) {
 			wantVersion:     testLocalAIVersion,
 			wantProfile:     backendcatalog.TargetProfileCUDA13,
 			wantRunner:      backendcatalog.RunnerProfileVLLMCpp,
-			wantMinimumCUDA: "13.0",
+			wantEnvironment: testCUDA13Environment,
 		},
 	}
 
@@ -137,10 +155,13 @@ func TestResolveBackendCurrentCompatibility(t *testing.T) {
 			if len(resolved.Fallbacks) != test.wantFallbacks {
 				t.Errorf("fallbacks = %d, want %d", len(resolved.Fallbacks), test.wantFallbacks)
 			}
-			if resolved.MinimumCUDA != test.wantMinimumCUDA {
-				t.Errorf("minimum CUDA = %q, want %q", resolved.MinimumCUDA, test.wantMinimumCUDA)
+			if !slices.Equal(resolved.SystemPackages, test.wantPackages) {
+				t.Errorf("system packages = %q, want %q", resolved.SystemPackages, test.wantPackages)
 			}
-			for _, ref := range []string{resolved.Core.Ref, resolved.Backend.Ref} {
+			if !slices.Equal(resolved.Environment, test.wantEnvironment) {
+				t.Errorf("environment = %q, want %q", resolved.Environment, test.wantEnvironment)
+			}
+			for _, ref := range []string{resolved.RuntimeBase.Ref, resolved.Core.Ref, resolved.Backend.Ref} {
 				if !strings.Contains(ref, "@sha256:") || strings.Contains(ref, ":latest") {
 					t.Errorf("artifact ref is not immutable: %q", ref)
 				}
@@ -191,13 +212,9 @@ func TestResolveBackendFailsClosed(t *testing.T) {
 
 func TestInstallBackendsUsesOnlyCatalogArtifacts(t *testing.T) {
 	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
-	cfg := &config.InferenceConfig{Runtime: utils.RuntimeNVIDIA}
-	resolved, err := ResolveBackend(cfg, platform)
-	if err != nil {
-		t.Fatalf("resolve backend: %v", err)
-	}
+	resolved := testArbitraryBackendPlan(platform)
 
-	base := llb.Image(utils.UbuntuBase, llb.Platform(platform))
+	base := llb.Image(resolved.RuntimeBase.Ref, llb.Platform(platform))
 	state := installBackends(resolved, platform, base, base)
 	definition, err := state.Marshal(context.Background())
 	if err != nil {
@@ -266,19 +283,17 @@ func TestInstallBackendsUsesOnlyCatalogArtifacts(t *testing.T) {
 	}
 }
 
-func TestInstallVLLMBackendKeepsCopyAndMetadataInOneFileOp(t *testing.T) {
+func TestInstallBackendKeepsCopyAndMetadataInOneFileOp(t *testing.T) {
 	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
-	cfg := &config.InferenceConfig{Runtime: utils.RuntimeNVIDIA, Backends: []string{utils.BackendVLLM}}
-	resolved, err := ResolveBackend(cfg, platform)
-	if err != nil {
-		t.Fatalf("resolve backend: %v", err)
-	}
+	resolved := testArbitraryBackendPlan(platform)
+	resolved.Fallbacks = nil
+	resolved.SystemPackages = nil
 
-	base := llb.Image(utils.UbuntuBase, llb.Platform(platform))
+	base := llb.Image(resolved.RuntimeBase.Ref, llb.Platform(platform))
 	state := installBackends(resolved, platform, base, base)
 	definition, err := state.Marshal(context.Background())
 	if err != nil {
-		t.Fatalf("marshal vLLM backend definition: %v", err)
+		t.Fatalf("marshal backend definition: %v", err)
 	}
 
 	backendDir := "/backends/" + resolved.Backend.InstallName
@@ -310,5 +325,101 @@ func TestInstallVLLMBackendKeepsCopyAndMetadataInOneFileOp(t *testing.T) {
 	}
 	if fileOps != 1 {
 		t.Errorf("backend file operations = %d, want 1", fileOps)
+	}
+}
+
+func TestInstallBackendsUsesCatalogSystemPackagesForArbitraryFamily(t *testing.T) {
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	resolved := testArbitraryBackendPlan(platform)
+	base := llb.Image(resolved.RuntimeBase.Ref, llb.Platform(platform))
+
+	state := installBackends(resolved, platform, base, base)
+	definition, err := state.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal backend definition: %v", err)
+	}
+
+	install := findInferenceExecOp(t, definition, "apt-get install --no-install-recommends -y gcc libc6-dev")
+	command := strings.Join(install.op.GetExec().Meta.Args, "\x00")
+	for _, fragment := range []string{
+		"apt-get update",
+		"apt-get install --no-install-recommends -y gcc libc6-dev",
+		"apt-get clean",
+		"rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*",
+	} {
+		if !strings.Contains(command, fragment) {
+			t.Errorf("system package command = %q, want %q", command, fragment)
+		}
+	}
+}
+
+func TestInstallBackendsUsesCatalogRuntimeSymlinksForArbitraryFamily(t *testing.T) {
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	resolved := testArbitraryBackendPlan(platform)
+	base := llb.Image(resolved.RuntimeBase.Ref, llb.Platform(platform))
+
+	state := installBackends(resolved, platform, base, base)
+	definition, err := state.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal backend definition: %v", err)
+	}
+
+	var matches int
+	for _, graphOp := range decodeInferenceDefinition(t, definition) {
+		file := graphOp.op.GetFile()
+		if file == nil {
+			continue
+		}
+		for _, action := range file.Actions {
+			symlink := action.GetSymlink()
+			if symlink == nil {
+				continue
+			}
+			if symlink.Oldpath != resolved.RuntimeSymlinks[0].Target || symlink.Newpath != resolved.RuntimeSymlinks[0].Path {
+				t.Fatalf("runtime symlink = %q -> %q, want %q -> %q", symlink.Newpath, symlink.Oldpath, resolved.RuntimeSymlinks[0].Path, resolved.RuntimeSymlinks[0].Target)
+			}
+			matches++
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("runtime symlink actions = %d, want 1", matches)
+	}
+}
+
+func testArbitraryBackendPlan(platform specs.Platform) backendcatalog.Resolution {
+	const (
+		runtimeBaseRef = "registry.example.com/runtime/base@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+		coreRef        = "registry.example.com/local-ai/core@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+		backendRef     = "registry.example.com/backends/arbitrary@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+		fallbackRef    = "registry.example.com/backends/fallback@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+	)
+
+	return backendcatalog.Resolution{
+		Entry: backendcatalog.Entry{
+			Family:        testArbitraryFamily,
+			Selector:      backendcatalog.SelectorDefault,
+			Platform:      backendcatalog.Platform{OS: platform.OS, Architecture: platform.Architecture, Variant: platform.Variant},
+			Runtime:       backendcatalog.RuntimeCPU,
+			TargetProfile: backendcatalog.TargetProfileCPU,
+			Status:        backendcatalog.StatusExperimental,
+			Channel:       backendcatalog.ChannelStable,
+			Version:       "v-test",
+			SourceRef:     "registry.example.com/upstream/arbitrary:stable",
+			RuntimeBase:   backendcatalog.Artifact{Ref: runtimeBaseRef},
+			Core:          backendcatalog.Artifact{Ref: coreRef},
+			Backend:       backendcatalog.BackendArtifact{Ref: backendRef, InstallName: "cpu-arbitrary-family"},
+			Fallbacks: []backendcatalog.BackendArtifact{
+				{Ref: fallbackRef, InstallName: "cpu-arbitrary-fallback"},
+			},
+			SystemPackages:  []string{"gcc", "libc6-dev"},
+			RuntimeSymlinks: []backendcatalog.RuntimeSymlink{{Target: "libcompat.so.1", Path: "/usr/lib/libcompat.so.0"}},
+			Environment:     []string{"ARBITRARY_ACCELERATOR=enabled", "ARBITRARY_CACHE=/var/cache/arbitrary"},
+			RunnerProfile:   backendcatalog.RunnerProfileUnsupported,
+		},
+		CatalogDigest: "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+		Source: backendcatalog.Source{
+			Repository: "https://example.com/catalog",
+			Revision:   "test-revision",
+		},
 	}
 }

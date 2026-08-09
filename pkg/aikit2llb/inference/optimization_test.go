@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/solver/pb"
@@ -30,12 +31,8 @@ type inferenceDefinitionOp struct {
 
 func TestInstallBackendMetadataIsDeterministic(t *testing.T) {
 	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformARM64}
-	cfg := &config.InferenceConfig{Backends: []string{utils.BackendLlamaCpp}}
-	base := llb.Image(utils.UbuntuBase, llb.Platform(platform))
-	backend, err := ResolveBackend(cfg, platform)
-	if err != nil {
-		t.Fatalf("resolve backend: %v", err)
-	}
+	backend := testArbitraryBackendPlan(platform)
+	base := llb.Image(backend.RuntimeBase.Ref, llb.Platform(platform))
 
 	var wantHead digest.Digest
 	for i := 0; i < 25; i++ {
@@ -51,15 +48,15 @@ func TestInstallBackendMetadataIsDeterministic(t *testing.T) {
 		}
 		if i == 0 {
 			wantHead = head
-			metadata := findInferenceMkfile(t, definition, "/backends/cpu-llama-cpp/metadata.json")
+			metadata := findInferenceMkfile(t, definition, "/backends/"+backend.Backend.InstallName+"/metadata.json")
 
 			var got map[string]string
 			if err := json.Unmarshal(metadata.Data, &got); err != nil {
 				t.Fatalf("unmarshal backend metadata: %v", err)
 			}
 			want := map[string]string{
-				"alias":          utils.BackendLlamaCpp,
-				"name":           testCPULlamaCppBackend,
+				"alias":          backend.Family,
+				"name":           backend.Backend.InstallName,
 				"catalog_digest": backend.CatalogDigest,
 				"artifact":       backend.Backend.Ref,
 			}
@@ -161,9 +158,10 @@ func TestCopyModelsMaterializesConfigurationWithSingleFileOp(t *testing.T) {
 
 func TestModelChangesDoNotInvalidateRuntimeBranches(t *testing.T) {
 	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	backend := testArbitraryBackendPlan(*platform)
+	backend.Fallbacks = nil
 	baseConfig := &config.InferenceConfig{
-		Runtime:  utils.RuntimeNVIDIA,
-		Backends: []string{utils.BackendDiffusers},
+		Backends: []string{backend.Family},
 		Models: []config.Model{
 			{Name: "model", Source: "https://example.com/alpha.safetensors"},
 		},
@@ -175,31 +173,20 @@ func TestModelChangesDoNotInvalidateRuntimeBranches(t *testing.T) {
 	}
 	changedConfig.Config = "model: beta\n"
 
-	baseDefinition := marshalInferenceConfig(t, baseConfig, platform)
-	changedDefinition := marshalInferenceConfig(t, &changedConfig, platform)
+	baseDefinition := marshalInferenceConfigWithBackend(t, baseConfig, backend, platform)
+	changedDefinition := marshalInferenceConfigWithBackend(t, &changedConfig, backend, platform)
 
 	for _, customNamePrefix := range []string{
 		"Copying local-ai from OCI artifact to /usr/bin",
-		"Installing backend diffusers from ",
-		"Creating metadata.json for backend cuda12-diffusers",
+		"Installing catalog system packages: gcc, libc6-dev",
+		"Installing backend " + backend.Family + " from ",
+		"Creating metadata.json for backend " + backend.Backend.InstallName,
 	} {
 		baseOp := findInferenceOpByCustomNamePrefix(t, baseDefinition, customNamePrefix)
 		changedOp := findInferenceOpByCustomNamePrefix(t, changedDefinition, customNamePrefix)
 		if baseOp.digest != changedOp.digest {
 			t.Fatalf("%q digest changed after a model/config-only change: got %s, want %s", customNamePrefix, changedOp.digest, baseOp.digest)
 		}
-	}
-
-	for _, definition := range []*llb.Definition{baseDefinition, changedDefinition} {
-		assertInferenceExecCommandsExclude(t, definition,
-			"grpcio-tools",
-			"pip install uv",
-			"python3-venv",
-			"cuda-keyring",
-			"libcublas",
-			"cuda-cudart",
-			"pciutils",
-		)
 	}
 
 	configName := "Creating config for platform linux/amd64"
@@ -238,50 +225,31 @@ func TestRunnerDependenciesAndEntrypointRemainSequential(t *testing.T) {
 	assertInferenceOpInput(t, modelsDirectory, entrypoint.digest)
 }
 
-func TestSelfContainedPythonBackendsAvoidDuplicateRuntimeLayers(t *testing.T) {
+func TestArbitraryBackendInstallsOnlyCatalogSystemPackages(t *testing.T) {
 	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
-	tests := []struct {
-		name              string
-		backend           string
-		wantCompilerLayer bool
-	}{
-		{name: "Diffusers", backend: utils.BackendDiffusers},
-		{name: "vLLM", backend: utils.BackendVLLM, wantCompilerLayer: true},
+	backend := testArbitraryBackendPlan(*platform)
+	cfg := &config.InferenceConfig{
+		Backends: []string{backend.Family},
+		Models:   []config.Model{{Name: testInferenceModelName, Source: testInferenceModelSource}},
 	}
+	definition := marshalInferenceConfigWithBackend(t, cfg, backend, platform)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			definition := marshalInferenceConfig(t, &config.InferenceConfig{
-				Runtime:  utils.RuntimeNVIDIA,
-				Backends: []string{tt.backend},
-			}, platform)
-
-			assertInferenceExecCommandsExclude(t, definition,
-				"huggingface-hub",
-				"python3-pip",
-				"python3-venv",
-				"pip install uv",
-				"grpcio-tools",
-				"cuda-keyring",
-				"libcublas",
-				"cuda-cudart",
-				"pciutils",
-			)
-
-			compilerLayers := 0
-			for _, graphOp := range decodeInferenceDefinition(t, definition) {
-				if exec := graphOp.op.GetExec(); exec != nil && strings.Contains(strings.Join(exec.Meta.Args, "\x00"), "gcc libc6-dev") {
-					compilerLayers++
-				}
+	packageLayers := 0
+	for _, graphOp := range decodeInferenceDefinition(t, definition) {
+		exec := graphOp.op.GetExec()
+		if exec == nil {
+			continue
+		}
+		command := strings.Join(exec.Meta.Args, "\x00")
+		if strings.Contains(command, "apt-get install") {
+			packageLayers++
+			if !strings.Contains(command, "apt-get install --no-install-recommends -y gcc libc6-dev") {
+				t.Fatalf("system package command = %q, want only catalog packages", command)
 			}
-			wantCompilerLayers := 0
-			if tt.wantCompilerLayer {
-				wantCompilerLayers = 1
-			}
-			if compilerLayers != wantCompilerLayers {
-				t.Fatalf("compiler layer count = %d, want %d", compilerLayers, wantCompilerLayers)
-			}
-		})
+		}
+	}
+	if packageLayers != 1 {
+		t.Fatalf("system package layer count = %d, want 1", packageLayers)
 	}
 }
 
@@ -534,6 +502,20 @@ func marshalInferenceConfig(t *testing.T, cfg *config.InferenceConfig, platform 
 	return definition
 }
 
+func marshalInferenceConfigWithBackend(t *testing.T, cfg *config.InferenceConfig, backend backendcatalog.Resolution, platform *specs.Platform) *llb.Definition {
+	t.Helper()
+
+	state, _, err := aikit2LLBWithResolvedBackend(cfg, platform, platform, backend)
+	if err != nil {
+		t.Fatalf("convert inference config with backend: %v", err)
+	}
+	definition, err := state.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal inference definition: %v", err)
+	}
+	return definition
+}
+
 func marshalCopiedModels(t *testing.T, cfg *config.InferenceConfig, platform specs.Platform) *llb.Definition {
 	t.Helper()
 
@@ -589,23 +571,6 @@ func findInferenceLocalContextOps(t *testing.T, definition *llb.Definition) []in
 		}
 	}
 	return matches
-}
-
-func assertInferenceExecCommandsExclude(t *testing.T, definition *llb.Definition, fragments ...string) {
-	t.Helper()
-
-	for _, graphOp := range decodeInferenceDefinition(t, definition) {
-		exec := graphOp.op.GetExec()
-		if exec == nil {
-			continue
-		}
-		command := strings.Join(exec.Meta.Args, "\x00")
-		for _, fragment := range fragments {
-			if strings.Contains(command, fragment) {
-				t.Fatalf("exec command %q unexpectedly contains %q", command, fragment)
-			}
-		}
-	}
 }
 
 func assertInferenceOpInput(t *testing.T, graphOp inferenceDefinitionOp, want digest.Digest) {

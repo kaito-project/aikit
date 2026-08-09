@@ -8,14 +8,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"strings"
 
 	"github.com/pkg/errors"
 )
 
-const schemaVersionV1 = "v1"
+const schemaVersionV2 = "v2"
 
 var (
-	// ErrInvalidCatalog indicates that a catalog does not satisfy the v1 schema.
+	// ErrInvalidCatalog indicates that a catalog does not satisfy the current schema.
 	ErrInvalidCatalog = errors.New("invalid backend catalog")
 	// ErrInvalidRequest indicates that a resolution request is malformed.
 	ErrInvalidRequest = errors.New("invalid backend catalog request")
@@ -83,17 +84,8 @@ const (
 type Channel string
 
 const (
-	// ChannelStable is the only channel supported by schema v1.
+	// ChannelStable is the only channel supported by the current schema.
 	ChannelStable Channel = "stable"
-)
-
-// DependencyProfile identifies extra system dependencies required by a backend.
-type DependencyProfile string
-
-const (
-	DependencyProfileNone      DependencyProfile = "none"
-	DependencyProfileDiffusers DependencyProfile = "diffusers"
-	DependencyProfileVLLM      DependencyProfile = "vllm"
 )
 
 // RunnerProfile identifies an explicitly supported runner behavior.
@@ -104,16 +96,6 @@ const (
 	RunnerProfileLlamaCpp    RunnerProfile = "llama-cpp"
 	RunnerProfileVLLMCpp     RunnerProfile = "vllm-cpp"
 	RunnerProfileHFConfig    RunnerProfile = "hf-config"
-)
-
-// Base identifies the required AIKit base image family.
-type Base string
-
-const (
-	BaseDistroless   Base = "distroless"
-	BaseUbuntu       Base = "ubuntu"
-	BaseUbuntu24     Base = "ubuntu24"
-	BaseAppleSilicon Base = "applesilicon"
 )
 
 // Platform is an exact OCI target platform.
@@ -134,6 +116,12 @@ type BackendArtifact struct {
 	InstallName string `json:"installName"`
 }
 
+// RuntimeSymlink declares one validated compatibility link in the runtime base.
+type RuntimeSymlink struct {
+	Target string `json:"target"`
+	Path   string `json:"path"`
+}
+
 // Source records the immutable source used to produce a catalog.
 type Source struct {
 	Repository string `json:"repository"`
@@ -142,11 +130,24 @@ type Source struct {
 	SHA256     string `json:"sha256,omitempty"`
 }
 
+// Defaults defines catalog-owned selection defaults.
+type Defaults struct {
+	Family    string            `json:"family"`
+	Selectors []DefaultSelector `json:"selectors"`
+}
+
+// DefaultSelector maps one AIKit runtime to its default LocalAI selector.
+type DefaultSelector struct {
+	Runtime  Runtime  `json:"runtime"`
+	Selector Selector `json:"selector"`
+}
+
 // Catalog is a versioned backend catalog.
 type Catalog struct {
-	SchemaVersion string  `json:"schemaVersion"`
-	Source        Source  `json:"source"`
-	Entries       []Entry `json:"entries"`
+	SchemaVersion string   `json:"schemaVersion"`
+	Source        Source   `json:"source"`
+	Defaults      Defaults `json:"defaults"`
+	Entries       []Entry  `json:"entries"`
 
 	digest          string
 	canonicalDigest string
@@ -154,30 +155,32 @@ type Catalog struct {
 
 // Entry is an exact backend selection tuple and its complete install plan.
 type Entry struct {
-	Family            string            `json:"family"`
-	Selector          Selector          `json:"selector"`
-	Platform          Platform          `json:"platform"`
-	Runtime           Runtime           `json:"runtime"`
-	TargetProfile     TargetProfile     `json:"targetProfile"`
-	Status            Status            `json:"status"`
-	Channel           Channel           `json:"channel"`
-	Version           string            `json:"version"`
-	SourceRef         string            `json:"sourceRef"`
-	Core              Artifact          `json:"core"`
-	Backend           BackendArtifact   `json:"backend"`
-	Fallbacks         []BackendArtifact `json:"fallbacks,omitempty"`
-	DependencyProfile DependencyProfile `json:"dependencyProfile"`
-	RunnerProfile     RunnerProfile     `json:"runnerProfile"`
-	Base              Base              `json:"base"`
-	SelfContained     bool              `json:"selfContained"`
-	MinimumCUDA       string            `json:"minimumCUDA,omitempty"`
-	Workloads         []string          `json:"workloads,omitempty"`
+	Family          string            `json:"family"`
+	Selector        Selector          `json:"selector"`
+	Platform        Platform          `json:"platform"`
+	Runtime         Runtime           `json:"runtime"`
+	TargetProfile   TargetProfile     `json:"targetProfile"`
+	Status          Status            `json:"status"`
+	Channel         Channel           `json:"channel"`
+	Version         string            `json:"version"`
+	SourceRef       string            `json:"sourceRef"`
+	RuntimeBase     Artifact          `json:"runtimeBase"`
+	Core            Artifact          `json:"core"`
+	Backend         BackendArtifact   `json:"backend"`
+	Fallbacks       []BackendArtifact `json:"fallbacks,omitempty"`
+	SystemPackages  []string          `json:"systemPackages,omitempty"`
+	RuntimeSymlinks []RuntimeSymlink  `json:"runtimeSymlinks,omitempty"`
+	Environment     []string          `json:"environment,omitempty"`
+	RunnerProfile   RunnerProfile     `json:"runnerProfile"`
+	Workloads       []string          `json:"workloads,omitempty"`
 }
 
-// Request identifies one exact family, selector, and platform tuple.
+// Request identifies one runtime, family, selector, and platform tuple. Empty
+// family and selector values use the catalog-owned defaults for the runtime.
 type Request struct {
 	Family   string
 	Selector Selector
+	Runtime  Runtime
 	Platform Platform
 }
 
@@ -191,6 +194,8 @@ type Resolution struct {
 // Resolver resolves exact tuples from a validated, immutable snapshot.
 type Resolver struct {
 	entries       map[tupleKey]Entry
+	defaultFamily string
+	defaults      map[Runtime]Selector
 	catalogDigest string
 	source        Source
 }
@@ -206,7 +211,7 @@ type tupleKey struct {
 //go:embed catalog.lock.json
 var defaultCatalogJSON []byte
 
-// Parse strictly parses and validates a v1 catalog.
+// Parse strictly parses and validates a v2 catalog.
 func Parse(data []byte) (*Catalog, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -261,13 +266,31 @@ func NewResolver(catalog *Catalog) (*Resolver, error) {
 		entries[keyFor(entry.Family, entry.Selector, entry.Platform)] = cloneEntry(entry)
 	}
 
-	return &Resolver{entries: entries, catalogDigest: snapshot.digest, source: snapshot.Source}, nil
+	defaults := make(map[Runtime]Selector, len(snapshot.Defaults.Selectors))
+	for _, selection := range snapshot.Defaults.Selectors {
+		defaults[selection.Runtime] = selection.Selector
+	}
+
+	return &Resolver{
+		entries:       entries,
+		defaultFamily: snapshot.Defaults.Family,
+		defaults:      defaults,
+		catalogDigest: snapshot.digest,
+		source:        snapshot.Source,
+	}, nil
 }
 
 // Resolve returns a detached exact-match install plan without applying fallbacks.
 func (r *Resolver) Resolve(request Request) (Resolution, error) {
 	if r == nil {
 		return Resolution{}, errors.Wrap(ErrInvalidRequest, "resolver is nil")
+	}
+	request.Platform = normalizeRequestPlatform(request.Platform)
+	if request.Family == "" {
+		request.Family = r.defaultFamily
+	}
+	if request.Selector == "" {
+		request.Selector = r.defaults[request.Runtime]
 	}
 	if err := validateRequest(request); err != nil {
 		return Resolution{}, err
@@ -280,6 +303,16 @@ func (r *Resolver) Resolve(request Request) (Resolution, error) {
 			"family %q selector %q platform %q",
 			request.Family,
 			request.Selector,
+			formatPlatform(request.Platform),
+		)
+	}
+	if entry.Runtime != request.Runtime {
+		return Resolution{}, errors.Wrapf(
+			ErrNotFound,
+			"family %q selector %q runtime %q platform %q",
+			request.Family,
+			request.Selector,
+			request.Runtime,
 			formatPlatform(request.Platform),
 		)
 	}
@@ -340,6 +373,7 @@ func digestBytes(data []byte) string {
 
 func cloneCatalog(catalog Catalog) Catalog {
 	clone := catalog
+	clone.Defaults.Selectors = append([]DefaultSelector(nil), catalog.Defaults.Selectors...)
 	clone.Entries = make([]Entry, len(catalog.Entries))
 	for i, entry := range catalog.Entries {
 		clone.Entries[i] = cloneEntry(entry)
@@ -351,6 +385,9 @@ func cloneCatalog(catalog Catalog) Catalog {
 func cloneEntry(entry Entry) Entry {
 	clone := entry
 	clone.Fallbacks = append([]BackendArtifact(nil), entry.Fallbacks...)
+	clone.SystemPackages = append([]string(nil), entry.SystemPackages...)
+	clone.RuntimeSymlinks = append([]RuntimeSymlink(nil), entry.RuntimeSymlinks...)
+	clone.Environment = append([]string(nil), entry.Environment...)
 	clone.Workloads = append([]string(nil), entry.Workloads...)
 
 	return clone
@@ -364,4 +401,21 @@ func keyFor(family string, selector Selector, platform Platform) tupleKey {
 		architecture: platform.Architecture,
 		variant:      platform.Variant,
 	}
+}
+
+func normalizeRequestPlatform(platform Platform) Platform {
+	platform.OS = strings.ToLower(strings.TrimSpace(platform.OS))
+	platform.Architecture = strings.ToLower(strings.TrimSpace(platform.Architecture))
+	platform.Variant = strings.ToLower(strings.TrimSpace(platform.Variant))
+	switch platform.Architecture {
+	case "x86_64", "x86-64":
+		platform.Architecture = platformArchitectureAMD64
+	case "aarch64":
+		platform.Architecture = platformArchitectureARM64
+	}
+	if platform.Architecture == platformArchitectureARM64 && platform.Variant == "v8" {
+		platform.Variant = ""
+	}
+
+	return platform
 }

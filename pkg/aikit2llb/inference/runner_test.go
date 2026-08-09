@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/solver/pb"
@@ -103,36 +104,35 @@ func TestInstallRunnerDependencies(t *testing.T) {
 	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
 	tests := []struct {
 		name             string
-		backend          string
-		runtime          string
+		runnerProfile    backendcatalog.RunnerProfile
 		wantDependencies bool
 	}{
 		{
-			name:             "llama-cpp installs downloader dependencies",
-			backend:          utils.BackendLlamaCpp,
+			name:             "llama-cpp profile installs downloader dependencies",
+			runnerProfile:    backendcatalog.RunnerProfileLlamaCpp,
 			wantDependencies: true,
 		},
 		{
-			name:    "diffusers uses bundled downloader",
-			backend: utils.BackendDiffusers,
-			runtime: utils.RuntimeNVIDIA,
+			name:          "HF config profile uses bundled downloader",
+			runnerProfile: backendcatalog.RunnerProfileHFConfig,
 		},
 		{
-			name:    "vllm uses bundled downloader",
-			backend: utils.BackendVLLM,
-			runtime: utils.RuntimeNVIDIA,
+			name:          "unsupported profile has no runner dependencies",
+			runnerProfile: backendcatalog.RunnerProfileUnsupported,
 		},
 		{
-			name:             "vllm-cpp installs downloader dependencies",
-			backend:          utils.BackendVLLMCpp,
+			name:             "vllm-cpp profile installs downloader dependencies",
+			runnerProfile:    backendcatalog.RunnerProfileVLLMCpp,
 			wantDependencies: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			state, _ := installRunnerDependencies(
-				&config.InferenceConfig{Runtime: tt.runtime, Backends: []string{tt.backend}},
+			backend := testArbitraryBackendPlan(platform)
+			backend.RunnerProfile = tt.runnerProfile
+			state, _ := installRunnerDependenciesWithBackend(
+				backend,
 				llb.Scratch(),
 				llb.Scratch(),
 				platform,

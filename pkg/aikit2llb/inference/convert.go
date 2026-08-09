@@ -13,11 +13,6 @@ import (
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-const (
-	distrolessBase = "ghcr.io/kaito-project/aikit/base:latest"
-	rocmVersion    = "7.2"
-)
-
 // Aikit2LLB converts an InferenceConfig to an LLB state.
 func Aikit2LLB(c *config.InferenceConfig, targetPlatform *specs.Platform) (llb.State, *specs.Image, error) {
 	return Aikit2LLBWithPlatforms(c, targetPlatform, targetPlatform)
@@ -58,18 +53,10 @@ func aikit2LLBWithResolvedBackend(c *config.InferenceConfig, buildPlatform, targ
 		buildPlatform = targetPlatform
 	}
 
-	var merge, state llb.State
-	switch c.Runtime {
-	case utils.RuntimeAppleSilicon:
-		state = llb.Image(utils.AppleSiliconBase, llb.Platform(*targetPlatform))
-	case utils.RuntimeROCm:
-		// Use Ubuntu 24.04 for ROCm to match noble repository.
-		state = llb.Image(utils.Ubuntu24Base, llb.Platform(*targetPlatform))
-	default:
-		state = llb.Image(utils.UbuntuBase, llb.Platform(*targetPlatform))
-	}
+	var merge llb.State
+	state := llb.Image(backend.RuntimeBase.Ref, llb.Platform(*targetPlatform))
 	buildBase := state
-	base := getBaseImage(c, backend, targetPlatform)
+	base := state
 
 	var err error
 	if isRunnerMode(c) {
@@ -91,38 +78,11 @@ func aikit2LLBWithResolvedBackend(c *config.InferenceConfig, buildPlatform, targ
 		return state, nil, err
 	}
 
-	// install rocm if runtime is rocm and architecture is amd64
-	if backend.Runtime == backendcatalog.RuntimeROCm && targetPlatform.Architecture == utils.PlatformAMD64 {
-		state, merge = installRocm(state, merge)
-	}
-
 	// Install the exact backend artifacts selected during catalog preflight.
 	merge = installBackends(backend, *targetPlatform, state, merge)
 
 	imageCfg := NewImageConfigWithBackend(c, backend, targetPlatform)
 	return merge, imageCfg, nil
-}
-
-// getBaseImage returns the base image given the InferenceConfig and platform.
-func getBaseImage(c *config.InferenceConfig, backend backendcatalog.Resolution, platform *specs.Platform) llb.State {
-	// Runner images need a package-capable base for their runtime downloader.
-	if isRunnerMode(c) {
-		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
-	}
-
-	switch backend.Base {
-	case backendcatalog.BaseDistroless:
-		return llb.Image(distrolessBase, llb.Platform(*platform))
-	case backendcatalog.BaseUbuntu:
-		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
-	case backendcatalog.BaseUbuntu24:
-		return llb.Image(utils.Ubuntu24Base, llb.Platform(*platform))
-	case backendcatalog.BaseAppleSilicon:
-		return llb.Image(utils.AppleSiliconBase, llb.Platform(*platform))
-	default:
-		// Catalog validation rejects unknown base profiles before conversion.
-		panic(fmt.Sprintf("unsupported validated backend base %q", backend.Base))
-	}
 }
 
 // writeConfig writes the /config.yaml file to the image when c.Config is set.
@@ -206,34 +166,6 @@ func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, buildPla
 	diff := llb.Diff(savedState, s)
 	merge := llb.Merge([]llb.State{base, diff})
 	return s, merge, nil
-}
-
-func installRocm(s llb.State, merge llb.State) (llb.State, llb.State) {
-	savedState := s
-
-	// Set up ROCm repository
-	s = s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y ca-certificates curl gnupg && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*"), llb.IgnoreCache).Root()
-
-	// Add ROCm GPG key and repository
-	s = s.Run(utils.Sh("curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/rocm.gpg")).Root()
-	s = s.Run(utils.Shf("echo 'deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/rocm.gpg] https://repo.radeon.com/rocm/apt/%s/ noble main' >> /etc/apt/sources.list.d/rocm.list", rocmVersion)).Root()
-	s = s.Run(utils.Shf("echo 'deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/rocm.gpg] https://repo.radeon.com/graphics/%s/ubuntu noble main' >> /etc/apt/sources.list.d/rocm.list", rocmVersion)).Root()
-	rocmPinning := `
-Package: *
-Pin: release o=repo.radeon.com
-Pin-Priority: 600
-`
-	s = s.Run(utils.Shf("echo '%s' > /etc/apt/preferences.d/repo-radeon-pin-600", rocmPinning)).Root()
-	s = s.Run(utils.Sh("apt-get update"), llb.IgnoreCache).Root()
-
-	// Install the audited host runtime shared by cataloged ROCm backends.
-	s = s.Run(utils.Sh("apt-get install -y --no-install-recommends pciutils rocm && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*")).Root()
-
-	// hipblaslt soname compatibility: backend may be linked against .so.0 while ROCm 7.2 ships .so.1
-	s = s.Run(utils.Sh("set -e; cd /opt/rocm/lib; [ -e libhipblaslt.so.0 ] || ln -sf libhipblaslt.so.1 libhipblaslt.so.0")).Root()
-
-	diff := llb.Diff(savedState, s)
-	return s, llb.Merge([]llb.State{merge, diff})
 }
 
 // addLocalAI adds the LocalAI binary to the image.
