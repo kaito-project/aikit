@@ -32,6 +32,13 @@ if ! grep -q -- '--latest=false' "$artifact_publisher"; then
   echo "artifact publisher must create GitHub releases with Latest disabled" >&2
   exit 1
 fi
+helm_publish_line=$(grep -nF -- '- name: Publish Helm chart' "$artifact_publisher" | cut -d: -f1)
+github_release_line=$(grep -nF -- '- name: Create GitHub release' "$artifact_publisher" | cut -d: -f1)
+if [[ -z $helm_publish_line || -z $github_release_line ]] || \
+  ((github_release_line <= helm_publish_line)); then
+  echo "GitHub release publication must follow successful Helm publication" >&2
+  exit 1
+fi
 if ! grep -q 'workflow_run:' "$reconciler" || \
   ! grep -q 'select-latest-release.sh' "$reconciler"; then
   echo "trusted latest reconciliation trigger or selector is missing" >&2

@@ -143,6 +143,14 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity "https://github.com/kaito-project/aikit/.github/workflows/release.yaml@${GITHUB_REF}"
 
+      - name: Publish Helm chart
+        uses: stefanprodan/helm-gh-pages@0ad2bb377311d61ac04ad9eb6f252fb68e207260 # v1.7.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          charts_dir: charts
+          target_dir: charts
+          linting: off
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -160,11 +168,3 @@ jobs:
               --latest=false
             echo "Created ${GITHUB_REF_NAME}; the reconciler assigns GitHub Latest." >>"${GITHUB_STEP_SUMMARY}"
           fi
-
-      - name: Publish Helm chart
-        uses: stefanprodan/helm-gh-pages@0ad2bb377311d61ac04ad9eb6f252fb68e207260 # v1.7.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          charts_dir: charts
-          target_dir: charts
-          linting: off
