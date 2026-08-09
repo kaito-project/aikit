@@ -65,11 +65,6 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
-      - name: Validate release version policy
-        env:
-          RELEASE_VERSION: ${{ inputs.release_version }}
-        run: scripts/ci/validate-release-version.sh "${RELEASE_VERSION}" either
-
       - name: Resolve release candidate
         id: commit
         env:
@@ -94,6 +89,19 @@ jobs:
           fi
 
           echo "sha=${release_commit}" >>"${GITHUB_OUTPUT}"
+
+      - name: Validate release version policy
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_COMMIT: ${{ steps.commit.outputs.sha }}
+          RELEASE_TAG_EXISTS: ${{ steps.commit.outputs.tag_exists }}
+        run: |
+          set -euo pipefail
+          validator_args=("${RELEASE_VERSION}" either)
+          if [[ ${RELEASE_TAG_EXISTS} != true ]]; then
+            validator_args+=("${RELEASE_COMMIT}")
+          fi
+          scripts/ci/validate-release-version.sh "${validator_args[@]}"
 
       - name: Validate release provenance
         id: provenance
@@ -157,7 +165,15 @@ jobs:
       - name: Recheck release version policy
         env:
           RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
-        run: scripts/ci/validate-release-version.sh "${RELEASE_VERSION}" either
+          RELEASE_COMMIT: ${{ needs.preflight.outputs.release_commit }}
+          RELEASE_TAG_EXISTED: ${{ needs.preflight.outputs.release_tag_exists }}
+        run: |
+          set -euo pipefail
+          validator_args=("${RELEASE_VERSION}" either)
+          if [[ ${RELEASE_TAG_EXISTED} != true ]]; then
+            validator_args+=("${RELEASE_COMMIT}")
+          fi
+          scripts/ci/validate-release-version.sh "${validator_args[@]}"
 
       - name: Recheck release state
         id: state
@@ -303,6 +319,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
           SYNC_BRANCH: sync-released-version-to-main
+          TRUSTED_MAIN_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
           manifest_dir=$(mktemp -d)
@@ -310,6 +327,10 @@ jobs:
 
           git fetch --quiet --no-tags origin refs/heads/main
           main_commit=$(git rev-parse 'FETCH_HEAD^{commit}')
+          if [[ "${main_commit}" != "${TRUSTED_MAIN_COMMIT}" ]]; then
+            echo "main advanced from ${TRUSTED_MAIN_COMMIT} to ${main_commit}; rerun Publish release." >&2
+            exit 1
+          fi
           git show "${main_commit}:Makefile" >"${manifest_dir}/main-Makefile"
           git show "${main_commit}:charts/aikit/Chart.yaml" >"${manifest_dir}/main-Chart.yaml"
           planner_arguments=(

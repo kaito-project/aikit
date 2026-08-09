@@ -6,12 +6,16 @@ repository_root=$(cd "$script_dir/../.." && pwd)
 artifact_publisher="$repository_root/.github/workflows/release.yaml"
 runner_publisher="$repository_root/.github/workflows/release-runners.yaml"
 reconciler="$repository_root/.github/workflows/reconcile-release-latest.yaml"
+release_publisher="$repository_root/.github/workflows/publish-release.yaml"
 literal_dollar='$'
 publisher_candidate="candidate-${literal_dollar}{{ github.run_id }}-${literal_dollar}{{ github.run_attempt }}"
 app_reconciler_candidate="candidate-${literal_dollar}{RUN_ID}-${literal_dollar}{RUN_ATTEMPT}"
 runner_reconciler_candidate="candidate-${literal_dollar}{RUN_ID}-${literal_dollar}{candidate_attempt}"
 reconciler_version_tag="--tag \"${literal_dollar}{image}:${literal_dollar}{VERSION}\""
 reconciler_latest_tag="--tag \"${literal_dollar}{image}:latest\""
+release_commit_validator_arg="validator_args+=(\"${literal_dollar}{RELEASE_COMMIT}\")"
+trusted_main_environment="TRUSTED_MAIN_COMMIT: ${literal_dollar}{{ github.sha }}"
+trusted_main_check="if [[ \"${literal_dollar}{main_commit}\" != \"${literal_dollar}{TRUSTED_MAIN_COMMIT}\" ]]"
 
 for publisher in "$artifact_publisher" "$runner_publisher"; do
   if grep -q ':latest' "$publisher"; then
@@ -87,6 +91,15 @@ if [[ $(grep -c 'group: release-artifacts' "$artifact_publisher") -ne 1 ]] || \
   [[ $(grep -c 'group: release-runner-images' "$runner_publisher") -ne 1 ]] || \
   [[ $(grep -c 'group: release-runner-images' "$reconciler") -ne 2 ]]; then
   echo "publishers and reconcilers must share serialization groups" >&2
+  exit 1
+fi
+if [[ $(grep -cF "$release_commit_validator_arg" "$release_publisher") -ne 2 ]]; then
+  echo "new release validation must bind release-line ancestry to the selected commit before and after approval" >&2
+  exit 1
+fi
+if [[ $(grep -cF "$trusted_main_environment" "$release_publisher") -ne 1 ]] || \
+  ! grep -qF "$trusted_main_check" "$release_publisher"; then
+  echo "privileged version sync must reject a stale trusted main snapshot before minting its App token" >&2
   exit 1
 fi
 
