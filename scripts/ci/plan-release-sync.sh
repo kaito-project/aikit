@@ -76,8 +76,8 @@ read_manifest_version() {
   if [[ ! -f $chart_path ]]; then
     fail "$description Helm chart is missing: $chart_path"
   fi
-  chart_version_count=$(awk '/^version:[[:space:]]*/ { count++ } END { print count + 0 }' "$chart_path")
-  chart_app_version_count=$(awk '/^appVersion:[[:space:]]*/ { count++ } END { print count + 0 }' "$chart_path")
+  chart_version_count=$(awk '/^version:[[:space:]]+/ { count++ } END { print count + 0 }' "$chart_path")
+  chart_app_version_count=$(awk '/^appVersion:[[:space:]]+/ { count++ } END { print count + 0 }' "$chart_path")
   if [[ $chart_version_count -ne 1 ]]; then
     fail "$description Helm chart must contain exactly one top-level version; found $chart_version_count"
   fi
@@ -85,17 +85,17 @@ read_manifest_version() {
     fail "$description Helm chart must contain exactly one top-level appVersion; found $chart_app_version_count"
   fi
   chart_version=$(awk '
-    /^version:[[:space:]]*/ {
+    /^version:[[:space:]]+/ {
       value = $0
-      sub(/^version:[[:space:]]*/, "", value)
+      sub(/^version:[[:space:]]+/, "", value)
       sub(/[[:space:]]*$/, "", value)
       print value
     }
   ' "$chart_path")
   chart_app_version=$(awk '
-    /^appVersion:[[:space:]]*/ {
+    /^appVersion:[[:space:]]+/ {
       value = $0
-      sub(/^appVersion:[[:space:]]*/, "", value)
+      sub(/^appVersion:[[:space:]]+/, "", value)
       sub(/[[:space:]]*$/, "", value)
       print value
     }
@@ -107,18 +107,41 @@ read_manifest_version() {
   fi
 }
 
-compare_release_lines() {
-  local left_major=$1
-  local left_minor=$2
-  local right_major=$3
-  local right_minor=$4
+compare_decimal_components() {
+  local left=$1
+  local right=$2
+  local LC_ALL=C
 
   comparison=0
-  if ((left_major > right_major || (left_major == right_major && left_minor > right_minor))); then
+  if ((${#left} > ${#right})); then
     comparison=1
-  elif ((left_major < right_major || (left_major == right_major && left_minor < right_minor))); then
+  elif ((${#left} < ${#right})); then
+    comparison=-1
+  elif [[ $left > $right ]]; then
+    comparison=1
+  elif [[ $left < $right ]]; then
     comparison=-1
   fi
+}
+
+compare_release_lines() {
+  compare_decimal_components "$1" "$3"
+  if ((comparison != 0)); then
+    return
+  fi
+  compare_decimal_components "$2" "$4"
+}
+
+compare_versions() {
+  compare_decimal_components "$1" "$4"
+  if ((comparison != 0)); then
+    return
+  fi
+  compare_decimal_components "$2" "$5"
+  if ((comparison != 0)); then
+    return
+  fi
+  compare_decimal_components "$3" "$6"
 }
 
 parse_version "$release_version" "release version"
@@ -146,10 +169,13 @@ pending_index=-1
 for ((index = 1; index < ${#manifest_versions[@]}; index++)); do
   if ((pending_index == -1)); then
     pending_index=$index
-  elif ((manifest_majors[index] > manifest_majors[pending_index] ||
-    (manifest_majors[index] == manifest_majors[pending_index] && manifest_minors[index] > manifest_minors[pending_index]) ||
-    (manifest_majors[index] == manifest_majors[pending_index] && manifest_minors[index] == manifest_minors[pending_index] && manifest_patches[index] > manifest_patches[pending_index]))); then
-    pending_index=$index
+  else
+    compare_versions \
+      "${manifest_majors[index]}" "${manifest_minors[index]}" "${manifest_patches[index]}" \
+      "${manifest_majors[pending_index]}" "${manifest_minors[pending_index]}" "${manifest_patches[pending_index]}"
+    if ((comparison > 0)); then
+      pending_index=$index
+    fi
   fi
 done
 

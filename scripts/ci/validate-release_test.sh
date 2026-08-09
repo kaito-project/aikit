@@ -372,4 +372,14 @@ if run_validator v1.2.3 "$trailing_chart_commit" 42 "$valid_pr_details" >/dev/nu
   exit 1
 fi
 
+git -C "$work_dir/repository" checkout --quiet -b missing-chart-separator "$release_commit"
+printf '%s\n' 'version:1.2.3' 'appVersion:v1.2.3' >"$work_dir/repository/charts/aikit/Chart.yaml"
+git -C "$work_dir/repository" add charts/aikit/Chart.yaml
+git -C "$work_dir/repository" commit --quiet -m "remove chart YAML separators"
+missing_chart_separator_commit=$(git -C "$work_dir/repository" rev-parse HEAD)
+if run_validator v1.2.3 "$missing_chart_separator_commit" 42 "$valid_pr_details" >/dev/null 2>&1; then
+  echo "chart versions without YAML separators unexpectedly passed" >&2
+  exit 1
+fi
+
 echo "release validator tests passed"

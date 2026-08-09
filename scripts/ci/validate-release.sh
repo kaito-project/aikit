@@ -114,8 +114,8 @@ read_release_manifests() {
     manifest_validation_error="charts/aikit/Chart.yaml is missing at $commit"
     return 1
   fi
-  chart_version_count=$(awk '/^version:[[:space:]]*/ { count++ } END { print count + 0 }' <<<"$chart_content")
-  chart_app_version_count=$(awk '/^appVersion:[[:space:]]*/ { count++ } END { print count + 0 }' <<<"$chart_content")
+  chart_version_count=$(awk '/^version:[[:space:]]+/ { count++ } END { print count + 0 }' <<<"$chart_content")
+  chart_app_version_count=$(awk '/^appVersion:[[:space:]]+/ { count++ } END { print count + 0 }' <<<"$chart_content")
   if [[ $chart_version_count -ne 1 ]]; then
     manifest_validation_error="Helm chart at $commit must contain exactly one top-level version; found $chart_version_count"
     return 1
@@ -125,17 +125,17 @@ read_release_manifests() {
     return 1
   fi
   manifest_chart_version=$(awk '
-    /^version:[[:space:]]*/ {
+    /^version:[[:space:]]+/ {
       value = $0
-      sub(/^version:[[:space:]]*/, "", value)
+      sub(/^version:[[:space:]]+/, "", value)
       sub(/[[:space:]]*$/, "", value)
       print value
     }
   ' <<<"$chart_content")
   manifest_chart_app_version=$(awk '
-    /^appVersion:[[:space:]]*/ {
+    /^appVersion:[[:space:]]+/ {
       value = $0
-      sub(/^appVersion:[[:space:]]*/, "", value)
+      sub(/^appVersion:[[:space:]]+/, "", value)
       sub(/[[:space:]]*$/, "", value)
       print value
     }
