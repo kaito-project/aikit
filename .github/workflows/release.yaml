@@ -8,6 +8,7 @@ on:
 concurrency:
   group: release-artifacts
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read

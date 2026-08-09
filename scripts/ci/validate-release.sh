@@ -15,6 +15,50 @@ fail() {
   exit 1
 }
 
+workflow_runs_are_valid() {
+  local subject=$1
+  local action_runs=$2
+  local checks_ok=true
+  local lint_succeeded=false
+  local unit_test_succeeded=false
+  local seen_workflow_paths=$'\n'
+  local created_at
+  local run_id
+  local workflow_path
+  local status
+  local conclusion
+
+  while IFS=$'\t' read -r created_at run_id workflow_path status conclusion; do
+    if [[ -z $workflow_path ]]; then
+      continue
+    fi
+    if [[ -z $created_at || ! $run_id =~ ^[0-9]+$ || $workflow_path != .github/workflows/* || -z $status || -z $conclusion ]]; then
+      fail "GitHub returned invalid workflow run data for $subject"
+    fi
+    if [[ $seen_workflow_paths == *$'\n'"$workflow_path"$'\n'* ]]; then
+      continue
+    fi
+    seen_workflow_paths+="${workflow_path}"$'\n'
+
+    if [[ $status != completed || ! $conclusion =~ ^(success|neutral|skipped)$ ]]; then
+      echo "$subject workflow $workflow_path is ${status}/${conclusion}; all latest workflow runs must complete successfully." >&2
+      checks_ok=false
+    fi
+    if [[ $workflow_path == .github/workflows/lint.yaml && $status == completed && $conclusion == success ]]; then
+      lint_succeeded=true
+    fi
+    if [[ $workflow_path == .github/workflows/unit-test.yaml && $status == completed && $conclusion == success ]]; then
+      unit_test_succeeded=true
+    fi
+  done < <(LC_ALL=C sort -t $'\t' -k1,1r -k2,2nr <<<"$action_runs")
+
+  if [[ $lint_succeeded != true || $unit_test_succeeded != true ]]; then
+    echo "$subject must have successful lint and unit-test workflow runs." >&2
+    checks_ok=false
+  fi
+  [[ $checks_ok == true ]]
+}
+
 strip_matching_quotes() {
   local value=$1
   local first_character
@@ -167,14 +211,14 @@ if ! release_pr_numbers=$(gh api \
   --paginate \
   "repos/${GITHUB_REPOSITORY}/issues" \
   -f state=closed \
-  -f "labels=release-pr,${release_version}" \
+  -f labels=release-pr \
   -f per_page=100 \
   --jq '.[] | select(.pull_request != null) | .number'); then
   fail "could not query release pull request candidates"
 fi
 
 if [[ -z $release_pr_numbers ]]; then
-  fail "no closed pull request has labels release-pr and $release_version"
+  fail "no closed pull request has the release-pr label"
 fi
 
 matching_pr=
@@ -187,11 +231,17 @@ while read -r pr_number; do
   fi
   if ! pr_details=$(gh api \
     "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" \
-    --jq '[.merged, .base.ref, (.base.sha // "-"), (.merge_commit_sha // "-"), (.head.sha // "-")] | @tsv'); then
+    --jq '[.merged, .base.ref, (.base.sha // "-"), (.merge_commit_sha // "-"), (.head.sha // "-"), (.head.ref // "-"), (.head.repo.full_name // "-")] | @tsv'); then
     fail "could not inspect release pull request #$pr_number"
   fi
-  IFS=$'\t' read -r merged base_branch base_commit merge_commit head_commit <<<"$pr_details"
-  if [[ $merged != true || $base_branch != "$release_branch" || $base_commit == "-" || $merge_commit == "-" || $head_commit == "-" ]]; then
+  IFS=$'\t' read -r merged base_branch base_commit merge_commit head_commit head_branch head_repository <<<"$pr_details"
+  if [[ $merged != true ||
+    $base_branch != "$release_branch" ||
+    ( $head_branch != "prepare-${release_version}" && $head_branch != "release-${release_version}" ) ||
+    $head_repository != "$GITHUB_REPOSITORY" ||
+    $base_commit == "-" ||
+    $merge_commit == "-" ||
+    $head_commit == "-" ]]; then
     continue
   fi
   if ! [[ $base_commit =~ ^[0-9a-f]{40}$ && $merge_commit =~ ^[0-9a-f]{40}$ && $head_commit =~ ^[0-9a-f]{40}$ ]]; then
@@ -246,43 +296,11 @@ while read -r pr_number; do
     -f event=pull_request \
     -f "head_sha=${head_commit}" \
     -f per_page=100 \
-    --jq ".workflow_runs[] | select(any(.pull_requests[]?; .number == ${pr_number})) | [.created_at, .id, .path, .status, (.conclusion // \"-\")] | @tsv"); then
+    --jq ".workflow_runs[] | select(.event == \"pull_request\" and .head_sha == \"${head_commit}\" and any(.pull_requests[]?; .number == ${pr_number})) | [.created_at, .id, .path, .status, (.conclusion // \"-\")] | @tsv"); then
     fail "could not inspect workflow runs for release pull request #$pr_number"
   fi
 
-  checks_ok=true
-  lint_succeeded=false
-  unit_test_succeeded=false
-  seen_workflow_paths=$'\n'
-  while IFS=$'\t' read -r created_at run_id workflow_path status conclusion; do
-    if [[ -z $workflow_path ]]; then
-      continue
-    fi
-    if [[ -z $created_at || ! $run_id =~ ^[0-9]+$ || $workflow_path != .github/workflows/* || -z $status || -z $conclusion ]]; then
-      fail "GitHub returned invalid workflow run data for release pull request #$pr_number"
-    fi
-    if [[ $seen_workflow_paths == *$'\n'"$workflow_path"$'\n'* ]]; then
-      continue
-    fi
-    seen_workflow_paths+="${workflow_path}"$'\n'
-
-    if [[ $status != completed || ! $conclusion =~ ^(success|neutral|skipped)$ ]]; then
-      echo "Release pull request #$pr_number workflow $workflow_path is ${status}/${conclusion}; all latest workflow runs must complete successfully." >&2
-      checks_ok=false
-    fi
-    if [[ $workflow_path == .github/workflows/lint.yaml && $status == completed && $conclusion == success ]]; then
-      lint_succeeded=true
-    fi
-    if [[ $workflow_path == .github/workflows/unit-test.yaml && $status == completed && $conclusion == success ]]; then
-      unit_test_succeeded=true
-    fi
-  done < <(LC_ALL=C sort -t $'\t' -k1,1r -k2,2nr <<<"$action_runs")
-
-  if [[ $lint_succeeded != true || $unit_test_succeeded != true ]]; then
-    echo "Release pull request #$pr_number must have successful lint and unit-test workflow runs." >&2
-    checks_ok=false
-  fi
-  if [[ $checks_ok == true ]]; then
+  if workflow_runs_are_valid "Release pull request #$pr_number" "$action_runs"; then
     matching_pr=$pr_number
     break
   fi
@@ -290,6 +308,21 @@ done <<<"$release_pr_numbers"
 
 if [[ -z $matching_pr ]]; then
   fail "no checked, matching release pull request merge is an ancestor of $release_commit"
+fi
+
+if ! release_action_runs=$(gh api \
+  --method GET \
+  --paginate \
+  "repos/${GITHUB_REPOSITORY}/actions/runs" \
+  -f event=push \
+  -f "branch=${release_branch}" \
+  -f "head_sha=${release_commit}" \
+  -f per_page=100 \
+  --jq ".workflow_runs[] | select(.event == \"push\" and .head_branch == \"${release_branch}\" and .head_sha == \"${release_commit}\") | [.created_at, .id, .path, .status, (.conclusion // \"-\")] | @tsv"); then
+  fail "could not inspect branch workflow runs for release commit $release_commit"
+fi
+if ! workflow_runs_are_valid "Release commit $release_commit on $release_branch" "$release_action_runs"; then
+  fail "release commit $release_commit does not have successful branch CI"
 fi
 
 echo "Validated $release_version at $release_commit on $release_branch using release pull request #$matching_pr."

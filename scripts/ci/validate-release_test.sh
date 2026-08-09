@@ -13,6 +13,10 @@ set -euo pipefail
 if [[ ${1:-} == api ]]; then
   case " $* " in
     *"/issues "*)
+      if [[ " $* " != *" -f labels=release-pr "* ]]; then
+        echo "release pull request lookup must use only the stable release-pr label" >&2
+        exit 1
+      fi
       printf '%s' "${FAKE_GH_ISSUES:-}"
       exit 0
       ;;
@@ -25,7 +29,26 @@ if [[ ${1:-} == api ]]; then
       exit 0
       ;;
     *"/actions/runs "*)
-      printf '%s' "${FAKE_GH_ACTION_RUNS:-}"
+      if [[ " $* " == *" -f event=push "* ]]; then
+        if [[ " $* " != *" -f branch=${FAKE_EXPECTED_RELEASE_BRANCH} "* ||
+          " $* " != *" -f head_sha=${FAKE_EXPECTED_RELEASE_COMMIT} "* ||
+          " $* " != *".event == \"push\""* ||
+          " $* " != *".head_branch == \"${FAKE_EXPECTED_RELEASE_BRANCH}\""* ||
+          " $* " != *".head_sha == \"${FAKE_EXPECTED_RELEASE_COMMIT}\""* ]]; then
+          echo "release commit lookup must bind push runs to the exact branch and commit" >&2
+          exit 1
+        fi
+        printf '%s' "${FAKE_GH_RELEASE_ACTION_RUNS:-}"
+      else
+        if [[ " $* " != *" -f event=pull_request "* ||
+          " $* " != *" -f head_sha=${FAKE_EXPECTED_PR_HEAD} "* ||
+          " $* " != *".event == \"pull_request\""* ||
+          " $* " != *".head_sha == \"${FAKE_EXPECTED_PR_HEAD}\""* ]]; then
+          echo "release pull request lookup must bind runs to the exact head commit" >&2
+          exit 1
+        fi
+        printf '%s' "${FAKE_GH_PR_ACTION_RUNS:-}"
+      fi
       exit 0
       ;;
   esac
@@ -85,24 +108,57 @@ run_validator() {
   local commit=$2
   local release_pr_issues=$3
   local release_pr_details=$4
-  local release_action_runs=${5-$valid_action_runs}
+  local release_pr_action_runs=${5-$valid_action_runs}
   local release_pr_files=${6-$valid_pr_files}
+  local release_commit_action_runs=${7-$valid_action_runs}
   (
     cd "$work_dir/repository"
     PATH="$work_dir/bin:$PATH" \
       FAKE_GH_ISSUES="$release_pr_issues" \
       FAKE_GH_PR_DETAILS="$release_pr_details" \
       FAKE_GH_PR_FILES="$release_pr_files" \
-      FAKE_GH_ACTION_RUNS="$release_action_runs" \
+      FAKE_GH_PR_ACTION_RUNS="$release_pr_action_runs" \
+      FAKE_GH_RELEASE_ACTION_RUNS="$release_commit_action_runs" \
+      FAKE_EXPECTED_PR_HEAD="$release_pr_commit" \
+      FAKE_EXPECTED_RELEASE_BRANCH=release-1.2 \
+      FAKE_EXPECTED_RELEASE_COMMIT="$commit" \
       GH_TOKEN=test-token \
       GITHUB_REPOSITORY=example/aikit \
       "$validator" "$version" "$commit"
   )
 }
 
-valid_pr_details=$(printf 'true\trelease-1.2\t%s\t%s\t%s' \
+format_pr_details() {
+  local base_commit=$1
+  local merge_commit=$2
+  local head_commit=$3
+  local head_branch=${4:-prepare-v1.2.3}
+  local head_repository=${5:-example/aikit}
+
+  printf 'true\trelease-1.2\t%s\t%s\t%s\t%s\t%s' \
+    "$base_commit" "$merge_commit" "$head_commit" "$head_branch" "$head_repository"
+}
+
+valid_pr_details=$(format_pr_details \
   "$unrelated_ancestor_commit" "$release_pr_commit" "$release_pr_commit")
 run_validator v1.2.3 "$release_commit" 42 "$valid_pr_details" >/dev/null
+legacy_pr_details=$(format_pr_details \
+  "$unrelated_ancestor_commit" "$release_pr_commit" "$release_pr_commit" release-v1.2.3)
+run_validator v1.2.3 "$release_commit" 42 "$legacy_pr_details" >/dev/null
+
+wrong_head_branch_pr_details=$(format_pr_details \
+  "$unrelated_ancestor_commit" "$release_pr_commit" "$release_pr_commit" prepare-v1.2.4)
+if run_validator v1.2.3 "$release_commit" 42 "$wrong_head_branch_pr_details" >/dev/null 2>&1; then
+  echo "release pull request from an unexpected head branch unexpectedly passed" >&2
+  exit 1
+fi
+
+wrong_head_repository_pr_details=$(format_pr_details \
+  "$unrelated_ancestor_commit" "$release_pr_commit" "$release_pr_commit" prepare-v1.2.3 fork/aikit)
+if run_validator v1.2.3 "$release_commit" 42 "$wrong_head_repository_pr_details" >/dev/null 2>&1; then
+  echo "release pull request from another repository unexpectedly passed" >&2
+  exit 1
+fi
 
 if run_validator v1.2.3 "$release_commit" 42 "$valid_pr_details" "" >/dev/null 2>&1; then
   echo "release pull request without checks unexpectedly passed" >&2
@@ -117,12 +173,30 @@ if run_validator v1.2.3 "$release_commit" 42 "$valid_pr_details" "$failed_action
   echo "release pull request with a failed required workflow unexpectedly passed" >&2
   exit 1
 fi
+if run_validator \
+  v1.2.3 "$release_commit" 42 "$valid_pr_details" "$valid_action_runs" "$valid_pr_files" "$failed_action_runs" \
+  >/dev/null 2>&1; then
+  echo "release commit with a failed required workflow unexpectedly passed" >&2
+  exit 1
+fi
+if run_validator \
+  v1.2.3 "$release_commit" 42 "$valid_pr_details" "$valid_action_runs" "$valid_pr_files" "" \
+  >/dev/null 2>&1; then
+  echo "release commit without checks unexpectedly passed" >&2
+  exit 1
+fi
 
 pending_action_runs=$(printf '%s\n%s' \
   $'2026-08-08T20:00:02Z\t102\t.github/workflows/lint.yaml\tin_progress\t-' \
   $'2026-08-08T20:00:01Z\t101\t.github/workflows/unit-test.yaml\tcompleted\tsuccess')
 if run_validator v1.2.3 "$release_commit" 42 "$valid_pr_details" "$pending_action_runs" >/dev/null 2>&1; then
   echo "release pull request with an unfinished workflow unexpectedly passed" >&2
+  exit 1
+fi
+if run_validator \
+  v1.2.3 "$release_commit" 42 "$valid_pr_details" "$valid_action_runs" "$valid_pr_files" "$pending_action_runs" \
+  >/dev/null 2>&1; then
+  echo "release commit with an unfinished workflow unexpectedly passed" >&2
   exit 1
 fi
 
@@ -132,6 +206,12 @@ failed_optional_action_runs=$(printf '%s\n%s\n%s' \
   $'2026-08-08T20:00:01Z\t101\t.github/workflows/unit-test.yaml\tcompleted\tsuccess')
 if run_validator v1.2.3 "$release_commit" 42 "$valid_pr_details" "$failed_optional_action_runs" >/dev/null 2>&1; then
   echo "release pull request with another failed workflow unexpectedly passed" >&2
+  exit 1
+fi
+if run_validator \
+  v1.2.3 "$release_commit" 42 "$valid_pr_details" "$valid_action_runs" "$valid_pr_files" "$failed_optional_action_runs" \
+  >/dev/null 2>&1; then
+  echo "release commit with another failed workflow unexpectedly passed" >&2
   exit 1
 fi
 
@@ -151,28 +231,27 @@ if run_validator v1.2.3 "$side_commit" 42 "$valid_pr_details" >/dev/null 2>&1; t
   exit 1
 fi
 
-unrelated_pr_details=$(printf 'true\trelease-1.2\t%s\t%s\t%s' \
-  "$release_pr_commit" "$side_commit" "$side_commit")
+unrelated_pr_details=$(format_pr_details "$release_pr_commit" "$side_commit" "$side_commit")
 if run_validator v1.2.3 "$release_commit" 43 "$unrelated_pr_details" >/dev/null 2>&1; then
   echo "unrelated release pull request unexpectedly passed" >&2
   exit 1
 fi
 
-missing_manifest_pr_details=$(printf 'true\trelease-1.2\t%s\t%s\t%s' \
+missing_manifest_pr_details=$(format_pr_details \
   "$unrelated_ancestor_commit" "$release_pr_commit" "$release_pr_commit")
 if run_validator v1.2.3 "$release_commit" 44 "$missing_manifest_pr_details" "$valid_action_runs" Makefile >/dev/null 2>&1; then
   echo "release pull request missing a release manifest unexpectedly passed" >&2
   exit 1
 fi
 
-relabeled_ancestor_pr_details=$(printf 'true\trelease-1.2\t%s\t%s\t%s' \
+relabeled_ancestor_pr_details=$(format_pr_details \
   "$initial_commit" "$unrelated_ancestor_commit" "$unrelated_ancestor_commit")
 if run_validator v1.2.3 "$release_commit" 45 "$relabeled_ancestor_pr_details" "$valid_action_runs" "$valid_pr_files" >/dev/null 2>&1; then
   echo "relabeled ancestor pull request with old manifest values unexpectedly passed" >&2
   exit 1
 fi
 
-harmless_manifest_pr_details=$(printf 'true\trelease-1.2\t%s\t%s\t%s' \
+harmless_manifest_pr_details=$(format_pr_details \
   "$release_pr_commit" "$harmless_manifest_commit" "$harmless_manifest_commit")
 if run_validator v1.2.3 "$release_commit" 46 "$harmless_manifest_pr_details" "$valid_action_runs" "$valid_pr_files" >/dev/null 2>&1; then
   echo "pull request that preserved existing release values unexpectedly passed" >&2
