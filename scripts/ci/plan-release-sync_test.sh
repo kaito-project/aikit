@@ -97,8 +97,18 @@ write_manifests v0.22.1 "$pending_makefile" "$pending_chart"
 output_file="$work_dir/github-output"
 GITHUB_OUTPUT="$output_file" "$planner" \
   v0.22.2 "$main_makefile" "$main_chart" "$pending_makefile" "$pending_chart" >/dev/null
-expected_output=$(printf '%s\n' 'action=ensure' 'needed=true' 'target_version=v0.22.1')
-if [[ $(<"$output_file") != "$expected_output" ]]; then
+for expected_line in \
+  'action=ensure' \
+  'main_version=v0.21.0' \
+  'needed=true' \
+  'release_line_comparison=1' \
+  'target_version=v0.22.1'; do
+  if ! grep -qxF "$expected_line" "$output_file"; then
+    echo "planner output is missing: $expected_line" >&2
+    exit 1
+  fi
+done
+if [[ $(wc -l <"$output_file") -ne 5 ]]; then
   echo "planner did not write the expected GitHub Actions outputs" >&2
   exit 1
 fi
@@ -113,24 +123,35 @@ GITHUB_OUTPUT="$output_file" "$planner" \
   "$main_makefile" "$main_chart" \
   "$pending_makefile" "$pending_chart" \
   "$pending_second_makefile" "$pending_second_chart" >/dev/null
-expected_output=$(printf '%s\n' 'action=ensure' 'needed=true' 'target_version=v18446744073709551616.0.0')
-if [[ $(<"$output_file") != "$expected_output" ]]; then
+if ! grep -qxF 'action=ensure' "$output_file" || \
+  ! grep -qxF 'release_line_comparison=1' "$output_file" || \
+  ! grep -qxF 'target_version=v18446744073709551616.0.0' "$output_file"; then
   echo "planner did not retain the highest oversized pending release line" >&2
   exit 1
 fi
 
-write_manifests v1.0.0 "$main_makefile" "$main_chart"
+write_manifests v1.5.0 "$main_makefile" "$main_chart"
 write_manifests v2.0.18446744073709551616 "$pending_makefile" "$pending_chart"
 write_manifests v2.0.1 "$pending_second_makefile" "$pending_second_chart"
 : >"$output_file"
 GITHUB_OUTPUT="$output_file" "$planner" \
-  v1.5.0 \
+  v1.4.0 \
   "$main_makefile" "$main_chart" \
   "$pending_makefile" "$pending_chart" \
   "$pending_second_makefile" "$pending_second_chart" >/dev/null
-expected_output=$(printf '%s\n' 'action=ensure' 'needed=true' 'target_version=v2.0.18446744073709551616')
-if [[ $(<"$output_file") != "$expected_output" ]]; then
+if ! grep -qxF 'action=ensure' "$output_file" || \
+  ! grep -qxF 'release_line_comparison=-1' "$output_file" || \
+  ! grep -qxF 'target_version=v2.0.18446744073709551616' "$output_file"; then
   echo "planner did not retain the highest oversized pending patch" >&2
+  exit 1
+fi
+
+write_manifests v2.4.0 "$main_makefile" "$main_chart"
+: >"$output_file"
+GITHUB_OUTPUT="$output_file" "$planner" v2.4.1 "$main_makefile" "$main_chart" >/dev/null
+if ! grep -qxF 'main_version=v2.4.0' "$output_file" || \
+  ! grep -qxF 'release_line_comparison=0' "$output_file"; then
+  echo "planner did not identify a same-line release" >&2
   exit 1
 fi
 

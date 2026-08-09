@@ -164,6 +164,8 @@ done
 main_version=${manifest_versions[0]}
 main_major=${manifest_majors[0]}
 main_minor=${manifest_minors[0]}
+compare_release_lines "$release_major" "$release_minor" "$main_major" "$main_minor"
+release_line_comparison=$comparison
 
 pending_index=-1
 for ((index = 1; index < ${#manifest_versions[@]}; index++)); do
@@ -202,8 +204,7 @@ if ((pending_vs_main > 0)); then
     target_version=${manifest_versions[pending_index]}
   fi
 else
-  compare_release_lines "$release_major" "$release_minor" "$main_major" "$main_minor"
-  if ((comparison > 0)); then
+  if ((release_line_comparison > 0)); then
     action=update
     target_version=$release_version
   fi
@@ -218,7 +219,9 @@ printf '%s\n' "$action"
 if [[ -n ${GITHUB_OUTPUT:-} ]]; then
   {
     echo "action=$action"
+    echo "main_version=$main_version"
     echo "needed=$needed"
+    echo "release_line_comparison=$release_line_comparison"
     echo "target_version=$target_version"
   } >>"$GITHUB_OUTPUT"
 fi

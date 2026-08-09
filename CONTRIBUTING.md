@@ -283,7 +283,7 @@ To publish a stable release:
 
 The publisher preflight permits follow-up fixes on the release branch after the preparation pull request, but the preparation pull request must change both version manifests to the requested version and its merge must remain an ancestor of the tagged commit. The preparation pull request and the exact commit selected for release must each have successful `lint` and `unit-test` workflow runs, and every other latest workflow run for each commit must finish without failure. Push CI intentionally runs for documentation-only follow-up commits so every release candidate has exact-commit evidence.
 
-Patch versions must increase within each `release-X.Y` line. Maintenance releases on an older line remain supported, but they publish only their immutable version tags; mutable `latest` image tags remain on the highest stable release.
+Patch versions must increase within each `release-X.Y` line. Maintenance releases on an older line remain supported, but they publish only their immutable version tags; mutable `latest` image tags remain on the highest stable release. If an older release branch is missing, restore it from the correct historical commit first; **Prepare release** will not create it from newer `main` code.
 
 Preparation pull requests use the non-bypass release-automation App so their `pull_request` checks run. That App cannot create protected tags; the tag-ruleset bypass remains exclusive to the release App used after `prod` approval.
 

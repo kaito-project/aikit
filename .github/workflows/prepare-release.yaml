@@ -85,6 +85,24 @@ jobs:
           fi
 
           git checkout --quiet --detach "${base_commit}"
+          if [[ ${branch_exists} != true ]]; then
+            policy_output=$(mktemp)
+            trap 'rm -f "${policy_output}"' EXIT
+            GITHUB_OUTPUT="${policy_output}" \
+              scripts/ci/plan-release-sync.sh "${NEWVERSION}" >/dev/null
+            main_version=$(awk -F= '$1 == "main_version" { print $2 }' "${policy_output}")
+            release_line_comparison=$(awk -F= '$1 == "release_line_comparison" { print $2 }' "${policy_output}")
+            if [[ -z ${main_version} || ! ${release_line_comparison} =~ ^(-1|0|1)$ ]]; then
+              echo "Release line validation returned invalid output." >&2
+              exit 1
+            fi
+            if [[ ${release_line_comparison} == -1 ]]; then
+              echo "${TARGET_BRANCH} does not exist and ${NEWVERSION} is older than main at ${main_version}." >&2
+              echo "Restore the historical release branch instead of creating it from newer main code." >&2
+              exit 1
+            fi
+          fi
+
           for manifest in Makefile charts/aikit/Chart.yaml; do
             if ! git ls-files --error-unmatch -- "${manifest}" >/dev/null 2>&1 || \
               [[ ! -f ${manifest} || -L ${manifest} ]]; then
@@ -94,8 +112,8 @@ jobs:
           done
 
           makefile_version_count=$(awk '/^[[:space:]]*VERSION[[:space:]]*:=/ { count++ } END { print count + 0 }' Makefile)
-          chart_version_count=$(awk '/^version:[[:space:]]*/ { count++ } END { print count + 0 }' charts/aikit/Chart.yaml)
-          chart_app_version_count=$(awk '/^appVersion:[[:space:]]*/ { count++ } END { print count + 0 }' charts/aikit/Chart.yaml)
+          chart_version_count=$(awk '/^version:[[:space:]]+/ { count++ } END { print count + 0 }' charts/aikit/Chart.yaml)
+          chart_app_version_count=$(awk '/^appVersion:[[:space:]]+/ { count++ } END { print count + 0 }' charts/aikit/Chart.yaml)
           if [[ ${makefile_version_count} -ne 1 || ${chart_version_count} -ne 1 || ${chart_app_version_count} -ne 1 ]]; then
             echo "Release manifests must contain exactly one VERSION, version, and appVersion field." >&2
             exit 1
@@ -105,10 +123,10 @@ jobs:
             "s|^[[:space:]]*VERSION[[:space:]]*:=[[:space:]]*.*$|VERSION := ${NEWVERSION}|" \
             Makefile
           sed -i -E \
-            "s|^version:[[:space:]]*.*$|version: ${NEWVERSION#v}|" \
+            "s|^version:[[:space:]]+.*$|version: ${NEWVERSION#v}|" \
             charts/aikit/Chart.yaml
           sed -i -E \
-            "s|^appVersion:[[:space:]]*.*$|appVersion: ${NEWVERSION}|" \
+            "s|^appVersion:[[:space:]]+.*$|appVersion: ${NEWVERSION}|" \
             charts/aikit/Chart.yaml
 
           if [[ $(grep -cxF "VERSION := ${NEWVERSION}" Makefile) -ne 1 ]] || \
