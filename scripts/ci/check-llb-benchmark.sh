@@ -43,7 +43,8 @@ awk -v expected_samples="$benchmark_samples" -v report_file="$report_file" '
     benchmark_count = 3
 
     # Leave deliberate headroom over the compact graph. Digest-qualified catalog
-    # source identifiers add a constant payload without adding graph operations.
+    # source identifiers, runtime trust, and offline image configuration add a
+    # constant payload without adding per-model graph operations.
     # Reject the pre-compaction shape: 21 and 117 ops, with 76,639 bytes for 100 templates.
     min_ops["LocalModel"] = 15
     min_ops["LlamaFixture"] = 15
@@ -54,8 +55,8 @@ awk -v expected_samples="$benchmark_samples" -v report_file="$report_file" '
     min_bytes["LocalModel"] = 2400
     min_bytes["LlamaFixture"] = 4800
     min_bytes["ManyPromptTemplates"] = 60000
-    max_bytes["LocalModel"] = 3600
-    max_bytes["LlamaFixture"] = 6400
+    max_bytes["LocalModel"] = 4400
+    max_bytes["LlamaFixture"] = 7000
     max_bytes["ManyPromptTemplates"] = 75000
   }
 
