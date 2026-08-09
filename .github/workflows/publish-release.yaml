@@ -64,6 +64,11 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
+      - name: Validate release version policy
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: scripts/ci/validate-release-version.sh "${RELEASE_VERSION}" either
+
       - name: Resolve release candidate
         id: commit
         env:
@@ -136,6 +141,11 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Recheck release version policy
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
+        run: scripts/ci/validate-release-version.sh "${RELEASE_VERSION}" either
 
       - name: Recheck release state
         id: state

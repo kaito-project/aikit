@@ -281,7 +281,9 @@ To publish a stable release:
 4. The workflow validates the version files, release branch ancestry, and merged release pull request before the release GitHub App creates the protected tag.
 5. The tag starts the artifact and runner-image publishing workflows. If the released major/minor line is newer than `main`, the trusted publish workflow uses the separate release-automation App to open a pull request. This includes recovery releases such as `v0.22.1` when an unusable `v0.22.0` tag must remain immutable.
 
-The publisher preflight permits follow-up fixes on the release branch after the preparation pull request, but the preparation pull request merge must remain an ancestor of the tagged commit. The preparation pull request's `lint` and `unit-test` workflows must succeed, and every other workflow run for its latest commit must finish without failure.
+The publisher preflight permits follow-up fixes on the release branch after the preparation pull request, but the preparation pull request must change both version manifests to the requested version and its merge must remain an ancestor of the tagged commit. The preparation pull request's `lint` and `unit-test` workflows must succeed, and every other workflow run for its latest commit must finish without failure.
+
+Patch versions must increase within each `release-X.Y` line. Maintenance releases on an older line remain supported, but they publish only their immutable version tags; mutable `latest` image tags remain on the highest stable release.
 
 Preparation pull requests use the non-bypass release-automation App so their `pull_request` checks run. That App cannot create protected tags; the tag-ruleset bypass remains exclusive to the release App used after `prod` approval.
 

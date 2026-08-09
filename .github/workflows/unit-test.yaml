@@ -79,6 +79,9 @@ jobs:
       - name: Test image size checker
         run: scripts/ci/check-image-size_test.sh
 
+      - name: Test release version validator
+        run: scripts/ci/validate-release-version_test.sh
+
       - name: Test release validator
         run: scripts/ci/validate-release_test.sh
 

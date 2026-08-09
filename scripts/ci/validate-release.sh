@@ -31,6 +31,94 @@ strip_matching_quotes() {
   printf '%s' "$value"
 }
 
+manifest_validation_error=
+manifest_makefile_version=
+manifest_chart_version=
+manifest_chart_app_version=
+read_release_manifests() {
+  local commit=$1
+  local makefile_content
+  local makefile_version_count
+  local chart_content
+  local chart_version_count
+  local chart_app_version_count
+
+  manifest_validation_error=
+  manifest_makefile_version=
+  manifest_chart_version=
+  manifest_chart_app_version=
+  if ! makefile_content=$(git show "${commit}:Makefile" 2>/dev/null); then
+    manifest_validation_error="Makefile is missing at $commit"
+    return 1
+  fi
+  makefile_version_count=$(awk '/^[[:space:]]*VERSION[[:space:]]*:=/ { count++ } END { print count + 0 }' <<<"$makefile_content")
+  if [[ $makefile_version_count -ne 1 ]]; then
+    manifest_validation_error="Makefile at $commit must contain exactly one VERSION assignment; found $makefile_version_count"
+    return 1
+  fi
+  manifest_makefile_version=$(awk '
+    /^[[:space:]]*VERSION[[:space:]]*:=/ {
+      value = $0
+      sub(/^[[:space:]]*VERSION[[:space:]]*:=[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      print value
+    }
+  ' <<<"$makefile_content")
+
+  if ! chart_content=$(git show "${commit}:charts/aikit/Chart.yaml" 2>/dev/null); then
+    manifest_validation_error="charts/aikit/Chart.yaml is missing at $commit"
+    return 1
+  fi
+  chart_version_count=$(awk '/^version:[[:space:]]*/ { count++ } END { print count + 0 }' <<<"$chart_content")
+  chart_app_version_count=$(awk '/^appVersion:[[:space:]]*/ { count++ } END { print count + 0 }' <<<"$chart_content")
+  if [[ $chart_version_count -ne 1 ]]; then
+    manifest_validation_error="Helm chart at $commit must contain exactly one top-level version; found $chart_version_count"
+    return 1
+  fi
+  if [[ $chart_app_version_count -ne 1 ]]; then
+    manifest_validation_error="Helm chart at $commit must contain exactly one top-level appVersion; found $chart_app_version_count"
+    return 1
+  fi
+  manifest_chart_version=$(awk '
+    /^version:[[:space:]]*/ {
+      value = $0
+      sub(/^version:[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      print value
+    }
+  ' <<<"$chart_content")
+  manifest_chart_app_version=$(awk '
+    /^appVersion:[[:space:]]*/ {
+      value = $0
+      sub(/^appVersion:[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      print value
+    }
+  ' <<<"$chart_content")
+  manifest_chart_version=$(strip_matching_quotes "$manifest_chart_version")
+  manifest_chart_app_version=$(strip_matching_quotes "$manifest_chart_app_version")
+}
+
+release_manifests_match() {
+  local commit=$1
+
+  if ! read_release_manifests "$commit"; then
+    return 1
+  fi
+  if [[ $manifest_makefile_version != "$release_version" ]]; then
+    manifest_validation_error="Makefile VERSION at $commit is ${manifest_makefile_version:-missing}; expected $release_version"
+    return 1
+  fi
+  if [[ $manifest_chart_version != "$expected_chart_version" ]]; then
+    manifest_validation_error="Helm chart version at $commit is ${manifest_chart_version:-missing}; expected $expected_chart_version"
+    return 1
+  fi
+  if [[ $manifest_chart_app_version != "$release_version" ]]; then
+    manifest_validation_error="Helm chart appVersion at $commit is ${manifest_chart_app_version:-missing}; expected $release_version"
+    return 1
+  fi
+}
+
 for required_command in git gh; do
   if ! command -v "$required_command" >/dev/null 2>&1; then
     echo "Required command not found: $required_command" >&2
@@ -62,59 +150,8 @@ if ! release_commit=$(git rev-parse --verify "${release_commit_input}^{commit}" 
   fail "commit does not resolve to a Git commit: $release_commit_input"
 fi
 
-if ! makefile_content=$(git show "${release_commit}:Makefile"); then
-  fail "Makefile is missing at $release_commit"
-fi
-makefile_version_count=$(awk '/^[[:space:]]*VERSION[[:space:]]*:=/ { count++ } END { print count + 0 }' <<<"$makefile_content")
-if [[ $makefile_version_count -ne 1 ]]; then
-  fail "Makefile must contain exactly one VERSION assignment; found $makefile_version_count"
-fi
-makefile_version=$(awk '
-  /^[[:space:]]*VERSION[[:space:]]*:=/ {
-    value = $0
-    sub(/^[[:space:]]*VERSION[[:space:]]*:=[[:space:]]*/, "", value)
-    sub(/[[:space:]]*$/, "", value)
-    print value
-  }
-' <<<"$makefile_content")
-if [[ $makefile_version != "$release_version" ]]; then
-  fail "Makefile VERSION is ${makefile_version:-missing}; expected $release_version"
-fi
-
-if ! chart_content=$(git show "${release_commit}:charts/aikit/Chart.yaml"); then
-  fail "charts/aikit/Chart.yaml is missing at $release_commit"
-fi
-chart_version_count=$(awk '/^version:[[:space:]]*/ { count++ } END { print count + 0 }' <<<"$chart_content")
-chart_app_version_count=$(awk '/^appVersion:[[:space:]]*/ { count++ } END { print count + 0 }' <<<"$chart_content")
-if [[ $chart_version_count -ne 1 ]]; then
-  fail "Helm chart must contain exactly one top-level version; found $chart_version_count"
-fi
-if [[ $chart_app_version_count -ne 1 ]]; then
-  fail "Helm chart must contain exactly one top-level appVersion; found $chart_app_version_count"
-fi
-chart_version=$(awk '
-  /^version:[[:space:]]*/ {
-    value = $0
-    sub(/^version:[[:space:]]*/, "", value)
-    sub(/[[:space:]]*$/, "", value)
-    print value
-  }
-' <<<"$chart_content")
-chart_app_version=$(awk '
-  /^appVersion:[[:space:]]*/ {
-    value = $0
-    sub(/^appVersion:[[:space:]]*/, "", value)
-    sub(/[[:space:]]*$/, "", value)
-    print value
-  }
-' <<<"$chart_content")
-chart_version=$(strip_matching_quotes "$chart_version")
-chart_app_version=$(strip_matching_quotes "$chart_app_version")
-if [[ $chart_version != "$expected_chart_version" ]]; then
-  fail "Helm chart version is ${chart_version:-missing}; expected $expected_chart_version"
-fi
-if [[ $chart_app_version != "$release_version" ]]; then
-  fail "Helm chart appVersion is ${chart_app_version:-missing}; expected $release_version"
+if ! release_manifests_match "$release_commit"; then
+  fail "$manifest_validation_error"
 fi
 
 if ! git fetch --quiet --no-tags "$release_remote" "refs/heads/${release_branch}"; then
@@ -150,17 +187,55 @@ while read -r pr_number; do
   fi
   if ! pr_details=$(gh api \
     "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" \
-    --jq '[.merged, .base.ref, (.merge_commit_sha // "-"), (.head.sha // "-")] | @tsv'); then
+    --jq '[.merged, .base.ref, (.base.sha // "-"), (.merge_commit_sha // "-"), (.head.sha // "-")] | @tsv'); then
     fail "could not inspect release pull request #$pr_number"
   fi
-  IFS=$'\t' read -r merged base_branch merge_commit head_commit <<<"$pr_details"
-  if [[ $merged != true || $base_branch != "$release_branch" || $merge_commit == "-" || $head_commit == "-" ]]; then
+  IFS=$'\t' read -r merged base_branch base_commit merge_commit head_commit <<<"$pr_details"
+  if [[ $merged != true || $base_branch != "$release_branch" || $base_commit == "-" || $merge_commit == "-" || $head_commit == "-" ]]; then
     continue
   fi
-  if ! [[ $head_commit =~ ^[0-9a-f]{40}$ ]]; then
-    fail "GitHub returned an invalid head commit for release pull request #$pr_number"
+  if ! [[ $base_commit =~ ^[0-9a-f]{40}$ && $merge_commit =~ ^[0-9a-f]{40}$ && $head_commit =~ ^[0-9a-f]{40}$ ]]; then
+    fail "GitHub returned an invalid base, merge, or head commit for release pull request #$pr_number"
   fi
-  if ! git cat-file -e "${merge_commit}^{commit}" 2>/dev/null || ! git merge-base --is-ancestor "$merge_commit" "$release_commit"; then
+  if ! git cat-file -e "${base_commit}^{commit}" 2>/dev/null || \
+    ! git cat-file -e "${merge_commit}^{commit}" 2>/dev/null || \
+    ! git merge-base --is-ancestor "$base_commit" "$merge_commit" || \
+    ! git merge-base --is-ancestor "$merge_commit" "$release_commit"; then
+    continue
+  fi
+
+  if ! changed_files=$(gh api \
+    --method GET \
+    --paginate \
+    "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files" \
+    -f per_page=100 \
+    --jq '.[].filename'); then
+    fail "could not inspect changed files for release pull request #$pr_number"
+  fi
+  makefile_changed=false
+  chart_changed=false
+  while IFS= read -r changed_file; do
+    case $changed_file in
+      Makefile) makefile_changed=true ;;
+      charts/aikit/Chart.yaml) chart_changed=true ;;
+    esac
+  done <<<"$changed_files"
+  if [[ $makefile_changed != true || $chart_changed != true ]]; then
+    echo "Release pull request #$pr_number did not change both release manifests." >&2
+    continue
+  fi
+  if ! read_release_manifests "$base_commit"; then
+    echo "Release pull request #$pr_number has invalid base manifests: $manifest_validation_error." >&2
+    continue
+  fi
+  if [[ $manifest_makefile_version == "$release_version" || \
+    $manifest_chart_version == "$expected_chart_version" || \
+    $manifest_chart_app_version == "$release_version" ]]; then
+    echo "Release pull request #$pr_number did not introduce every version field for $release_version." >&2
+    continue
+  fi
+  if ! release_manifests_match "$merge_commit"; then
+    echo "Release pull request #$pr_number does not establish $release_version: $manifest_validation_error." >&2
     continue
   fi
 

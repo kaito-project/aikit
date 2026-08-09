@@ -10,7 +10,9 @@ AIKit uses protected, immutable Git tags as production release events. The suppo
 4. The release GitHub App creates the protected tag. The tag starts the [artifact](https://github.com/kaito-project/aikit/actions/workflows/release.yaml) and [runner-image](https://github.com/kaito-project/aikit/actions/workflows/release-runners.yaml) publishing workflows.
 5. When the released major/minor line is newer than `main`, review and merge the version-sync pull request created by the trusted publish workflow. This also covers recovery releases whose first usable tag is a patch such as `v0.22.1`.
 
-The publish preflight requires all version files to match, the selected commit to be reachable from `release-X.Y`, and a checked, merged preparation pull request to be an ancestor. Follow-up release fixes after the preparation pull request are allowed.
+The publish preflight requires all version files to match, the selected commit to be reachable from `release-X.Y`, and a checked, merged preparation pull request that changed both version manifests to be an ancestor. Follow-up release fixes after the preparation pull request are allowed.
+
+Patch versions must increase within a release line. An older supported line can still receive a maintenance release, but its images do not replace the `latest` tags from a newer stable release.
 
 Never create, push, force-update, or delete a `v*` tag manually. A tag is the deployment trigger, not a preparation step. For a transient publication failure, rerun the failed workflow against the same tag. If the release commit must change, prepare a new patch version instead of moving the existing tag.
 

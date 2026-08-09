@@ -30,6 +30,10 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
+
+      - name: Validate release version policy
+        run: scripts/ci/validate-release-version.sh "${GITHUB_REF_NAME}" existing
 
       - name: Validate release provenance
         env:
@@ -87,6 +91,7 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/kaito-project/aikit/aikit
+          flavor: latest=false
           tags: type=semver,pattern={{raw}}
 
       - name: Set LDFLAGS
@@ -99,9 +104,7 @@ jobs:
         id: build-and-push
         with:
           push: true
-          tags: |
-            ${{ steps.docker_meta.outputs.tags }}
-            ghcr.io/kaito-project/aikit/aikit:latest
+          tags: ${{ steps.docker_meta.outputs.tags }}
           cache-from: type=gha,scope=aikit
           cache-to: type=gha,scope=aikit,mode=max
           sbom: true
@@ -125,11 +128,66 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity "https://github.com/kaito-project/aikit/.github/workflows/release.yaml@${GITHUB_REF}"
 
+      - name: Publish latest image tag when current
+        env:
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          policy_output=$(mktemp)
+          trap 'rm -f "${policy_output}"' EXIT
+          GITHUB_OUTPUT="${policy_output}" \
+            scripts/ci/validate-release-version.sh "${GITHUB_REF_NAME}" existing >/dev/null
+          publish_latest=$(awk -F= '$1 == "publish_latest" { print $2 }' "${policy_output}")
+
+          if [[ ${publish_latest} == true ]]; then
+            docker buildx imagetools create --prefer-index=false \
+              --tag ghcr.io/kaito-project/aikit/aikit:latest \
+              "ghcr.io/kaito-project/aikit/aikit@${DIGEST}"
+            cosign verify ghcr.io/kaito-project/aikit/aikit:latest \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity "https://github.com/kaito-project/aikit/.github/workflows/release.yaml@${GITHUB_REF}"
+            echo "Published latest from ${GITHUB_REF_NAME}." >>"${GITHUB_STEP_SUMMARY}"
+          elif [[ ${publish_latest} == false ]]; then
+            echo "Skipped latest because a newer stable release exists." >>"${GITHUB_STEP_SUMMARY}"
+          else
+            echo "Release version validator returned an invalid publish_latest value." >&2
+            exit 1
+          fi
+
       - name: Create GitHub release
-        uses: marvinpinto/action-automatic-releases@919008cf3f741b179569b7a6fb4d8860689ab7f0 # v1.2.1
-        with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          prerelease: false
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          policy_output=$(mktemp)
+          trap 'rm -f "${policy_output}"' EXIT
+          GITHUB_OUTPUT="${policy_output}" \
+            scripts/ci/validate-release-version.sh "${GITHUB_REF_NAME}" existing >/dev/null
+          publish_latest=$(awk -F= '$1 == "publish_latest" { print $2 }' "${policy_output}")
+          if ! [[ ${publish_latest} =~ ^(true|false)$ ]]; then
+            echo "Release version validator returned an invalid publish_latest value." >&2
+            exit 1
+          fi
+
+          if release_id=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
+            --jq '.id' 2>/dev/null); then
+            if ! [[ ${release_id} =~ ^[0-9]+$ ]]; then
+              echo "GitHub returned an invalid release ID for ${GITHUB_REF_NAME}." >&2
+              exit 1
+            fi
+            gh api --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              -f "make_latest=${publish_latest}" >/dev/null
+            echo "Updated the existing GitHub release; Latest is ${publish_latest}." >>"${GITHUB_STEP_SUMMARY}"
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --verify-tag \
+              --generate-notes \
+              --title "${GITHUB_REF_NAME}" \
+              --latest="${publish_latest}"
+            echo "Created the GitHub release atomically with Latest set to ${publish_latest}." >>"${GITHUB_STEP_SUMMARY}"
+          fi
 
       - name: Publish Helm chart
         uses: stefanprodan/helm-gh-pages@0ad2bb377311d61ac04ad9eb6f252fb68e207260 # v1.7.0

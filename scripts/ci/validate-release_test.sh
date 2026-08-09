@@ -16,6 +16,10 @@ if [[ ${1:-} == api ]]; then
       printf '%s' "${FAKE_GH_ISSUES:-}"
       exit 0
       ;;
+    *"/pulls/"*"/files "*)
+      printf '%s' "${FAKE_GH_PR_FILES:-}"
+      exit 0
+      ;;
     *"/pulls/"*)
       printf '%s' "${FAKE_GH_PR_DETAILS:-}"
       exit 0
@@ -42,14 +46,26 @@ printf '%s\n' 'VERSION := v1.2.2' >"$work_dir/repository/Makefile"
 printf '%s\n' 'version: 1.2.2' 'appVersion: v1.2.2' >"$work_dir/repository/charts/aikit/Chart.yaml"
 git -C "$work_dir/repository" add Makefile charts/aikit/Chart.yaml
 git -C "$work_dir/repository" commit --quiet -m "initial version"
+initial_commit=$(git -C "$work_dir/repository" rev-parse HEAD)
 git -C "$work_dir/repository" push --quiet --set-upstream origin main
 
 git -C "$work_dir/repository" checkout --quiet -b release-1.2
+printf '%s\n' 'unrelated release branch change' >"$work_dir/repository/notes.txt"
+git -C "$work_dir/repository" add notes.txt
+git -C "$work_dir/repository" commit --quiet -m "update release notes"
+unrelated_ancestor_commit=$(git -C "$work_dir/repository" rev-parse HEAD)
+
 printf '%s\n' 'VERSION := v1.2.3' >"$work_dir/repository/Makefile"
 printf '%s\n' 'version: 1.2.3' 'appVersion: v1.2.3' >"$work_dir/repository/charts/aikit/Chart.yaml"
 git -C "$work_dir/repository" add Makefile charts/aikit/Chart.yaml
 git -C "$work_dir/repository" commit --quiet -m "prepare v1.2.3"
 release_pr_commit=$(git -C "$work_dir/repository" rev-parse HEAD)
+
+printf '%s\n' '# release metadata' >>"$work_dir/repository/Makefile"
+printf '%s\n' '# release metadata' >>"$work_dir/repository/charts/aikit/Chart.yaml"
+git -C "$work_dir/repository" add Makefile charts/aikit/Chart.yaml
+git -C "$work_dir/repository" commit --quiet -m "document release metadata"
+harmless_manifest_commit=$(git -C "$work_dir/repository" rev-parse HEAD)
 
 printf '%s\n' 'post-preparation fix' >"$work_dir/repository/fix.txt"
 git -C "$work_dir/repository" add fix.txt
@@ -62,6 +78,7 @@ valid_action_runs=$(printf '%s\n%s\n%s\n%s' \
   $'2026-08-08T20:00:01Z\t101\t.github/workflows/unit-test.yaml\tcompleted\tsuccess' \
   $'2026-08-08T19:00:00Z\t100\t.github/workflows/lint.yaml\tcompleted\tfailure' \
   $'2026-08-08T18:00:00Z\t99\t.github/workflows/dependabot.yaml\tcompleted\tskipped')
+valid_pr_files=$(printf '%s\n%s' Makefile charts/aikit/Chart.yaml)
 
 run_validator() {
   local version=$1
@@ -69,11 +86,13 @@ run_validator() {
   local release_pr_issues=$3
   local release_pr_details=$4
   local release_action_runs=${5-$valid_action_runs}
+  local release_pr_files=${6-$valid_pr_files}
   (
     cd "$work_dir/repository"
     PATH="$work_dir/bin:$PATH" \
       FAKE_GH_ISSUES="$release_pr_issues" \
       FAKE_GH_PR_DETAILS="$release_pr_details" \
+      FAKE_GH_PR_FILES="$release_pr_files" \
       FAKE_GH_ACTION_RUNS="$release_action_runs" \
       GH_TOKEN=test-token \
       GITHUB_REPOSITORY=example/aikit \
@@ -81,7 +100,8 @@ run_validator() {
   )
 }
 
-valid_pr_details=$(printf 'true\trelease-1.2\t%s\t%s' "$release_pr_commit" "$release_pr_commit")
+valid_pr_details=$(printf 'true\trelease-1.2\t%s\t%s\t%s' \
+  "$unrelated_ancestor_commit" "$release_pr_commit" "$release_pr_commit")
 run_validator v1.2.3 "$release_commit" 42 "$valid_pr_details" >/dev/null
 
 if run_validator v1.2.3 "$release_commit" 42 "$valid_pr_details" "" >/dev/null 2>&1; then
@@ -131,9 +151,31 @@ if run_validator v1.2.3 "$side_commit" 42 "$valid_pr_details" >/dev/null 2>&1; t
   exit 1
 fi
 
-unrelated_pr_details=$(printf 'true\trelease-1.2\t%s' "$side_commit")
+unrelated_pr_details=$(printf 'true\trelease-1.2\t%s\t%s\t%s' \
+  "$release_pr_commit" "$side_commit" "$side_commit")
 if run_validator v1.2.3 "$release_commit" 43 "$unrelated_pr_details" >/dev/null 2>&1; then
   echo "unrelated release pull request unexpectedly passed" >&2
+  exit 1
+fi
+
+missing_manifest_pr_details=$(printf 'true\trelease-1.2\t%s\t%s\t%s' \
+  "$unrelated_ancestor_commit" "$release_pr_commit" "$release_pr_commit")
+if run_validator v1.2.3 "$release_commit" 44 "$missing_manifest_pr_details" "$valid_action_runs" Makefile >/dev/null 2>&1; then
+  echo "release pull request missing a release manifest unexpectedly passed" >&2
+  exit 1
+fi
+
+relabeled_ancestor_pr_details=$(printf 'true\trelease-1.2\t%s\t%s\t%s' \
+  "$initial_commit" "$unrelated_ancestor_commit" "$unrelated_ancestor_commit")
+if run_validator v1.2.3 "$release_commit" 45 "$relabeled_ancestor_pr_details" "$valid_action_runs" "$valid_pr_files" >/dev/null 2>&1; then
+  echo "relabeled ancestor pull request with old manifest values unexpectedly passed" >&2
+  exit 1
+fi
+
+harmless_manifest_pr_details=$(printf 'true\trelease-1.2\t%s\t%s\t%s' \
+  "$release_pr_commit" "$harmless_manifest_commit" "$harmless_manifest_commit")
+if run_validator v1.2.3 "$release_commit" 46 "$harmless_manifest_pr_details" "$valid_action_runs" "$valid_pr_files" >/dev/null 2>&1; then
+  echo "pull request that preserved existing release values unexpectedly passed" >&2
   exit 1
 fi
 

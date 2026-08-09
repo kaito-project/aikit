@@ -10,7 +10,7 @@ on:
         type: string
 
 concurrency:
-  group: prepare-release-${{ inputs.release_version }}
+  group: prepare-release
   cancel-in-progress: false
 
 permissions:
@@ -47,6 +47,90 @@ jobs:
           echo "NEWVERSION=${RELEASE_VERSION}" >>"${GITHUB_ENV}"
           echo "TARGET_BRANCH=release-${BASH_REMATCH[1]}.${BASH_REMATCH[2]}" >>"${GITHUB_ENV}"
 
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release version policy
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: scripts/ci/validate-release-version.sh "${RELEASE_VERSION}" new
+
+      - name: Prepare release manifests
+        id: manifests
+        run: |
+          set -euo pipefail
+          if ! target_ref=$(git ls-remote --refs origin "refs/heads/${TARGET_BRANCH}"); then
+            echo "Could not inspect ${TARGET_BRANCH}." >&2
+            exit 1
+          fi
+
+          branch_exists=false
+          base_commit=$(git rev-parse 'HEAD^{commit}')
+          if [[ -n "${target_ref}" ]]; then
+            expected_base=$(awk '$2 == "refs/heads/'"${TARGET_BRANCH}"'" { print $1 }' <<<"${target_ref}")
+            if ! [[ ${expected_base} =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Remote branch ${TARGET_BRANCH} returned an invalid commit." >&2
+              exit 1
+            fi
+            git fetch --quiet --no-tags origin "refs/heads/${TARGET_BRANCH}"
+            base_commit=$(git rev-parse 'FETCH_HEAD^{commit}')
+            if [[ ${base_commit} != "${expected_base}" ]]; then
+              echo "${TARGET_BRANCH} advanced while it was being fetched; rerun Prepare release." >&2
+              exit 1
+            fi
+            branch_exists=true
+          fi
+
+          git checkout --quiet --detach "${base_commit}"
+          for manifest in Makefile charts/aikit/Chart.yaml; do
+            if ! git ls-files --error-unmatch -- "${manifest}" >/dev/null 2>&1 || \
+              [[ ! -f ${manifest} || -L ${manifest} ]]; then
+              echo "${manifest} must be a tracked regular file on ${TARGET_BRANCH}." >&2
+              exit 1
+            fi
+          done
+
+          makefile_version_count=$(awk '/^[[:space:]]*VERSION[[:space:]]*:=/ { count++ } END { print count + 0 }' Makefile)
+          chart_version_count=$(awk '/^version:[[:space:]]*/ { count++ } END { print count + 0 }' charts/aikit/Chart.yaml)
+          chart_app_version_count=$(awk '/^appVersion:[[:space:]]*/ { count++ } END { print count + 0 }' charts/aikit/Chart.yaml)
+          if [[ ${makefile_version_count} -ne 1 || ${chart_version_count} -ne 1 || ${chart_app_version_count} -ne 1 ]]; then
+            echo "Release manifests must contain exactly one VERSION, version, and appVersion field." >&2
+            exit 1
+          fi
+
+          sed -i -E \
+            "s|^[[:space:]]*VERSION[[:space:]]*:=[[:space:]]*.*$|VERSION := ${NEWVERSION}|" \
+            Makefile
+          sed -i -E \
+            "s|^version:[[:space:]]*.*$|version: ${NEWVERSION#v}|" \
+            charts/aikit/Chart.yaml
+          sed -i -E \
+            "s|^appVersion:[[:space:]]*.*$|appVersion: ${NEWVERSION}|" \
+            charts/aikit/Chart.yaml
+
+          if [[ $(grep -cxF "VERSION := ${NEWVERSION}" Makefile) -ne 1 ]] || \
+            [[ $(grep -cxF "version: ${NEWVERSION#v}" charts/aikit/Chart.yaml) -ne 1 ]] || \
+            [[ $(grep -cxF "appVersion: ${NEWVERSION}" charts/aikit/Chart.yaml) -ne 1 ]]; then
+            echo "Could not update every release manifest to ${NEWVERSION}." >&2
+            exit 1
+          fi
+
+          changed_paths=$(git diff --name-only | LC_ALL=C sort)
+          if [[ ${changed_paths} != $'Makefile\ncharts/aikit/Chart.yaml' ]]; then
+            echo "Preparation must change exactly Makefile and charts/aikit/Chart.yaml; changed paths:" >&2
+            printf '%s\n' "${changed_paths:-none}" >&2
+            exit 1
+          fi
+          git diff --check
+
+          {
+            echo "base_commit=${base_commit}"
+            echo "branch_exists=${branch_exists}"
+          } >>"${GITHUB_OUTPUT}"
+
       - name: Create release-automation GitHub App token
         id: release-automation-app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -56,23 +140,33 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          token: ${{ steps.release-automation-app.outputs.token }}
-
-      - name: Create release branch if needed
+      - name: Ensure release branch is unchanged
+        env:
+          BASE_COMMIT: ${{ steps.manifests.outputs.base_commit }}
+          BRANCH_EXISTS: ${{ steps.manifests.outputs.branch_exists }}
+          GH_TOKEN: ${{ steps.release-automation-app.outputs.token }}
         run: |
           set -euo pipefail
-          if git show-ref --verify --quiet "refs/remotes/origin/${TARGET_BRANCH}"; then
-            git checkout --track "origin/${TARGET_BRANCH}"
-          else
-            git checkout -b "${TARGET_BRANCH}"
-            git push --set-upstream origin "${TARGET_BRANCH}"
+          if ! target_ref=$(git ls-remote --refs origin "refs/heads/${TARGET_BRANCH}"); then
+            echo "Could not recheck ${TARGET_BRANCH}." >&2
+            exit 1
           fi
+          current_commit=$(awk '$2 == "refs/heads/'"${TARGET_BRANCH}"'" { print $1 }' <<<"${target_ref}")
 
-      - name: Update version manifests
-        run: make release-manifest
+          if [[ ${BRANCH_EXISTS} == true ]]; then
+            if [[ ${current_commit} != "${BASE_COMMIT}" ]]; then
+              echo "${TARGET_BRANCH} advanced from ${BASE_COMMIT} to ${current_commit:-absent}; rerun Prepare release." >&2
+              exit 1
+            fi
+          else
+            if [[ -n ${current_commit} ]]; then
+              echo "${TARGET_BRANCH} was created while this workflow was preparing it; rerun Prepare release." >&2
+              exit 1
+            fi
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              --raw-field "ref=refs/heads/${TARGET_BRANCH}" \
+              --raw-field "sha=${BASE_COMMIT}" >/dev/null
+          fi
 
       - name: Create release pull request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
