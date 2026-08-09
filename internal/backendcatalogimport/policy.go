@@ -12,15 +12,17 @@ type fallbackTarget struct {
 }
 
 type entryPolicy struct {
-	Runtime         string
-	TargetProfile   string
-	Status          string
-	RuntimeBaseRef  string
-	SystemPackages  []string
-	RuntimeSymlinks []RuntimeSymlink
-	Environment     []string
-	RunnerProfile   string
-	Fallbacks       []fallbackTarget
+	Runtime              string
+	TargetProfile        string
+	Status               string
+	RuntimeBaseRef       string
+	RunnerRuntimeBaseRef string
+	InstallName          string
+	SystemPackages       []string
+	RuntimeSymlinks      []RuntimeSymlink
+	Environment          []string
+	RunnerProfile        string
+	Fallbacks            []fallbackTarget
 }
 
 var reviewedSystemPackages = map[string][]string{
@@ -43,8 +45,32 @@ func hasSupportedOverlay(family, selector string) bool {
 	}
 }
 
-func policyFor(family, selector, target string, platform Platform) (entryPolicy, error) {
-	targetProfile, err := inferTargetProfile(selector, target)
+func artifactVersionFor(requestedVersion, family, selector string) string {
+	if requestedVersion != LocalAIVersion {
+		return requestedVersion
+	}
+
+	switch family + "/" + selector {
+	case familyDiffusers + "/" + selectorNVIDIA, runnerLlamaCpp + "/" + targetVulkan:
+		return legacyLocalAIVersion
+	default:
+		return requestedVersion
+	}
+}
+
+func coreReferenceTemplateForVersion(template, requestedVersion, entryVersion string) (string, error) {
+	if requestedVersion == entryVersion {
+		return template, nil
+	}
+	if strings.Count(template, requestedVersion) != 1 {
+		return "", fmt.Errorf("core reference template %q must contain imported version %q exactly once for compatibility pin %q", template, requestedVersion, entryVersion)
+	}
+
+	return strings.Replace(template, requestedVersion, entryVersion, 1), nil
+}
+
+func policyFor(family, selector, target, sourceRef string, platform Platform) (entryPolicy, error) {
+	targetProfile, err := inferTargetProfile(selector, target, sourceRef)
 	if err != nil {
 		return entryPolicy{}, err
 	}
@@ -69,24 +95,43 @@ func policyFor(family, selector, target string, platform Platform) (entryPolicy,
 	switch key {
 	case runnerLlamaCpp + "/" + selectorDefault + "/linux/amd64", runnerLlamaCpp + "/" + selectorDefault + "/linux/arm64":
 		policy.Status = statusSupported
+		policy.RuntimeBaseRef = chiseledRuntimeBase
+		policy.RunnerRuntimeBaseRef = ubuntu22RuntimeBase
 		policy.RunnerProfile = runnerLlamaCpp
 	case runnerLlamaCpp + "/" + selectorNVIDIA + "/linux/amd64":
 		policy.Status = statusSupported
+		policy.RuntimeBaseRef = chiseledRuntimeBase
+		policy.RunnerRuntimeBaseRef = ubuntu22RuntimeBase
 		policy.RunnerProfile = runnerLlamaCpp
 		policy.Fallbacks = []fallbackTarget{{Family: runnerLlamaCpp, Selector: selectorDefault}}
 	case runnerLlamaCpp + "/" + selectorAMD + "/linux/amd64":
+		policy.InstallName = "hipblas-llama-cpp"
+		policy.RunnerProfile = runnerLlamaCpp
 		policy.Fallbacks = []fallbackTarget{{Family: runnerLlamaCpp, Selector: selectorDefault}}
+	case runnerLlamaCpp + "/" + selectorNVIDIAL4T + "/linux/arm64",
+		runnerLlamaCpp + "/" + selectorL4TCUDA12 + "/linux/arm64",
+		runnerLlamaCpp + "/" + selectorL4TCUDA13 + "/linux/arm64":
+		policy.RunnerProfile = runnerLlamaCpp
+		policy.Fallbacks = []fallbackTarget{{Family: runnerLlamaCpp, Selector: selectorDefault}}
+	case runnerLlamaCpp + "/" + targetVulkan + "/linux/arm64":
+		policy.InstallName = "gpu-vulkan-llama-cpp"
 	case familyDiffusers + "/" + selectorNVIDIA + "/linux/amd64":
 		policy.Status = statusSupported
+		policy.RuntimeBaseRef = ubuntu22RuntimeBase
 		policy.RunnerProfile = runnerHFConfig
 	case familyVLLM + "/" + selectorNVIDIA + "/linux/amd64":
 		policy.Status = statusSupported
+		policy.RuntimeBaseRef = ubuntu22RuntimeBase
 		policy.RunnerProfile = runnerHFConfig
 	case familyVLLMCpp + "/" + selectorDefault + "/linux/amd64", familyVLLMCpp + "/" + selectorDefault + "/linux/arm64":
 		policy.Status = statusSupported
+		policy.RuntimeBaseRef = chiseledRuntimeBase
+		policy.RunnerRuntimeBaseRef = ubuntu22RuntimeBase
 		policy.RunnerProfile = familyVLLMCpp
 	case familyVLLMCpp + "/" + selectorNVIDIA + "/linux/amd64":
 		policy.Status = statusSupported
+		policy.RuntimeBaseRef = chiseledRuntimeBase
+		policy.RunnerRuntimeBaseRef = ubuntu22RuntimeBase
 		policy.RunnerProfile = familyVLLMCpp
 	}
 
@@ -104,8 +149,10 @@ func runtimeBaseReference(targetProfile string, platform Platform) string {
 			return vulkanRuntimeBase
 		}
 		return ubuntuRuntimeBase
-	case targetL4TCUDA12, targetL4TCUDA13:
+	case targetL4TCUDA12:
 		return l4tRuntimeBase
+	case targetL4TCUDA13:
+		return ubuntuRuntimeBase
 	default:
 		return ubuntuRuntimeBase
 	}
@@ -170,9 +217,10 @@ func l4tEnvironment(minimumVersion string) []string {
 	}
 }
 
-func inferTargetProfile(selector, target string) (string, error) {
+func inferTargetProfile(selector, target, sourceRef string) (string, error) {
 	switch {
-	case strings.HasPrefix(target, "cuda13-nvidia-l4t-"), selector == selectorL4TCUDA13:
+	case strings.HasPrefix(target, "cuda13-nvidia-l4t-"), selector == selectorL4TCUDA13,
+		strings.Contains(sourceRef, "-nvidia-l4t-cuda-13-"):
 		return targetL4TCUDA13, nil
 	case strings.HasPrefix(target, "nvidia-l4t-"), selector == selectorNVIDIAL4T, selector == selectorL4TCUDA12:
 		return targetL4TCUDA12, nil

@@ -58,6 +58,44 @@
       ]
     },
     {
+      "sourceRef": "ghcr.io/kaito-project/aikit/base:latest",
+      "manifests": [
+        {
+          "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+          "platform": {
+            "os": "linux",
+            "architecture": "amd64"
+          }
+        },
+        {
+          "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+          "platform": {
+            "os": "linux",
+            "architecture": "arm64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "docker.io/library/ubuntu:22.04",
+      "manifests": [
+        {
+          "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+          "platform": {
+            "os": "linux",
+            "architecture": "amd64"
+          }
+        },
+        {
+          "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+          "platform": {
+            "os": "linux",
+            "architecture": "arm64"
+          }
+        }
+      ]
+    },
+    {
       "sourceRef": "docker.io/library/ubuntu:24.04",
       "manifests": [
         {

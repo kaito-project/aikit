@@ -7,6 +7,8 @@ const (
 	// LocalAIVersion is the LocalAI release imported by this generator.
 	LocalAIVersion = "v4.8.2"
 
+	legacyLocalAIVersion = "v3.12.1"
+
 	architectureAMD64   = "amd64"
 	architectureARM64   = "arm64"
 	defaultFamily       = "llama-cpp"
@@ -39,6 +41,8 @@ const (
 	targetMetal         = "metal"
 	targetROCm          = "rocm"
 	targetVulkan        = "vulkan"
+	chiseledRuntimeBase = "ghcr.io/kaito-project/aikit/base:latest"
+	ubuntu22RuntimeBase = "docker.io/library/ubuntu:22.04"
 	ubuntuRuntimeBase   = "docker.io/library/ubuntu:24.04"
 	rocmRuntimeBase     = "docker.io/rocm/dev-ubuntu-24.04:7.2.1"
 	vulkanRuntimeBase   = "ghcr.io/kaito-project/aikit/applesilicon/base:latest"
@@ -83,32 +87,34 @@ type Defaults struct {
 	Selectors []DefaultSelector `json:"selectors"`
 }
 
-// DefaultSelector maps one runtime to its default LocalAI selector.
+// DefaultSelector maps one runtime and optional platform to its default LocalAI selector.
 type DefaultSelector struct {
-	Runtime  string `json:"runtime"`
-	Selector string `json:"selector"`
+	Runtime  string    `json:"runtime"`
+	Platform *Platform `json:"platform,omitempty"`
+	Selector string    `json:"selector"`
 }
 
 // Entry is one selectable family, selector, and platform tuple.
 type Entry struct {
-	Family          string            `json:"family"`
-	Selector        string            `json:"selector"`
-	Platform        Platform          `json:"platform"`
-	Runtime         string            `json:"runtime"`
-	TargetProfile   string            `json:"targetProfile"`
-	Status          string            `json:"status"`
-	Channel         string            `json:"channel"`
-	RuntimeBase     Artifact          `json:"runtimeBase"`
-	Core            Artifact          `json:"core"`
-	Backend         BackendArtifact   `json:"backend"`
-	Fallbacks       []BackendArtifact `json:"fallbacks,omitempty"`
-	Version         string            `json:"version"`
-	SourceRef       string            `json:"sourceRef"`
-	SystemPackages  []string          `json:"systemPackages,omitempty"`
-	RuntimeSymlinks []RuntimeSymlink  `json:"runtimeSymlinks,omitempty"`
-	Environment     []string          `json:"environment,omitempty"`
-	RunnerProfile   string            `json:"runnerProfile"`
-	Workloads       []string          `json:"workloads,omitempty"`
+	Family            string            `json:"family"`
+	Selector          string            `json:"selector"`
+	Platform          Platform          `json:"platform"`
+	Runtime           string            `json:"runtime"`
+	TargetProfile     string            `json:"targetProfile"`
+	Status            string            `json:"status"`
+	Channel           string            `json:"channel"`
+	RuntimeBase       Artifact          `json:"runtimeBase"`
+	RunnerRuntimeBase *Artifact         `json:"runnerRuntimeBase,omitempty"`
+	Core              Artifact          `json:"core"`
+	Backend           BackendArtifact   `json:"backend"`
+	Fallbacks         []BackendArtifact `json:"fallbacks,omitempty"`
+	Version           string            `json:"version"`
+	SourceRef         string            `json:"sourceRef"`
+	SystemPackages    []string          `json:"systemPackages,omitempty"`
+	RuntimeSymlinks   []RuntimeSymlink  `json:"runtimeSymlinks,omitempty"`
+	Environment       []string          `json:"environment,omitempty"`
+	RunnerProfile     string            `json:"runnerProfile"`
+	Workloads         []string          `json:"workloads,omitempty"`
 }
 
 // Platform is a normalized OCI platform.

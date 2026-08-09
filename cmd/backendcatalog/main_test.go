@@ -54,8 +54,8 @@ func TestRunWritesAndChecksCatalog(t *testing.T) {
 	if catalog.SchemaVersion != "v2" {
 		t.Fatalf("schemaVersion = %q, want v2", catalog.SchemaVersion)
 	}
-	if catalog.Defaults.Family != "llama-cpp" || len(catalog.Defaults.Selectors) != 4 {
-		t.Fatalf("defaults = %#v, want llama-cpp and four runtime selectors", catalog.Defaults)
+	if catalog.Defaults.Family != "llama-cpp" || len(catalog.Defaults.Selectors) != 5 {
+		t.Fatalf("defaults = %#v, want llama-cpp and five runtime/platform selectors", catalog.Defaults)
 	}
 	if len(catalog.Entries) != 3 {
 		t.Fatalf("entry count = %d, want 3", len(catalog.Entries))

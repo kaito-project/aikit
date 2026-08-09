@@ -33,15 +33,17 @@ const (
 	localNameDockerfile  = "dockerfile"
 	defaultAikitfileName = "aikitfile.yaml"
 
-	keyFilename       = "filename"
-	keyTarget         = "target"
-	keyOutput         = "output"
-	keyTargetPlatform = "platform"
-	keyCacheImports   = "cache-imports"
-	nvidiaUUIDPattern = `[A-Fa-f0-9]{8}-(?:[A-Fa-f0-9]{4}-){3}[A-Fa-f0-9]{12}`
+	keyFilename              = "filename"
+	keyTarget                = "target"
+	keyOutput                = "output"
+	keyTargetPlatform        = "platform"
+	keyCacheImports          = "cache-imports"
+	nvidiaUUIDPattern        = `[A-Fa-f0-9]{8}-(?:[A-Fa-f0-9]{4}-){3}[A-Fa-f0-9]{12}`
+	maximumBackendNameLength = 128
 )
 
 var (
+	backendNamePattern         = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$`)
 	nvidiaDriverVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+(?:\.[0-9]+)?$`)
 	nvidiaCDIDevicePattern     = regexp.MustCompile(`^nvidia\.com/gpu(?:=(?:all|[0-9]+(?::[0-9]+)?|gpu[0-9]+|mig[0-9]+:[0-9]+|(?:GPU|MIG)-` + nvidiaUUIDPattern + `))?$`)
 	datasetSplitPattern        = regexp.MustCompile(`^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$`)
@@ -851,6 +853,11 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 
 	if len(c.Backends) > 1 {
 		return errors.New("only one backend is supported at this time")
+	}
+	for _, backend := range c.Backends {
+		if len(backend) > maximumBackendNameLength || !backendNamePattern.MatchString(backend) {
+			return errors.Errorf("backend %q is not a safe lowercase name", backend)
+		}
 	}
 
 	switch c.Runtime {

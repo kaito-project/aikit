@@ -22,6 +22,14 @@
         "selector": "nvidia"
       },
       {
+        "runtime": "cuda",
+        "platform": {
+          "os": "linux",
+          "architecture": "arm64"
+        },
+        "selector": "nvidia-l4t"
+      },
+      {
         "runtime": "rocm",
         "selector": "amd"
       }
@@ -484,7 +492,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -1126,7 +1134,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -1592,7 +1600,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -1916,7 +1924,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -2490,7 +2498,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -2858,7 +2866,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -3260,7 +3268,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -3338,17 +3346,17 @@
       "status": "supported",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "docker.io/library/ubuntu@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467"
+        "ref": "docker.io/library/ubuntu@sha256:0199853f6d6b20b0424f3c5694a72a62764f01e6a771b1eb48a4197848986c7e"
       },
       "core": {
-        "ref": "ghcr.io/kaito-project/aikit/localai@sha256:01c90f6df2a9d5e8d16c80f60a277d45b3c89622251c84a3f833324e0322ee8d"
+        "ref": "ghcr.io/kaito-project/aikit/localai@sha256:c9f061c7d002abf967820487dfa26d6228ef6e752002e4448e348149fd7b0771"
       },
       "backend": {
-        "ref": "quay.io/go-skynet/local-ai-backends@sha256:cecd430fffa347937753a9595a434e6d560eff36a0dd4ecd1647a10e73788c90",
+        "ref": "quay.io/go-skynet/local-ai-backends@sha256:212db0c050ea4173c07b816bf5f2e47b525e1fce3147b500e6433c9fbac6d9e3",
         "installName": "cuda12-diffusers"
       },
-      "version": "v4.8.2",
-      "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-nvidia-cuda-12-diffusers",
+      "version": "v3.12.1",
+      "sourceRef": "quay.io/go-skynet/local-ai-backends:v3.12.1-gpu-nvidia-cuda-12-diffusers",
       "environment": [
         "BUILD_TYPE=cublas",
         "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
@@ -3476,7 +3484,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -3828,7 +3836,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -4172,7 +4180,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -4842,7 +4850,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -5700,7 +5708,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -5850,7 +5858,7 @@
       },
       "backend": {
         "ref": "quay.io/go-skynet/local-ai-backends@sha256:395713c86d7e3ca5766fb66d83876b928012847c1bfd00d62be0960ac1e60dcd",
-        "installName": "rocm-llama-cpp"
+        "installName": "hipblas-llama-cpp"
       },
       "fallbacks": [
         {
@@ -5874,7 +5882,7 @@
         "LOCALAI_FORCE_META_BACKEND_CAPABILITY=amd",
         "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/rocm/bin"
       ],
-      "runnerProfile": "unsupported",
+      "runnerProfile": "llama-cpp",
       "workloads": [
         "cpu",
         "cuda",
@@ -5897,7 +5905,10 @@
       "status": "supported",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "docker.io/library/ubuntu@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467"
+        "ref": "ghcr.io/kaito-project/aikit/base@sha256:48c78ee9c94b3d928ac56b56da498497676f81955bdf074c258de09d8fe3f3e4"
+      },
+      "runnerRuntimeBase": {
+        "ref": "docker.io/library/ubuntu@sha256:0199853f6d6b20b0424f3c5694a72a62764f01e6a771b1eb48a4197848986c7e"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:01c90f6df2a9d5e8d16c80f60a277d45b3c89622251c84a3f833324e0322ee8d"
@@ -5931,7 +5942,10 @@
       "status": "supported",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
+        "ref": "ghcr.io/kaito-project/aikit/base@sha256:6084030d93083c5abb7f2cdca9eac0d683b1b7f62e2cbc24c877ed9685bee3ef"
+      },
+      "runnerRuntimeBase": {
+        "ref": "docker.io/library/ubuntu@sha256:a8cdd2158a73d7e5c02aa351fe269f48f57cf710a241db86e9ede371fc150149"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -6088,6 +6102,12 @@
         "ref": "quay.io/go-skynet/local-ai-backends@sha256:029f2dea8c2dc12edf171575b0bfad128679d655ceb64d29df0fe75f31ae8fd9",
         "installName": "nvidia-l4t-arm64-llama-cpp"
       },
+      "fallbacks": [
+        {
+          "ref": "quay.io/go-skynet/local-ai-backends@sha256:1e9b0ce2e97884821499a1ffbe2c494d4804639cd219efb481dd6f12a13b7eeb",
+          "installName": "cpu-llama-cpp"
+        }
+      ],
       "version": "v4.8.2",
       "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.8.2-nvidia-l4t-arm64-llama-cpp",
       "environment": [
@@ -6099,7 +6119,7 @@
         "NVIDIA_VISIBLE_DEVICES=all",
         "PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
       ],
-      "runnerProfile": "unsupported",
+      "runnerProfile": "llama-cpp",
       "workloads": [
         "cpu",
         "cuda",
@@ -6122,7 +6142,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -6131,6 +6151,12 @@
         "ref": "quay.io/go-skynet/local-ai-backends@sha256:7d6d660c3978a63c10d073e9c16bf41fcb8a238fc36e21e0336c10c9dca4efcd",
         "installName": "cuda13-nvidia-l4t-arm64-llama-cpp"
       },
+      "fallbacks": [
+        {
+          "ref": "quay.io/go-skynet/local-ai-backends@sha256:1e9b0ce2e97884821499a1ffbe2c494d4804639cd219efb481dd6f12a13b7eeb",
+          "installName": "cpu-llama-cpp"
+        }
+      ],
       "version": "v4.8.2",
       "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.8.2-nvidia-l4t-cuda-13-arm64-llama-cpp",
       "environment": [
@@ -6142,7 +6168,7 @@
         "NVIDIA_VISIBLE_DEVICES=all",
         "PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
       ],
-      "runnerProfile": "unsupported",
+      "runnerProfile": "llama-cpp",
       "workloads": [
         "cpu",
         "cuda",
@@ -6174,6 +6200,12 @@
         "ref": "quay.io/go-skynet/local-ai-backends@sha256:029f2dea8c2dc12edf171575b0bfad128679d655ceb64d29df0fe75f31ae8fd9",
         "installName": "nvidia-l4t-arm64-llama-cpp"
       },
+      "fallbacks": [
+        {
+          "ref": "quay.io/go-skynet/local-ai-backends@sha256:1e9b0ce2e97884821499a1ffbe2c494d4804639cd219efb481dd6f12a13b7eeb",
+          "installName": "cpu-llama-cpp"
+        }
+      ],
       "version": "v4.8.2",
       "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.8.2-nvidia-l4t-arm64-llama-cpp",
       "environment": [
@@ -6185,7 +6217,7 @@
         "NVIDIA_VISIBLE_DEVICES=all",
         "PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
       ],
-      "runnerProfile": "unsupported",
+      "runnerProfile": "llama-cpp",
       "workloads": [
         "cpu",
         "cuda",
@@ -6208,7 +6240,10 @@
       "status": "supported",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "docker.io/library/ubuntu@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467"
+        "ref": "ghcr.io/kaito-project/aikit/base@sha256:48c78ee9c94b3d928ac56b56da498497676f81955bdf074c258de09d8fe3f3e4"
+      },
+      "runnerRuntimeBase": {
+        "ref": "docker.io/library/ubuntu@sha256:0199853f6d6b20b0424f3c5694a72a62764f01e6a771b1eb48a4197848986c7e"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:01c90f6df2a9d5e8d16c80f60a277d45b3c89622251c84a3f833324e0322ee8d"
@@ -6257,14 +6292,14 @@
         "ref": "docker.io/library/ubuntu@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467"
       },
       "core": {
-        "ref": "ghcr.io/kaito-project/aikit/localai@sha256:01c90f6df2a9d5e8d16c80f60a277d45b3c89622251c84a3f833324e0322ee8d"
+        "ref": "ghcr.io/kaito-project/aikit/localai@sha256:c9f061c7d002abf967820487dfa26d6228ef6e752002e4448e348149fd7b0771"
       },
       "backend": {
-        "ref": "quay.io/go-skynet/local-ai-backends@sha256:5fa375cfff57eaa4fb0dfdf1343c43fd902d3ce9d02f6d848771289d42f5eb1f",
+        "ref": "quay.io/go-skynet/local-ai-backends@sha256:c97cca0cfaefb44ba2ebbdc7f181601f05811fd75f71be9a1c2bc75813c095e4",
         "installName": "vulkan-llama-cpp"
       },
-      "version": "v4.8.2",
-      "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-vulkan-llama-cpp",
+      "version": "v3.12.1",
+      "sourceRef": "quay.io/go-skynet/local-ai-backends:v3.12.1-gpu-vulkan-llama-cpp",
       "runnerProfile": "unsupported",
       "workloads": [
         "cpu",
@@ -6291,14 +6326,14 @@
         "ref": "ghcr.io/kaito-project/aikit/applesilicon/base@sha256:e1447388a566e6e902c99988bb072f88763975c0850f50e064fb1e33f3d4c830"
       },
       "core": {
-        "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
+        "ref": "ghcr.io/kaito-project/aikit/localai@sha256:cea173afc320181d11d7385f74338a3614a9e204804fd7627980523ab31df77e"
       },
       "backend": {
-        "ref": "quay.io/go-skynet/local-ai-backends@sha256:f66d4bfbd18da8c417cd93878e774d91cbcb52946b8ba377bac41adf5eb47c2d",
-        "installName": "vulkan-llama-cpp"
+        "ref": "quay.io/go-skynet/local-ai-backends@sha256:d3aeacc6a4376a6e76541f56403bdc79e966952025a3e77df13924750e63f4fa",
+        "installName": "gpu-vulkan-llama-cpp"
       },
-      "version": "v4.8.2",
-      "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-vulkan-llama-cpp",
+      "version": "v3.12.1",
+      "sourceRef": "quay.io/go-skynet/local-ai-backends:v3.12.1-gpu-vulkan-llama-cpp",
       "environment": [
         "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/virtio_icd.aarch64.json"
       ],
@@ -6757,7 +6792,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -7168,7 +7203,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -7438,7 +7473,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -7757,7 +7792,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -8078,7 +8113,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -8343,7 +8378,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -8609,7 +8644,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -8870,7 +8905,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -9381,7 +9416,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -9813,7 +9848,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -10186,7 +10221,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -11053,7 +11088,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -11620,7 +11655,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -12103,7 +12138,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -12748,7 +12783,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -13097,7 +13132,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -13460,7 +13495,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -13918,7 +13953,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -14570,7 +14605,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -14928,7 +14963,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -15525,7 +15560,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -16138,7 +16173,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -16707,7 +16742,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -17237,7 +17272,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -17667,7 +17702,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -17778,7 +17813,10 @@
       "status": "supported",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "docker.io/library/ubuntu@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467"
+        "ref": "ghcr.io/kaito-project/aikit/base@sha256:48c78ee9c94b3d928ac56b56da498497676f81955bdf074c258de09d8fe3f3e4"
+      },
+      "runnerRuntimeBase": {
+        "ref": "docker.io/library/ubuntu@sha256:0199853f6d6b20b0424f3c5694a72a62764f01e6a771b1eb48a4197848986c7e"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:01c90f6df2a9d5e8d16c80f60a277d45b3c89622251c84a3f833324e0322ee8d"
@@ -17811,7 +17849,10 @@
       "status": "supported",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
+        "ref": "ghcr.io/kaito-project/aikit/base@sha256:6084030d93083c5abb7f2cdca9eac0d683b1b7f62e2cbc24c877ed9685bee3ef"
+      },
+      "runnerRuntimeBase": {
+        "ref": "docker.io/library/ubuntu@sha256:a8cdd2158a73d7e5c02aa351fe269f48f57cf710a241db86e9ede371fc150149"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -17883,7 +17924,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -17921,11 +17962,11 @@
         "architecture": "arm64"
       },
       "runtime": "cuda",
-      "targetProfile": "l4t-cuda12",
+      "targetProfile": "l4t-cuda13",
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -17941,7 +17982,7 @@
         "CUDA_HOME=/usr/local/cuda",
         "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
         "NVIDIA_DRIVER_CAPABILITIES=all",
-        "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
+        "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
         "PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
       ],
@@ -17967,7 +18008,10 @@
       "status": "supported",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "docker.io/library/ubuntu@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467"
+        "ref": "ghcr.io/kaito-project/aikit/base@sha256:48c78ee9c94b3d928ac56b56da498497676f81955bdf074c258de09d8fe3f3e4"
+      },
+      "runnerRuntimeBase": {
+        "ref": "docker.io/library/ubuntu@sha256:0199853f6d6b20b0424f3c5694a72a62764f01e6a771b1eb48a4197848986c7e"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:01c90f6df2a9d5e8d16c80f60a277d45b3c89622251c84a3f833324e0322ee8d"
@@ -18170,7 +18214,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -18435,7 +18479,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -18483,7 +18527,7 @@
       "status": "supported",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "docker.io/library/ubuntu@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467"
+        "ref": "docker.io/library/ubuntu@sha256:0199853f6d6b20b0424f3c5694a72a62764f01e6a771b1eb48a4197848986c7e"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:01c90f6df2a9d5e8d16c80f60a277d45b3c89622251c84a3f833324e0322ee8d"
@@ -18801,7 +18845,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"
@@ -19523,7 +19567,7 @@
       "status": "experimental",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
+        "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:9ee767ea4cb4f567f2d08fa3f68b0edc0a3df666d77b33779abd7431cc25c17f"

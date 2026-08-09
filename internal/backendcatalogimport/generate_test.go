@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -54,13 +55,21 @@ func TestGenerateDeterministicCatalog(t *testing.T) {
 		{Runtime: runtimeApple, Selector: targetVulkan},
 		{Runtime: runtimeCPU, Selector: selectorDefault},
 		{Runtime: runtimeCUDA, Selector: selectorNVIDIA},
+		{
+			Runtime: runtimeCUDA,
+			Platform: &Platform{
+				OS:           platformLinux,
+				Architecture: architectureARM64,
+			},
+			Selector: selectorNVIDIAL4T,
+		},
 		{Runtime: runtimeROCm, Selector: selectorAMD},
 	}
 	if len(first.Defaults.Selectors) != len(wantDefaults) {
 		t.Fatalf("defaults.selectors = %#v, want %#v", first.Defaults.Selectors, wantDefaults)
 	}
 	for index, want := range wantDefaults {
-		if first.Defaults.Selectors[index] != want {
+		if !reflect.DeepEqual(first.Defaults.Selectors[index], want) {
 			t.Fatalf("defaults.selectors[%d] = %#v, want %#v", index, first.Defaults.Selectors[index], want)
 		}
 	}
@@ -78,8 +87,11 @@ func TestGenerateDeterministicCatalog(t *testing.T) {
 	if amd64CPU.Core.Ref != "registry.example/core@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" {
 		t.Errorf("CPU core ref = %q", amd64CPU.Core.Ref)
 	}
-	if amd64CPU.RuntimeBase.Ref != "docker.io/library/ubuntu@"+fixtureUbuntuAMD64 {
+	if amd64CPU.RuntimeBase.Ref != "ghcr.io/kaito-project/aikit/base@"+fixtureChiseledAMD64 {
 		t.Errorf("CPU runtime base ref = %q", amd64CPU.RuntimeBase.Ref)
+	}
+	if amd64CPU.RunnerRuntimeBase == nil || amd64CPU.RunnerRuntimeBase.Ref != "docker.io/library/ubuntu@"+fixtureUbuntu22AMD64 {
+		t.Errorf("CPU runner runtime base = %#v", amd64CPU.RunnerRuntimeBase)
 	}
 	if len(amd64CPU.SystemPackages) != 0 || len(amd64CPU.Environment) != 0 {
 		t.Errorf("CPU packages/environment = %v/%v, want empty", amd64CPU.SystemPackages, amd64CPU.Environment)
@@ -97,16 +109,22 @@ func TestGenerateDeterministicCatalog(t *testing.T) {
 	if arm64CPU.Core.Ref != "registry.example/core@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" {
 		t.Errorf("arm64 core ref = %q", arm64CPU.Core.Ref)
 	}
-	if arm64CPU.RuntimeBase.Ref != "docker.io/library/ubuntu@"+fixtureUbuntuARM64 {
+	if arm64CPU.RuntimeBase.Ref != "ghcr.io/kaito-project/aikit/base@"+fixtureChiseledARM64 {
 		t.Errorf("arm64 runtime base ref = %q", arm64CPU.RuntimeBase.Ref)
+	}
+	if arm64CPU.RunnerRuntimeBase == nil || arm64CPU.RunnerRuntimeBase.Ref != "docker.io/library/ubuntu@"+fixtureUbuntu22ARM64 {
+		t.Errorf("arm64 runner runtime base = %#v", arm64CPU.RunnerRuntimeBase)
 	}
 
 	nvidia := first.Entries[2]
 	if nvidia.Selector != selectorNVIDIA || nvidia.TargetProfile != targetCUDA12 {
 		t.Fatalf("NVIDIA policy = selector %q target %q", nvidia.Selector, nvidia.TargetProfile)
 	}
-	if nvidia.RuntimeBase.Ref != "docker.io/library/ubuntu@"+fixtureUbuntuAMD64 {
+	if nvidia.RuntimeBase.Ref != "ghcr.io/kaito-project/aikit/base@"+fixtureChiseledAMD64 {
 		t.Errorf("NVIDIA runtime base ref = %q", nvidia.RuntimeBase.Ref)
+	}
+	if nvidia.RunnerRuntimeBase == nil || nvidia.RunnerRuntimeBase.Ref != "docker.io/library/ubuntu@"+fixtureUbuntu22AMD64 {
+		t.Errorf("NVIDIA runner runtime base = %#v", nvidia.RunnerRuntimeBase)
 	}
 	if got, want := strings.Join(nvidia.Environment, ","), strings.Join(cudaEnvironment(minimumCUDA12), ","); got != want {
 		t.Errorf("NVIDIA environment = %q, want %q", got, want)
@@ -127,6 +145,18 @@ func TestRuntimeBaseResolutionFixtures(t *testing.T) {
 		platform  Platform
 		want      string
 	}{
+		{
+			name:      "chiseled amd64",
+			reference: chiseledRuntimeBase,
+			platform:  Platform{OS: platformLinux, Architecture: architectureAMD64},
+			want:      "ghcr.io/kaito-project/aikit/base@" + fixtureChiseledAMD64,
+		},
+		{
+			name:      "Ubuntu 22.04 amd64",
+			reference: ubuntu22RuntimeBase,
+			platform:  Platform{OS: platformLinux, Architecture: architectureAMD64},
+			want:      "docker.io/library/ubuntu@" + fixtureUbuntu22AMD64,
+		},
 		{
 			name:      "Ubuntu 24.04 amd64",
 			reference: ubuntuRuntimeBase,
@@ -279,14 +309,14 @@ func TestPolicyInferencePreservesAcceleratorSemantics(t *testing.T) {
 			platform:        Platform{OS: platformLinux, Architecture: architectureARM64},
 			wantRuntime:     runtimeCUDA,
 			wantTarget:      targetL4TCUDA13,
-			wantRuntimeBase: l4tRuntimeBase,
+			wantRuntimeBase: ubuntuRuntimeBase,
 			wantEnvironment: l4tEnvironment(minimumCUDA13),
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			policy, err := policyFor(fixtureFamilyDemo, test.selector, test.target, test.platform)
+			policy, err := policyFor(fixtureFamilyDemo, test.selector, test.target, "", test.platform)
 			if err != nil {
 				t.Fatalf("policyFor() error = %v", err)
 			}

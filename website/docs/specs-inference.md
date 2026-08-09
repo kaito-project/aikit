@@ -27,7 +27,7 @@ If omitted, `runtime` uses CPU. Backend, selector, runtime, and platform compati
 :::
 
 :::tip
-AIKit enters **runner mode** only when `backends` is explicitly set and `models` is empty. Every other inference build uses standard mode. Runner mode is available only when the resolved catalog entry has an explicit `runnerProfile`; this is catalog policy, not an aikitfile field. See [Runner Images](runners.md).
+AIKit enters **runner mode** only when `backends` contains one family and `models` is empty. Every other inference build uses standard mode. Runner mode is available only when the resolved catalog entry has an explicit `runnerProfile`; this is catalog policy, not an aikitfile field. See [Runner Images](runners.md).
 :::
 
 ### Backend catalog selection
@@ -36,11 +36,14 @@ The existing `backends` and `runtime` fields remain source-compatible. `backends
 
 Source compatibility does not guarantee identical image contents across frontend releases. A newer frontend can embed different artifact digests, defaults, statuses, or install instructions. Pin the frontend by digest when those choices must remain fixed.
 
+The current catalog keeps the existing Diffusers CUDA and Apple Silicon defaults on LocalAI v3.12.1 for compatibility. Diffusers v4.8.2 is available to standard builds through the explicit `nvidia-cuda-12` selector. The selected version and immutable artifact references are recorded in the catalog plan and output metadata.
+
 For every standard build, AIKit resolves one exact plan for each target platform. The plan, rather than backend-family branches in the frontend, supplies:
 
 | Catalog field | Build behavior |
 |---|---|
-| `runtimeBase` | Base image used by the resulting model image. |
+| `runtimeBase` | Default base image used by the resulting image. |
+| `runnerRuntimeBase` | Optional runner-only base override when the runtime downloader needs package tooling. |
 | `core` | LocalAI executable artifact. |
 | `backend` and `fallbacks` | Primary backend and any explicitly declared companion backend artifacts. |
 | `systemPackages` | OS package names installed from the runtime base's configured repositories for that exact tuple. |

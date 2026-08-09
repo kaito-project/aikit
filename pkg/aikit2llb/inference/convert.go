@@ -54,7 +54,8 @@ func aikit2LLBWithResolvedBackend(c *config.InferenceConfig, buildPlatform, targ
 	}
 
 	var merge llb.State
-	state := llb.Image(backend.RuntimeBase.Ref, llb.Platform(*targetPlatform))
+	runtimeBase := runtimeBaseForConfig(c, backend)
+	state := llb.Image(runtimeBase.Ref, llb.Platform(*targetPlatform))
 	buildBase := state
 	base := state
 
@@ -83,6 +84,14 @@ func aikit2LLBWithResolvedBackend(c *config.InferenceConfig, buildPlatform, targ
 
 	imageCfg := NewImageConfigWithBackend(c, backend, targetPlatform)
 	return merge, imageCfg, nil
+}
+
+func runtimeBaseForConfig(c *config.InferenceConfig, backend backendcatalog.Resolution) backendcatalog.Artifact {
+	if isRunnerMode(c) && backend.RunnerRuntimeBase != nil {
+		return *backend.RunnerRuntimeBase
+	}
+
+	return backend.RuntimeBase
 }
 
 // writeConfig writes the /config.yaml file to the image when c.Config is set.

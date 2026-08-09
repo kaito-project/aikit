@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
@@ -108,6 +109,60 @@ func TestAikit2LLBUsesCatalogRuntimeBaseForArbitraryFamily(t *testing.T) {
 
 	runtimeBase := findInferenceSourceOp(t, definition, backend.RuntimeBase.Ref)
 	assertInferenceOpPlatform(t, runtimeBase, *platform)
+}
+
+func TestAikit2LLBUsesRunnerRuntimeBaseOnlyForRunnerMode(t *testing.T) {
+	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	backend := testArbitraryBackendPlan(*platform)
+	backend.RunnerProfile = backendcatalog.RunnerProfileHFConfig
+	runnerRuntimeBase := backendcatalog.Artifact{
+		Ref: "registry.example/runner-base@sha256:6666666666666666666666666666666666666666666666666666666666666666",
+	}
+	backend.RunnerRuntimeBase = &runnerRuntimeBase
+	backend.SystemPackages = nil
+
+	tests := []struct {
+		name       string
+		config     *config.InferenceConfig
+		wantBase   string
+		absentBase string
+	}{
+		{
+			name: "standard image",
+			config: &config.InferenceConfig{
+				Backends: []string{backend.Family},
+				Models:   []config.Model{{Name: testInferenceModelName, Source: testInferenceModelSource}},
+			},
+			wantBase:   backend.RuntimeBase.Ref,
+			absentBase: runnerRuntimeBase.Ref,
+		},
+		{
+			name:       "runner image",
+			config:     &config.InferenceConfig{Backends: []string{backend.Family}},
+			wantBase:   runnerRuntimeBase.Ref,
+			absentBase: backend.RuntimeBase.Ref,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state, image, err := aikit2LLBWithResolvedBackend(test.config, platform, platform, backend)
+			if err != nil {
+				t.Fatalf("convert inference config: %v", err)
+			}
+			definition, err := state.Marshal(context.Background())
+			if err != nil {
+				t.Fatalf("marshal inference definition: %v", err)
+			}
+			assertInferenceOpPlatform(t, findInferenceSourceOp(t, definition, test.wantBase), *platform)
+			if matches := findInferenceSourceOps(t, definition, test.absentBase); len(matches) != 0 {
+				t.Fatalf("unexpected runtime base %q appears %d times", test.absentBase, len(matches))
+			}
+			if got := image.Config.Labels["ai.kaito.aikit.runtime-base.artifact"]; got != test.wantBase {
+				t.Errorf("runtime base label = %q, want %q", got, test.wantBase)
+			}
+		})
+	}
 }
 
 func TestAikit2LLBPreservesSinglePlatformBehavior(t *testing.T) {

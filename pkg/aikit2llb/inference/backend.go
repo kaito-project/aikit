@@ -15,11 +15,13 @@ type backendMetadata struct {
 	Alias         string `json:"alias"`
 	Name          string `json:"name"`
 	GalleryURL    string `json:"gallery_url"`
+	Version       string `json:"version"`
+	URI           string `json:"uri"`
+	Digest        string `json:"digest"`
 	GalleryCommit string `json:"gallery_commit"`
 	CatalogDigest string `json:"catalog_digest"`
 	Artifact      string `json:"artifact"`
 	SourceRef     string `json:"source_ref,omitempty"`
-	Version       string `json:"version,omitempty"`
 	Selector      string `json:"selector,omitempty"`
 	Status        string `json:"status,omitempty"`
 }
@@ -92,26 +94,7 @@ func installBackendArtifact(
 		llb.WithCustomName(fmt.Sprintf("Installing backend %s from %s", backend.Family, artifact.Ref)),
 	)
 
-	artifactMetadata := backendMetadata{
-		Alias:         backend.Family,
-		Name:          artifact.InstallName,
-		GalleryURL:    backend.Source.Repository,
-		GalleryCommit: backend.Source.Revision,
-		CatalogDigest: backend.CatalogDigest,
-		Artifact:      artifact.Ref,
-	}
-	if primary {
-		artifactMetadata.SourceRef = backend.SourceRef
-		artifactMetadata.Version = backend.Version
-		artifactMetadata.Selector = string(backend.Selector)
-		artifactMetadata.Status = string(backend.Status)
-	}
-	metadata, err := json.MarshalIndent(artifactMetadata, "", "  ")
-	if err != nil {
-		// All fields are strings from a validated catalog, so marshaling cannot fail.
-		panic(fmt.Sprintf("marshaling validated backend metadata: %v", err))
-	}
-	metadata = append(metadata, '\n')
+	metadata := marshalBackendMetadata(backend, artifact, primary)
 
 	s = s.File(
 		llb.Copy(backendState, "/", backendDir+"/", &llb.CopyInfo{
@@ -122,4 +105,64 @@ func installBackendArtifact(
 
 	diff := llb.Diff(savedState, s)
 	return llb.Merge([]llb.State{merge, diff})
+}
+
+func marshalBackendMetadata(backend backendcatalog.Resolution, artifact backendcatalog.BackendArtifact, primary bool) []byte {
+	uri := artifact.Ref
+	artifactMetadata := backendMetadata{
+		Alias:         backend.Family,
+		Name:          artifact.InstallName,
+		GalleryURL:    pinnedGalleryURL(backend.Source),
+		Version:       backend.Version,
+		URI:           uri,
+		Digest:        artifactDigest(artifact.Ref),
+		GalleryCommit: backend.Source.Revision,
+		CatalogDigest: backend.CatalogDigest,
+		Artifact:      artifact.Ref,
+	}
+	if primary {
+		artifactMetadata.URI = backend.SourceRef
+		artifactMetadata.SourceRef = backend.SourceRef
+		artifactMetadata.Selector = string(backend.Selector)
+		artifactMetadata.Status = string(backend.Status)
+	}
+
+	metadata, err := json.MarshalIndent(artifactMetadata, "", "  ")
+	if err != nil {
+		// All fields are strings from a validated catalog, so marshaling cannot fail.
+		panic(fmt.Sprintf("marshaling validated backend metadata: %v", err))
+	}
+
+	return append(metadata, '\n')
+}
+
+func pinnedGalleryURL(source backendcatalog.Source) string {
+	const githubRepositoryPrefix = "https://github.com/"
+
+	repository := strings.TrimSuffix(source.Repository, "/")
+	if repositoryPath, ok := strings.CutPrefix(repository, githubRepositoryPrefix); ok {
+		repositoryPath = strings.TrimSuffix(repositoryPath, ".git")
+		location := "github:" + repositoryPath
+		if source.Path != "" {
+			location += "/" + source.Path
+		}
+		if source.Revision != "" {
+			location += "@" + source.Revision
+		}
+		return location
+	}
+
+	location := repository
+	if source.Path != "" {
+		location += "/" + source.Path
+	}
+	if source.Revision != "" {
+		location += "@" + source.Revision
+	}
+	return location
+}
+
+func artifactDigest(ref string) string {
+	_, digest, _ := strings.Cut(ref, "@")
+	return digest
 }

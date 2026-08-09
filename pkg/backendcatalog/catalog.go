@@ -136,10 +136,11 @@ type Defaults struct {
 	Selectors []DefaultSelector `json:"selectors"`
 }
 
-// DefaultSelector maps one AIKit runtime to its default LocalAI selector.
+// DefaultSelector maps one AIKit runtime and optional platform to its default LocalAI selector.
 type DefaultSelector struct {
-	Runtime  Runtime  `json:"runtime"`
-	Selector Selector `json:"selector"`
+	Runtime  Runtime   `json:"runtime"`
+	Platform *Platform `json:"platform,omitempty"`
+	Selector Selector  `json:"selector"`
 }
 
 // Catalog is a versioned backend catalog.
@@ -155,28 +156,29 @@ type Catalog struct {
 
 // Entry is an exact backend selection tuple and its complete install plan.
 type Entry struct {
-	Family          string            `json:"family"`
-	Selector        Selector          `json:"selector"`
-	Platform        Platform          `json:"platform"`
-	Runtime         Runtime           `json:"runtime"`
-	TargetProfile   TargetProfile     `json:"targetProfile"`
-	Status          Status            `json:"status"`
-	Channel         Channel           `json:"channel"`
-	Version         string            `json:"version"`
-	SourceRef       string            `json:"sourceRef"`
-	RuntimeBase     Artifact          `json:"runtimeBase"`
-	Core            Artifact          `json:"core"`
-	Backend         BackendArtifact   `json:"backend"`
-	Fallbacks       []BackendArtifact `json:"fallbacks,omitempty"`
-	SystemPackages  []string          `json:"systemPackages,omitempty"`
-	RuntimeSymlinks []RuntimeSymlink  `json:"runtimeSymlinks,omitempty"`
-	Environment     []string          `json:"environment,omitempty"`
-	RunnerProfile   RunnerProfile     `json:"runnerProfile"`
-	Workloads       []string          `json:"workloads,omitempty"`
+	Family            string            `json:"family"`
+	Selector          Selector          `json:"selector"`
+	Platform          Platform          `json:"platform"`
+	Runtime           Runtime           `json:"runtime"`
+	TargetProfile     TargetProfile     `json:"targetProfile"`
+	Status            Status            `json:"status"`
+	Channel           Channel           `json:"channel"`
+	Version           string            `json:"version"`
+	SourceRef         string            `json:"sourceRef"`
+	RuntimeBase       Artifact          `json:"runtimeBase"`
+	RunnerRuntimeBase *Artifact         `json:"runnerRuntimeBase,omitempty"`
+	Core              Artifact          `json:"core"`
+	Backend           BackendArtifact   `json:"backend"`
+	Fallbacks         []BackendArtifact `json:"fallbacks,omitempty"`
+	SystemPackages    []string          `json:"systemPackages,omitempty"`
+	RuntimeSymlinks   []RuntimeSymlink  `json:"runtimeSymlinks,omitempty"`
+	Environment       []string          `json:"environment,omitempty"`
+	RunnerProfile     RunnerProfile     `json:"runnerProfile"`
+	Workloads         []string          `json:"workloads,omitempty"`
 }
 
 // Request identifies one runtime, family, selector, and platform tuple. Empty
-// family and selector values use the catalog-owned defaults for the runtime.
+// family and selector values use the catalog-owned defaults for the runtime and platform.
 type Request struct {
 	Family   string
 	Selector Selector
@@ -193,11 +195,19 @@ type Resolution struct {
 
 // Resolver resolves exact tuples from a validated, immutable snapshot.
 type Resolver struct {
-	entries       map[tupleKey]Entry
-	defaultFamily string
-	defaults      map[Runtime]Selector
-	catalogDigest string
-	source        Source
+	entries          map[tupleKey]Entry
+	defaultFamily    string
+	defaults         map[Runtime]Selector
+	platformDefaults map[defaultSelectorKey]Selector
+	catalogDigest    string
+	source           Source
+}
+
+type defaultSelectorKey struct {
+	runtime      Runtime
+	os           string
+	architecture string
+	variant      string
 }
 
 type tupleKey struct {
@@ -267,16 +277,22 @@ func NewResolver(catalog *Catalog) (*Resolver, error) {
 	}
 
 	defaults := make(map[Runtime]Selector, len(snapshot.Defaults.Selectors))
+	platformDefaults := make(map[defaultSelectorKey]Selector, len(snapshot.Defaults.Selectors))
 	for _, selection := range snapshot.Defaults.Selectors {
-		defaults[selection.Runtime] = selection.Selector
+		if selection.Platform == nil {
+			defaults[selection.Runtime] = selection.Selector
+			continue
+		}
+		platformDefaults[defaultSelectorKeyFor(selection.Runtime, *selection.Platform)] = selection.Selector
 	}
 
 	return &Resolver{
-		entries:       entries,
-		defaultFamily: snapshot.Defaults.Family,
-		defaults:      defaults,
-		catalogDigest: snapshot.digest,
-		source:        snapshot.Source,
+		entries:          entries,
+		defaultFamily:    snapshot.Defaults.Family,
+		defaults:         defaults,
+		platformDefaults: platformDefaults,
+		catalogDigest:    snapshot.digest,
+		source:           snapshot.Source,
 	}, nil
 }
 
@@ -290,7 +306,11 @@ func (r *Resolver) Resolve(request Request) (Resolution, error) {
 		request.Family = r.defaultFamily
 	}
 	if request.Selector == "" {
-		request.Selector = r.defaults[request.Runtime]
+		selector, ok := r.platformDefaults[defaultSelectorKeyFor(request.Runtime, request.Platform)]
+		if !ok {
+			selector = r.defaults[request.Runtime]
+		}
+		request.Selector = selector
 	}
 	if err := validateRequest(request); err != nil {
 		return Resolution{}, err
@@ -373,7 +393,16 @@ func digestBytes(data []byte) string {
 
 func cloneCatalog(catalog Catalog) Catalog {
 	clone := catalog
-	clone.Defaults.Selectors = append([]DefaultSelector(nil), catalog.Defaults.Selectors...)
+	if catalog.Defaults.Selectors != nil {
+		clone.Defaults.Selectors = make([]DefaultSelector, len(catalog.Defaults.Selectors))
+		for i, selection := range catalog.Defaults.Selectors {
+			clone.Defaults.Selectors[i] = selection
+			if selection.Platform != nil {
+				platform := *selection.Platform
+				clone.Defaults.Selectors[i].Platform = &platform
+			}
+		}
+	}
 	clone.Entries = make([]Entry, len(catalog.Entries))
 	for i, entry := range catalog.Entries {
 		clone.Entries[i] = cloneEntry(entry)
@@ -384,6 +413,10 @@ func cloneCatalog(catalog Catalog) Catalog {
 
 func cloneEntry(entry Entry) Entry {
 	clone := entry
+	if entry.RunnerRuntimeBase != nil {
+		runnerRuntimeBase := *entry.RunnerRuntimeBase
+		clone.RunnerRuntimeBase = &runnerRuntimeBase
+	}
 	clone.Fallbacks = append([]BackendArtifact(nil), entry.Fallbacks...)
 	clone.SystemPackages = append([]string(nil), entry.SystemPackages...)
 	clone.RuntimeSymlinks = append([]RuntimeSymlink(nil), entry.RuntimeSymlinks...)
@@ -403,6 +436,15 @@ func keyFor(family string, selector Selector, platform Platform) tupleKey {
 	}
 }
 
+func defaultSelectorKeyFor(runtime Runtime, platform Platform) defaultSelectorKey {
+	return defaultSelectorKey{
+		runtime:      runtime,
+		os:           platform.OS,
+		architecture: platform.Architecture,
+		variant:      platform.Variant,
+	}
+}
+
 func normalizeRequestPlatform(platform Platform) Platform {
 	platform.OS = strings.ToLower(strings.TrimSpace(platform.OS))
 	platform.Architecture = strings.ToLower(strings.TrimSpace(platform.Architecture))
@@ -412,6 +454,12 @@ func normalizeRequestPlatform(platform Platform) Platform {
 		platform.Architecture = platformArchitectureAMD64
 	case "aarch64":
 		platform.Architecture = platformArchitectureARM64
+	}
+	if platform.OS == platformOSLinux && platform.Architecture == platformArchitectureAMD64 {
+		switch platform.Variant {
+		case "v2", "v3", "v4":
+			platform.Variant = ""
+		}
 	}
 	if platform.Architecture == platformArchitectureARM64 && platform.Variant == "v8" {
 		platform.Variant = ""

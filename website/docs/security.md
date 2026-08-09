@@ -52,7 +52,7 @@ Pinning the frontend freezes the catalog plan, but does not by itself make the c
 
 ## Vulnerability Patching
 
-Ensuring that our images are free from known vulnerabilities is crucial. Not only AIKit uses a custom distroless-based base image to reduce the number of vulnerabilities, attack surface and size, AIKit uses [Copacetic](https://github.com/project-copacetic/copacetic) to scan and patch OS-based vulnerabilities for all [pre-made models](premade-models.md) on a weekly basis. Copacetic automates the process of identifying and remediating security issues, helping us maintain a robust and secure software supply chain.
+Ensuring that our images are free from known vulnerabilities is crucial. Compatible catalog plans use AIKit's custom distroless-based image to reduce vulnerabilities, attack surface, and size; plans that need OS, accelerator, or runner tooling use their catalog-declared runtime base instead. AIKit also uses [Copacetic](https://github.com/project-copacetic/copacetic) to scan and patch OS-based vulnerabilities for all [pre-made models](premade-models.md) on a weekly basis. Copacetic automates the process of identifying and remediating security issues, helping us maintain a robust software supply chain.
 
 Every week, Copacetic performs the following actions:
 

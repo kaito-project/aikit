@@ -19,6 +19,7 @@ import (
 const (
 	testCPULlamaCppBackend = "cpu-llama-cpp"
 	testLocalAIVersion     = "v4.8.2"
+	testLegacyLocalAI      = "v3.12.1"
 	testArbitraryFamily    = "arbitrary-family"
 )
 
@@ -82,17 +83,44 @@ func TestResolveBackendCurrentCompatibility(t *testing.T) {
 			wantEnvironment: testCUDA12Environment,
 		},
 		{
-			name: "CUDA diffusers uses promoted release entry",
+			name: "CUDA diffusers preserves legacy default",
 			config: &config.InferenceConfig{
 				Runtime:  utils.RuntimeNVIDIA,
 				Backends: []string{utils.BackendDiffusers},
 			},
 			platform:        specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64},
 			wantName:        "cuda12-diffusers",
-			wantVersion:     testLocalAIVersion,
+			wantVersion:     testLegacyLocalAI,
 			wantProfile:     backendcatalog.TargetProfileCUDA12,
 			wantRunner:      backendcatalog.RunnerProfileHFConfig,
 			wantEnvironment: testCUDA12Environment,
+		},
+		{
+			name: "CUDA diffusers exposes promoted release through exact selector",
+			config: &config.InferenceConfig{
+				Runtime:           utils.RuntimeNVIDIA,
+				Backends:          []string{utils.BackendDiffusers},
+				BackendCapability: string(backendcatalog.SelectorNVIDIACUDA12),
+				Models:            []config.Model{{Name: "test", Source: "test"}},
+			},
+			platform:        specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64},
+			wantName:        "cuda12-diffusers",
+			wantVersion:     testLocalAIVersion,
+			wantProfile:     backendcatalog.TargetProfileCUDA12,
+			wantRunner:      backendcatalog.RunnerProfileUnsupported,
+			wantEnvironment: testCUDA12Environment,
+		},
+		{
+			name: "Apple Silicon llama-cpp preserves legacy default",
+			config: &config.InferenceConfig{
+				Runtime: utils.RuntimeAppleSilicon,
+			},
+			platform:        specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformARM64},
+			wantName:        "gpu-vulkan-llama-cpp",
+			wantVersion:     testLegacyLocalAI,
+			wantProfile:     backendcatalog.TargetProfileVulkan,
+			wantRunner:      backendcatalog.RunnerProfileUnsupported,
+			wantEnvironment: []string{"VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/virtio_icd.aarch64.json"},
 		},
 		{
 			name: "CUDA vllm",
@@ -255,16 +283,24 @@ func TestInstallBackendsUsesOnlyCatalogArtifacts(t *testing.T) {
 			if err := json.Unmarshal(mkfile.Data, &metadata); err != nil {
 				t.Fatalf("unmarshal backend metadata: %v", err)
 			}
-			if metadata.CatalogDigest != resolved.CatalogDigest || metadata.Artifact == "" {
+			if metadata.Alias != resolved.Family || metadata.Name == "" || metadata.GalleryURL != pinnedGalleryURL(resolved.Source) || metadata.Version != resolved.Version {
+				t.Errorf("metadata = %+v, want LocalAI compatibility fields", metadata)
+			}
+			if metadata.CatalogDigest != resolved.CatalogDigest || metadata.Artifact == "" || metadata.Digest == "" {
 				t.Errorf("metadata = %+v, want catalog and artifact digests", metadata)
 			}
 			if metadata.Artifact == resolved.Backend.Ref {
 				primaryMetadataFiles++
-				if metadata.SourceRef != resolved.SourceRef || metadata.Version != resolved.Version || metadata.Selector != string(resolved.Selector) || metadata.Status != string(resolved.Status) {
+				if metadata.URI != resolved.SourceRef || metadata.SourceRef != resolved.SourceRef || metadata.Selector != string(resolved.Selector) || metadata.Status != string(resolved.Status) {
 					t.Errorf("primary metadata = %+v, want selected entry provenance", metadata)
 				}
-			} else if metadata.SourceRef != "" || metadata.Version != "" || metadata.Selector != "" || metadata.Status != "" {
-				t.Errorf("fallback metadata contains primary-only provenance: %+v", metadata)
+			} else {
+				if metadata.URI != metadata.Artifact {
+					t.Errorf("fallback metadata URI = %q, want installed artifact %q", metadata.URI, metadata.Artifact)
+				}
+				if metadata.SourceRef != "" || metadata.Selector != "" || metadata.Status != "" {
+					t.Errorf("fallback metadata contains primary-only provenance: %+v", metadata)
+				}
 			}
 			metadataFiles++
 		}
@@ -280,6 +316,75 @@ func TestInstallBackendsUsesOnlyCatalogArtifacts(t *testing.T) {
 	}
 	if primaryMetadataFiles != 1 {
 		t.Errorf("primary metadata files = %d, want 1", primaryMetadataFiles)
+	}
+}
+
+func TestBackendMetadataMatchesLocalAIV482(t *testing.T) {
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	resolved := testArbitraryBackendPlan(platform)
+	tests := []struct {
+		name       string
+		artifact   backendcatalog.BackendArtifact
+		primary    bool
+		wantURI    string
+		wantDigest string
+	}{
+		{
+			name:       "primary",
+			artifact:   resolved.Backend,
+			primary:    true,
+			wantURI:    resolved.SourceRef,
+			wantDigest: "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+		},
+		{
+			name:       "fallback",
+			artifact:   resolved.Fallbacks[0],
+			wantURI:    resolved.Fallbacks[0].Ref,
+			wantDigest: "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			metadataJSON := marshalBackendMetadata(resolved, test.artifact, test.primary)
+			for iteration := 0; iteration < 10; iteration++ {
+				if got := string(marshalBackendMetadata(resolved, test.artifact, test.primary)); got != string(metadataJSON) {
+					t.Fatalf("metadata changed on serialization %d: got %q, want %q", iteration, got, metadataJSON)
+				}
+			}
+			if !strings.HasSuffix(string(metadataJSON), "\n") {
+				t.Fatal("metadata does not end with a newline")
+			}
+
+			var metadata map[string]string
+			if err := json.Unmarshal(metadataJSON, &metadata); err != nil {
+				t.Fatalf("unmarshal backend metadata: %v", err)
+			}
+			want := map[string]string{
+				"alias":          resolved.Family,
+				"name":           test.artifact.InstallName,
+				"gallery_url":    "github:example/catalog/backend/index.yaml@test-revision",
+				"version":        resolved.Version,
+				"uri":            test.wantURI,
+				"digest":         test.wantDigest,
+				"gallery_commit": resolved.Source.Revision,
+				"catalog_digest": resolved.CatalogDigest,
+				"artifact":       test.artifact.Ref,
+			}
+			for key, value := range want {
+				got, ok := metadata[key]
+				if !ok {
+					t.Errorf("metadata is missing LocalAI field %q", key)
+					continue
+				}
+				if got != value {
+					t.Errorf("metadata %q = %q, want %q", key, got, value)
+				}
+			}
+			if _, ok := metadata["installed_at"]; ok {
+				t.Error("metadata unexpectedly contains nondeterministic installed_at")
+			}
+		})
 	}
 }
 
@@ -418,8 +523,9 @@ func testArbitraryBackendPlan(platform specs.Platform) backendcatalog.Resolution
 		},
 		CatalogDigest: "sha256:5555555555555555555555555555555555555555555555555555555555555555",
 		Source: backendcatalog.Source{
-			Repository: "https://example.com/catalog",
+			Repository: "https://github.com/example/catalog",
 			Revision:   "test-revision",
+			Path:       "backend/index.yaml",
 		},
 	}
 }

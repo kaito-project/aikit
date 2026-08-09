@@ -2,11 +2,60 @@ package backendcatalogimport
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/pkg/errors"
 )
+
+func TestCraneResolverPinsTagBeforeInspectingSingleManifest(t *testing.T) {
+	const sourceRef = "registry.example/repo:v1"
+	immutableRef := "registry.example/repo@" + fixtureDigestA
+	var calls []string
+	resolver := CraneResolver{
+		Binary: "test-crane",
+		run: func(_ context.Context, binary string, arguments ...string) ([]byte, error) {
+			calls = append(calls, strings.Join(append([]string{binary}, arguments...), " "))
+			switch arguments[0] {
+			case "digest":
+				if arguments[1] != sourceRef {
+					t.Fatalf("digest reference = %q", arguments[1])
+				}
+				return []byte(fixtureDigestA + "\n"), nil
+			case "manifest":
+				if arguments[1] != immutableRef {
+					t.Fatalf("manifest reference = %q", arguments[1])
+				}
+				return []byte(`{"schemaVersion":2}`), nil
+			case "config":
+				if arguments[1] != immutableRef {
+					t.Fatalf("config reference = %q", arguments[1])
+				}
+				return []byte(`{"os":"linux","architecture":"amd64"}`), nil
+			default:
+				t.Fatalf("unexpected crane command %q", arguments[0])
+				return nil, nil
+			}
+		},
+	}
+
+	manifests, err := resolver.Resolve(context.Background(), sourceRef)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if len(manifests) != 1 || manifests[0].Digest != fixtureDigestA || manifests[0].Platform.key() != "linux/amd64/" {
+		t.Fatalf("Resolve() = %#v", manifests)
+	}
+	wantCalls := []string{
+		"test-crane digest " + sourceRef,
+		"test-crane manifest " + immutableRef,
+		"test-crane config " + immutableRef,
+	}
+	if !slices.Equal(calls, wantCalls) {
+		t.Fatalf("crane calls = %v, want %v", calls, wantCalls)
+	}
+}
 
 func TestSnapshotResolverRejectsConflictingPlatformChildren(t *testing.T) {
 	_, err := NewSnapshotResolver(Snapshot{

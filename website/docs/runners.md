@@ -6,7 +6,7 @@ Runner images are reusable AIKit images that download models at runtime instead 
 
 Runner mode is available only for a resolved catalog entry with an explicit `runnerProfile`. The profile selects a reviewed AIKit adapter for model download, cache layout, input validation, generated configuration, and startup behavior. It is an internal catalog field, not a value users can add to an aikitfile.
 
-A backend being installable in a standard model image does not make it runner-capable. When `backends` is set and `models` is empty, AIKit requests runner mode and fails if that exact family, selector, runtime, and platform tuple has `runnerProfile: unsupported`. There is no silent switch back to standard mode or to a different runner.
+A backend being installable in a standard model image does not make it runner-capable. When `backends` contains one family and `models` is empty, AIKit requests runner mode and fails if that exact family, selector, runtime, and platform tuple has `runnerProfile: unsupported`. There is no silent switch back to standard mode or to a different runner.
 
 ## Pre-built Runner Images
 
@@ -22,7 +22,7 @@ Pre-built runner images are available at `ghcr.io/kaito-project/aikit/runners/`:
 | `ghcr.io/kaito-project/aikit/runners/vllm-cpp-cuda:latest` | Experimental native vllm.cpp CUDA 13 runner for Blackwell GPUs (amd64) |
 
 :::note
-Pre-built runner images are currently published for CPU and NVIDIA CUDA only. ROCm catalog entries currently declare `runnerProfile: unsupported`, so runner-mode builds for AMD GPUs fail closed.
+Pre-built runner images are currently published for CPU and NVIDIA CUDA only. The exact llama.cpp ROCm tuple is runner-capable for custom builds, but AIKit does not currently publish a pre-built ROCm runner image. Other ROCm families remain unavailable in runner mode unless their exact catalog entries name a runner profile.
 
 Published image names describe the intended runner families, not every possible backend capability. Consult the generated catalog lock for the selected frontend release before relying on a specific CUDA major, L4T variant, architecture, or experimental integration.
 :::
@@ -67,7 +67,7 @@ The model name in the API request is the GGUF filename without the `.gguf` exten
 
 ## GPU Support
 
-The NVIDIA CUDA llama.cpp runner automatically detects whether an NVIDIA GPU is present at runtime. If no GPU is found, LocalAI can use the CPU companion artifact already declared and installed by that CUDA catalog plan. This is runtime behavior inside one selected plan, not catalog resolution falling back to a CPU tuple. The Diffusers and vLLM runners require an NVIDIA GPU. ROCm runner images are not published yet.
+The NVIDIA CUDA llama.cpp runner automatically detects whether an NVIDIA GPU is present at runtime. If no GPU is found, LocalAI can use the CPU companion artifact already declared and installed by that CUDA catalog plan. This is runtime behavior inside one selected plan, not catalog resolution falling back to a CPU tuple. The Diffusers and Python vLLM (`vllm`) runners require an NVIDIA GPU. ROCm runner images are not published, but a custom llama.cpp ROCm runner can be built from the catalog tuple.
 
 ```bash
 # With GPU
@@ -142,7 +142,23 @@ backends:
   - llama-cpp
 ```
 
-Build:
+For AMD ROCm on `linux/amd64`:
+
+```yaml
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
+apiVersion: v1alpha1
+runtime: rocm
+backends:
+  - llama-cpp
+```
+
+Build the ROCm runner for its exact catalog platform:
+
+```bash
+docker buildx build --platform linux/amd64 -t my-rocm-runner -f runner.yaml .
+```
+
+Build the CPU or NVIDIA examples for the desired supported platform:
 
 ```bash
 docker buildx build -t my-runner -f runner.yaml .

@@ -114,6 +114,11 @@ func validateEntry(entry Entry) error {
 	if err := validateArtifact("runtimeBase", entry.RuntimeBase.Ref); err != nil {
 		return err
 	}
+	if entry.RunnerRuntimeBase != nil {
+		if err := validateArtifact("runnerRuntimeBase", entry.RunnerRuntimeBase.Ref); err != nil {
+			return err
+		}
+	}
 	if err := validateArtifact("core", entry.Core.Ref); err != nil {
 		return err
 	}
@@ -177,7 +182,7 @@ func validateDefaults(defaults Defaults) error {
 	if defaults.Selectors == nil {
 		return errors.Wrap(ErrInvalidCatalog, "defaults.selectors must be an array")
 	}
-	seen := make(map[Runtime]struct{}, len(defaults.Selectors))
+	seen := make(map[defaultSelectorKey]int, len(defaults.Selectors))
 	for i, selection := range defaults.Selectors {
 		if !validRuntime(selection.Runtime) {
 			return errors.Wrapf(ErrInvalidCatalog, "defaults.selectors[%d].runtime %q is not supported", i, selection.Runtime)
@@ -185,13 +190,22 @@ func validateDefaults(defaults Defaults) error {
 		if err := validateSelector(selection.Selector); err != nil {
 			return errors.Wrapf(err, "defaults.selectors[%d]", i)
 		}
-		if _, ok := seen[selection.Runtime]; ok {
-			return errors.Wrapf(ErrInvalidCatalog, "defaults.selectors runtime %q is duplicated", selection.Runtime)
+
+		platform := Platform{}
+		if selection.Platform != nil {
+			if err := validatePlatform(*selection.Platform); err != nil {
+				return errors.Wrapf(err, "defaults.selectors[%d].platform", i)
+			}
+			platform = *selection.Platform
 		}
-		seen[selection.Runtime] = struct{}{}
+		key := defaultSelectorKeyFor(selection.Runtime, platform)
+		if previous, ok := seen[key]; ok {
+			return errors.Wrapf(ErrInvalidCatalog, "defaults.selectors[%d] duplicates defaults.selectors[%d]", i, previous)
+		}
+		seen[key] = i
 	}
 	for _, runtime := range []Runtime{RuntimeCPU, RuntimeCUDA, RuntimeROCm, RuntimeAppleSilicon} {
-		if _, ok := seen[runtime]; !ok {
+		if _, ok := seen[defaultSelectorKeyFor(runtime, Platform{})]; !ok {
 			return errors.Wrapf(ErrInvalidCatalog, "defaults.selectors is missing runtime %q", runtime)
 		}
 	}

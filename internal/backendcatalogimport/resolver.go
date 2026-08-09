@@ -141,7 +141,10 @@ func (resolver *SnapshotResolver) Resolve(_ context.Context, reference string) (
 // CraneResolver uses the crane CLI for registry transport and credential handling.
 type CraneResolver struct {
 	Binary string
+	run    craneRunner
 }
+
+type craneRunner func(context.Context, string, ...string) ([]byte, error)
 
 // Resolve resolves an OCI index or image using crane.
 func (resolver CraneResolver) Resolve(ctx context.Context, reference string) ([]ResolvedManifest, error) {
@@ -149,10 +152,27 @@ func (resolver CraneResolver) Resolve(ctx context.Context, reference string) ([]
 	if binary == "" {
 		binary = "crane"
 	}
+	runner := resolver.run
+	if runner == nil {
+		runner = runCrane
+	}
 
-	manifestBytes, err := runCrane(ctx, binary, "manifest", reference)
+	// Resolve a mutable source reference once, then inspect only that immutable
+	// root. This prevents a moving tag from mixing manifest, config, and digest
+	// data from different images during catalog promotion.
+	digestBytes, err := runner(ctx, binary, "digest", reference)
 	if err != nil {
 		return nil, classifyCraneError(reference, err)
+	}
+	rootDigest, err := normalizeResolvedDigest(reference, string(digestBytes))
+	if err != nil {
+		return nil, err
+	}
+	resolvedReference := immutableReference(reference, rootDigest)
+
+	manifestBytes, err := runner(ctx, binary, "manifest", resolvedReference)
+	if err != nil {
+		return nil, classifyCraneError(resolvedReference, err)
 	}
 
 	var document struct {
@@ -186,24 +206,32 @@ func (resolver CraneResolver) Resolve(ctx context.Context, reference string) ([]
 		return manifests, nil
 	}
 
-	digestBytes, err := runCrane(ctx, binary, "digest", reference)
+	configBytes, err := runner(ctx, binary, "config", resolvedReference)
 	if err != nil {
-		return nil, classifyCraneError(reference, err)
-	}
-	configBytes, err := runCrane(ctx, binary, "config", reference)
-	if err != nil {
-		return nil, classifyCraneError(reference, err)
+		return nil, classifyCraneError(resolvedReference, err)
 	}
 	var platform Platform
 	if err := json.Unmarshal(configBytes, &platform); err != nil {
 		return nil, errors.Wrapf(err, "parse OCI config for %q", reference)
 	}
-	manifests := []ResolvedManifest{{Digest: strings.TrimSpace(string(digestBytes)), Platform: platform}}
+	manifests := []ResolvedManifest{{Digest: rootDigest, Platform: platform}}
 	if err := normalizeResolvedManifests(manifests, reference, true); err != nil {
 		return nil, err
 	}
 
 	return manifests, nil
+}
+
+func normalizeResolvedDigest(reference, rawDigest string) (string, error) {
+	digest, err := godigest.Parse(strings.TrimSpace(rawDigest))
+	if err != nil {
+		return "", errors.Wrapf(err, "reference %q has invalid resolved digest %q", reference, strings.TrimSpace(rawDigest))
+	}
+	if digest.Algorithm() != godigest.SHA256 {
+		return "", fmt.Errorf("reference %q uses unsupported resolved digest algorithm %q", reference, digest.Algorithm())
+	}
+
+	return digest.String(), nil
 }
 
 func classifyCraneError(reference string, err error) error {

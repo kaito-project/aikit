@@ -72,9 +72,14 @@ func Generate(ctx context.Context, source []byte, options GenerateOptions) (Cata
 			if !ok {
 				return Catalog{}, fmt.Errorf("stable family %q selector %q targets missing concrete entry %q", family, selector, targetName)
 			}
-			sourceRef, err := stableVersionReference(target.URI, options.Version)
+			entryVersion := artifactVersionFor(options.Version, family, selector)
+			sourceRef, err := stableVersionReference(target.URI, entryVersion)
 			if err != nil {
 				return Catalog{}, errors.Wrapf(err, "normalize family %q selector %q", family, selector)
+			}
+			coreRefTemplate, err := coreReferenceTemplateForVersion(options.CoreRefTemplate, options.Version, entryVersion)
+			if err != nil {
+				return Catalog{}, errors.Wrapf(err, "select LocalAI core for family %q selector %q", family, selector)
 			}
 			unavailablePolicy, reviewedUnavailable := reviewedUnavailableSource(options.Version, family, selector, sourceRef)
 			manifests, resolveErr := resolver.resolve(ctx, sourceRef)
@@ -97,7 +102,7 @@ func Generate(ctx context.Context, source []byte, options GenerateOptions) (Cata
 				if manifest.Platform.OS == "" || manifest.Platform.Architecture == "" {
 					return Catalog{}, fmt.Errorf("backend reference %q manifest %s has no platform", sourceRef, manifest.Digest)
 				}
-				policy, err := policyFor(family, selector, targetName, manifest.Platform)
+				policy, err := policyFor(family, selector, targetName, sourceRef, manifest.Platform)
 				if err != nil {
 					return Catalog{}, errors.Wrapf(err, "apply policy for family %q selector %q", family, selector)
 				}
@@ -108,29 +113,42 @@ func Generate(ctx context.Context, source []byte, options GenerateOptions) (Cata
 				if err != nil {
 					return Catalog{}, errors.Wrapf(err, "resolve runtime base for %s", manifest.Platform.key())
 				}
-				coreRef, err := resolveCore(ctx, resolver, options.CoreRefTemplate, manifest.Platform)
+				coreRef, err := resolveCore(ctx, resolver, coreRefTemplate, manifest.Platform)
 				if err != nil {
 					return Catalog{}, errors.Wrapf(err, "resolve LocalAI core for %s", manifest.Platform.key())
 				}
+				installName := policy.InstallName
+				if installName == "" {
+					installName = targetName
+				}
+				var runnerRuntimeBase *Artifact
+				if policy.RunnerRuntimeBaseRef != "" {
+					runnerRuntimeBaseRef, err := resolvePlatformReference(ctx, resolver, policy.RunnerRuntimeBaseRef, manifest.Platform, false)
+					if err != nil {
+						return Catalog{}, errors.Wrapf(err, "resolve runner runtime base for %s", manifest.Platform.key())
+					}
+					runnerRuntimeBase = &Artifact{Ref: runnerRuntimeBaseRef}
+				}
 				entry := Entry{
-					Family:          family,
-					Selector:        selector,
-					Platform:        manifest.Platform,
-					Runtime:         policy.Runtime,
-					TargetProfile:   policy.TargetProfile,
-					Status:          policy.Status,
-					Channel:         "stable",
-					RuntimeBase:     Artifact{Ref: runtimeBaseRef},
-					Core:            Artifact{Ref: coreRef},
-					Backend:         BackendArtifact{Ref: immutableReference(sourceRef, manifest.Digest), InstallName: targetName},
-					Fallbacks:       []BackendArtifact{},
-					Version:         options.Version,
-					SourceRef:       sourceRef,
-					SystemPackages:  append([]string(nil), policy.SystemPackages...),
-					RuntimeSymlinks: append([]RuntimeSymlink(nil), policy.RuntimeSymlinks...),
-					Environment:     append([]string(nil), policy.Environment...),
-					RunnerProfile:   policy.RunnerProfile,
-					Workloads:       normalizeWorkloads(selectorEntry.Tags),
+					Family:            family,
+					Selector:          selector,
+					Platform:          manifest.Platform,
+					Runtime:           policy.Runtime,
+					TargetProfile:     policy.TargetProfile,
+					Status:            policy.Status,
+					Channel:           "stable",
+					RuntimeBase:       Artifact{Ref: runtimeBaseRef},
+					RunnerRuntimeBase: runnerRuntimeBase,
+					Core:              Artifact{Ref: coreRef},
+					Backend:           BackendArtifact{Ref: immutableReference(sourceRef, manifest.Digest), InstallName: installName},
+					Fallbacks:         []BackendArtifact{},
+					Version:           entryVersion,
+					SourceRef:         sourceRef,
+					SystemPackages:    append([]string(nil), policy.SystemPackages...),
+					RuntimeSymlinks:   append([]RuntimeSymlink(nil), policy.RuntimeSymlinks...),
+					Environment:       append([]string(nil), policy.Environment...),
+					RunnerProfile:     policy.RunnerProfile,
+					Workloads:         normalizeWorkloads(selectorEntry.Tags),
 				}
 				encoded, err := json.Marshal(entry)
 				if err != nil {
@@ -186,6 +204,14 @@ func Generate(ctx context.Context, source []byte, options GenerateOptions) (Cata
 				{Runtime: runtimeApple, Selector: targetVulkan},
 				{Runtime: runtimeCPU, Selector: selectorDefault},
 				{Runtime: runtimeCUDA, Selector: selectorNVIDIA},
+				{
+					Runtime: runtimeCUDA,
+					Platform: &Platform{
+						OS:           platformLinux,
+						Architecture: architectureARM64,
+					},
+					Selector: selectorNVIDIAL4T,
+				},
 				{Runtime: runtimeROCm, Selector: selectorAMD},
 			},
 		},

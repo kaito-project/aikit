@@ -170,7 +170,7 @@ func Test_validateConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "invalid backend name",
+			name: "multiple backends",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Runtime:    "cuda",
@@ -181,6 +181,46 @@ func Test_validateConfig(t *testing.T) {
 						Source: "foo",
 					},
 				},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "empty backend name",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{""},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "whitespace backend name",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{" \t"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "unsafe backend name",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{"../llama-cpp"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "noncanonical backend name",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{"Llama-Cpp"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "overlong backend name",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{strings.Repeat("a", 129)},
 			}},
 			wantErr: true,
 		},
@@ -362,6 +402,17 @@ func TestResolveBackendPlans(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "llama-cpp CPU backend with amd64 v3 platform - should pass",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{utils.BackendLlamaCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux, Variant: "v3"},
+			},
+			wantErr: false,
+		},
+		{
 			name: "vllm-cpp CPU backend with arm64 platform - should pass",
 			config: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
@@ -369,6 +420,17 @@ func TestResolveBackendPlans(t *testing.T) {
 			},
 			targetPlatforms: []*specs.Platform{
 				{Architecture: utils.PlatformARM64, OS: utils.PlatformLinux},
+			},
+			wantErr: false,
+		},
+		{
+			name: "llama-cpp CPU backend with arm64 v8 platform - should pass",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{utils.BackendLlamaCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformARM64, OS: utils.PlatformLinux, Variant: "v8"},
 			},
 			wantErr: false,
 		},
@@ -431,7 +493,7 @@ func TestResolveBackendPlans(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "missing ROCm tuple fails closed",
+			name: "llama-cpp ROCm runner tuple preserves compatibility",
 			config: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Runtime:    "rocm",
@@ -440,7 +502,7 @@ func TestResolveBackendPlans(t *testing.T) {
 			targetPlatforms: []*specs.Platform{
 				{Architecture: "amd64", OS: "linux"},
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "rocm runtime with arm64 platform - should fail",

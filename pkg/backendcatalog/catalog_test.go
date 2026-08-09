@@ -217,8 +217,10 @@ func TestDefaultCatalogRuntimePlanInvariants(t *testing.T) {
 			}
 		case TargetProfileL4TCUDA12, TargetProfileL4TCUDA13:
 			minimumCUDA := "12.0"
+			runtimeBasePrefix := "nvcr.io/nvidia/l4t-jetpack@sha256:"
 			if entry.TargetProfile == TargetProfileL4TCUDA13 {
 				minimumCUDA = "13.0"
+				runtimeBasePrefix = "docker.io/library/ubuntu@sha256:"
 			}
 			wantEnvironment := []string{
 				testCUDABuildType,
@@ -232,7 +234,7 @@ func TestDefaultCatalogRuntimePlanInvariants(t *testing.T) {
 			if !slices.Equal(entry.Environment, wantEnvironment) {
 				t.Errorf("L4T entry %s/%s %s environment = %q, want %q", entry.Family, entry.Selector, formatPlatform(entry.Platform), entry.Environment, wantEnvironment)
 			}
-			if !strings.HasPrefix(entry.RuntimeBase.Ref, "nvcr.io/nvidia/l4t-jetpack@sha256:") {
+			if !strings.HasPrefix(entry.RuntimeBase.Ref, runtimeBasePrefix) {
 				t.Errorf("L4T entry %s/%s %s runtime base = %q", entry.Family, entry.Selector, formatPlatform(entry.Platform), entry.RuntimeBase.Ref)
 			}
 		case TargetProfileVulkan:
@@ -322,6 +324,9 @@ func TestParseRejectsInvalidCatalogFields(t *testing.T) {
 		{name: "unsafe install name", mutate: func(c *Catalog) { c.Entries[0].Backend.InstallName = testUnsafePath }},
 		{name: "missing runtime base", mutate: func(c *Catalog) { c.Entries[0].RuntimeBase.Ref = "" }},
 		{name: "mutable runtime base", mutate: func(c *Catalog) { c.Entries[0].RuntimeBase.Ref = "docker.io/library/ubuntu:24.04" }},
+		{name: "mutable runner runtime base", mutate: func(c *Catalog) {
+			c.Entries[0].RunnerRuntimeBase = &Artifact{Ref: "docker.io/library/ubuntu:22.04"}
+		}},
 		{name: "mutable core tag", mutate: func(c *Catalog) { c.Entries[0].Core.Ref = "registry.example.com/localai/core:v1" }},
 		{name: "backend tag and digest", mutate: func(c *Catalog) {
 			c.Entries[0].Backend.Ref = "registry.example.com/localai/backend:v1@" + testDigestA
@@ -380,6 +385,18 @@ func TestParseRejectsInvalidDefaults(t *testing.T) {
 		{name: "invalid selector", mutate: func(defaults *Defaults) { defaults.Selectors[0].Selector = testInvalidRuntime }},
 		{name: "duplicate runtime", mutate: func(defaults *Defaults) {
 			defaults.Selectors = append(defaults.Selectors, defaults.Selectors[0])
+		}},
+		{name: "invalid platform override", mutate: func(defaults *Defaults) {
+			defaults.Selectors = append(defaults.Selectors, DefaultSelector{
+				Runtime: RuntimeCUDA, Platform: &Platform{OS: testOSLinux, Architecture: testArchitectureARM64, Variant: "v8"}, Selector: SelectorNVIDIAL4T,
+			})
+		}},
+		{name: "duplicate platform override", mutate: func(defaults *Defaults) {
+			platform := Platform{OS: testOSLinux, Architecture: testArchitectureARM64}
+			defaults.Selectors = append(defaults.Selectors,
+				DefaultSelector{Runtime: RuntimeCUDA, Platform: &platform, Selector: SelectorNVIDIAL4T},
+				DefaultSelector{Runtime: RuntimeCUDA, Platform: &platform, Selector: SelectorL4TCUDA12},
+			)
 		}},
 		{name: "missing runtime", mutate: func(defaults *Defaults) {
 			defaults.Selectors = defaults.Selectors[:len(defaults.Selectors)-1]
@@ -593,7 +610,11 @@ func TestResolverAppliesCatalogDefaultsForRuntime(t *testing.T) {
 	cpuEntry.Environment = nil
 	catalog.Entries = append(catalog.Entries, cpuEntry)
 
-	resolver, err := NewResolver(&catalog)
+	parsed, err := Parse(marshalCatalog(t, catalog))
+	if err != nil {
+		t.Fatalf("parse catalog: %v", err)
+	}
+	resolver, err := NewResolver(parsed)
 	if err != nil {
 		t.Fatalf("create resolver: %v", err)
 	}
@@ -620,6 +641,99 @@ func TestResolverAppliesCatalogDefaultsForRuntime(t *testing.T) {
 			}
 			if resolution.Family != catalog.Defaults.Family || resolution.Selector != tt.wantSelector || resolution.Backend.InstallName != tt.wantInstall {
 				t.Fatalf("default resolution = %q/%q/%q, want %q/%q/%q", resolution.Family, resolution.Selector, resolution.Backend.InstallName, catalog.Defaults.Family, tt.wantSelector, tt.wantInstall)
+			}
+		})
+	}
+}
+
+func TestResolverPrefersPlatformScopedDefault(t *testing.T) {
+	t.Parallel()
+
+	catalog := validTestCatalog()
+	for i := range catalog.Defaults.Selectors {
+		if catalog.Defaults.Selectors[i].Runtime == RuntimeCUDA {
+			catalog.Defaults.Selectors[i].Selector = SelectorNVIDIA
+		}
+	}
+	arm64 := Platform{OS: testOSLinux, Architecture: testArchitectureARM64}
+	catalog.Defaults.Selectors = append(catalog.Defaults.Selectors, DefaultSelector{
+		Runtime: RuntimeCUDA, Platform: &arm64, Selector: SelectorNVIDIAL4T,
+	})
+	catalog.Entries[0].Selector = SelectorNVIDIA
+	arm64Entry := cloneEntry(catalog.Entries[0])
+	arm64Entry.Selector = SelectorNVIDIAL4T
+	arm64Entry.Platform = arm64
+	arm64Entry.TargetProfile = TargetProfileL4TCUDA12
+	arm64Entry.Backend.InstallName = "l4t-llama-cpp"
+	catalog.Entries = append(catalog.Entries, arm64Entry)
+
+	parsed, err := Parse(marshalCatalog(t, catalog))
+	if err != nil {
+		t.Fatalf("parse catalog: %v", err)
+	}
+	resolver, err := NewResolver(parsed)
+	if err != nil {
+		t.Fatalf("create resolver: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		request      Request
+		wantSelector Selector
+		wantErr      error
+	}{
+		{
+			name: "generic amd64 default",
+			request: Request{Runtime: RuntimeCUDA, Platform: Platform{
+				OS: testOSLinux, Architecture: testArchitectureAMD64,
+			}},
+			wantSelector: SelectorNVIDIA,
+		},
+		{
+			name: "generic amd64 default with compatible variant",
+			request: Request{Runtime: RuntimeCUDA, Platform: Platform{
+				OS: testOSLinux, Architecture: testArchitectureAMD64, Variant: "v3",
+			}},
+			wantSelector: SelectorNVIDIA,
+		},
+		{
+			name: "platform arm64 default",
+			request: Request{Runtime: RuntimeCUDA, Platform: Platform{
+				OS: testOSLinux, Architecture: testArchitectureARM64,
+			}},
+			wantSelector: SelectorNVIDIAL4T,
+		},
+		{
+			name: "platform arm64 default with compatible variant",
+			request: Request{Runtime: RuntimeCUDA, Platform: Platform{
+				OS: testOSLinux, Architecture: testArchitectureARM64, Variant: "v8",
+			}},
+			wantSelector: SelectorNVIDIAL4T,
+		},
+		{
+			name: "explicit selector does not use platform default",
+			request: Request{Selector: SelectorNVIDIA, Runtime: RuntimeCUDA, Platform: Platform{
+				OS: testOSLinux, Architecture: testArchitectureARM64,
+			}},
+			wantErr: ErrNotFound,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			resolution, resolveErr := resolver.Resolve(tt.request)
+			if tt.wantErr != nil {
+				if !stderrors.Is(resolveErr, tt.wantErr) {
+					t.Fatalf("Resolve() error = %v, want %v", resolveErr, tt.wantErr)
+				}
+				return
+			}
+			if resolveErr != nil {
+				t.Fatalf("Resolve() error = %v", resolveErr)
+			}
+			if resolution.Selector != tt.wantSelector {
+				t.Errorf("Resolve() selector = %q, want %q", resolution.Selector, tt.wantSelector)
 			}
 		})
 	}
@@ -688,6 +802,68 @@ func TestResolverNormalizesPlatformAliases(t *testing.T) {
 		if _, err := resolver.Resolve(request); err != nil {
 			t.Errorf("resolve platform alias %#v: %v", platform, err)
 		}
+	}
+}
+
+func TestResolverIgnoresCompatibleCPUVariantsForLookup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                  string
+		entryPlatform         Platform
+		compatiblePlatforms   []Platform
+		incompatiblePlatforms []Platform
+	}{
+		{
+			name:          "linux amd64",
+			entryPlatform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64},
+			compatiblePlatforms: []Platform{
+				{OS: testOSLinux, Architecture: testArchitectureAMD64, Variant: "v2"},
+				{OS: testOSLinux, Architecture: testArchitectureAMD64, Variant: "v3"},
+				{OS: testOSLinux, Architecture: testArchitectureAMD64, Variant: "v4"},
+			},
+			incompatiblePlatforms: []Platform{
+				{OS: testOSLinux, Architecture: testArchitectureAMD64, Variant: "v5"},
+				{OS: "darwin", Architecture: testArchitectureAMD64, Variant: "v3"},
+			},
+		},
+		{
+			name:          "linux arm64",
+			entryPlatform: Platform{OS: testOSLinux, Architecture: testArchitectureARM64},
+			compatiblePlatforms: []Platform{
+				{OS: testOSLinux, Architecture: testArchitectureARM64, Variant: "v8"},
+			},
+			incompatiblePlatforms: []Platform{
+				{OS: testOSLinux, Architecture: testArchitectureARM64, Variant: "v7"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			catalog := validTestCatalog()
+			catalog.Entries[0].Platform = tt.entryPlatform
+			resolver, err := NewResolver(&catalog)
+			if err != nil {
+				t.Fatalf("create resolver: %v", err)
+			}
+
+			for _, platform := range tt.compatiblePlatforms {
+				request := validTestRequest()
+				request.Platform = platform
+				if _, err := resolver.Resolve(request); err != nil {
+					t.Errorf("resolve compatible platform %#v: %v", platform, err)
+				}
+			}
+			for _, platform := range tt.incompatiblePlatforms {
+				request := validTestRequest()
+				request.Platform = platform
+				if _, err := resolver.Resolve(request); !stderrors.Is(err, ErrNotFound) {
+					t.Errorf("resolve incompatible platform %#v error = %v, want ErrNotFound", platform, err)
+				}
+			}
+		})
 	}
 }
 
