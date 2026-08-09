@@ -29,11 +29,20 @@ jobs:
           - runner: llama-cpp-cpu
             model_ref: https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/f0b45be0aac41bd6a100a4b5734cad5f67255bfb/gemma-3-1b-it-Q2_K.gguf
             model_name: gemma-3-1b-it-Q2_K
+            prompt: explain kubernetes in a sentence
+            max_tokens: 64
+            expected_content: ""
           - runner: vllm-cpp-cpu
             model_ref: Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca
             model_name: Qwen3-0.6B
+            prompt: What is the capital of France? Reply with only the city name. /no_think
+            max_tokens: 256
+            expected_content: Paris
     env:
+      EXPECTED_CONTENT: ${{ matrix.expected_content }}
+      MAX_TOKENS: ${{ matrix.max_tokens }}
       MODEL_NAME: ${{ matrix.model_name }}
+      MODEL_PROMPT: ${{ matrix.prompt }}
       MODEL_REF: ${{ matrix.model_ref }}
       RUNNER: ${{ matrix.runner }}
     steps:
@@ -141,7 +150,11 @@ jobs:
 
       - name: run chat completion test
         run: |
-          payload=$(jq -n --arg model "$MODEL_NAME" '{model: $model, messages: [{role: "user", content: "explain kubernetes in a sentence"}], max_tokens: 64, temperature: 0}')
+          payload=$(jq -n \
+            --arg model "$MODEL_NAME" \
+            --arg prompt "$MODEL_PROMPT" \
+            --argjson max_tokens "$MAX_TOKENS" \
+            '{model: $model, messages: [{role: "user", content: $prompt}], max_tokens: $max_tokens, temperature: 0}')
           response=""
           for i in $(seq 1 30); do
             response=$(curl --fail --silent --show-error --max-time 300 http://127.0.0.1:8080/v1/chat/completions \
@@ -157,9 +170,16 @@ jobs:
           echo "$response"
           echo "$response" | jq -e --arg model "$MODEL_NAME" \
             '.error == null and .object == "chat.completion" and .model == $model and (.choices | length > 0) and
-             .choices[0].message.role == "assistant" and
-             (((.choices[0].message.content // "") | type == "string" and length > 0) or
-              ((.choices[0].message.reasoning_content // .choices[0].message.reasoning // "") | type == "string" and length > 0))'
+             .choices[0].message.role == "assistant"'
+          if [[ -n "$EXPECTED_CONTENT" ]]; then
+            echo "$response" | jq -e --arg expected "$EXPECTED_CONTENT" \
+              '.choices[0].finish_reason == "stop" and
+               ((.choices[0].message.content // "") | gsub("^\\s+|\\s+$"; "") == $expected)'
+          else
+            echo "$response" | jq -e \
+              '(((.choices[0].message.content // "") | type == "string" and length > 0) or
+               ((.choices[0].message.reasoning_content // .choices[0].message.reasoning // "") | type == "string" and length > 0))'
+          fi
 
       - name: save logs
         if: always()
