@@ -82,6 +82,9 @@ compare_versions() {
 if ! parse_version "$release_version"; then
   fail "version must use stable semantic version form vX.Y.Z: $release_version"
 fi
+if ((${#release_version} > 128)); then
+  fail "version exceeds the 128-character OCI tag limit: $release_version"
+fi
 release_major=$parsed_major
 release_minor=$parsed_minor
 
