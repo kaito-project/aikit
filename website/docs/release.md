@@ -5,7 +5,7 @@ title: Release Process
 AIKit uses protected, immutable Git tags as production release events. The supported process is:
 
 1. Run [Prepare release](https://github.com/kaito-project/aikit/actions/workflows/prepare-release.yaml) from `main` with a stable version in `vMAJOR.MINOR.PATCH` form.
-2. Review and merge the generated pull request into the applicable `release-X.Y` branch.
+2. Open the generated pull request, select **Approve workflows to run**, wait for its checks, then review and merge it into the applicable `release-X.Y` branch.
 3. Run [Publish release](https://github.com/kaito-project/aikit/actions/workflows/publish-release.yaml) from `main` with the same version. Review the validated version, branch, commit, and preparation pull request, then approve the `prod` deployment.
 4. The release GitHub App creates the protected tag. The tag starts the [artifact](https://github.com/kaito-project/aikit/actions/workflows/release.yaml) and [runner-image](https://github.com/kaito-project/aikit/actions/workflows/release-runners.yaml) publishing workflows.
 5. When the released major/minor line is newer than `main`, review and merge the version-sync pull request created by the trusted publish workflow. This also covers recovery releases whose first usable tag is a patch such as `v0.22.1`.

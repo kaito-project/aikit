@@ -274,7 +274,7 @@ AIKit uses semantic versioning. A `v*` tag is a production deployment event, so 
 To publish a stable release:
 
 1. Run the **Prepare release** workflow from `main` with a version in `vX.Y.Z` form.
-2. Review and merge the generated pull request into `release-X.Y`. The pull request updates:
+2. Open the generated pull request, select **Approve workflows to run**, wait for its checks, then review and merge it into `release-X.Y`. The pull request updates:
    - `Makefile`: the `VERSION` variable
    - `charts/aikit/Chart.yaml`: `version` and `appVersion`
 3. Run the **Publish release** workflow from `main` with the same version and obtain approval for the `prod` environment.
@@ -282,6 +282,8 @@ To publish a stable release:
 5. The tag starts the artifact and runner-image publishing workflows. If the released major/minor line is newer than `main`, the trusted publish workflow uses a separate version-sync App to open a pull request. This includes recovery releases such as `v0.22.1` when an unusable `v0.22.0` tag must remain immutable.
 
 The publisher preflight permits follow-up fixes on the release branch after the preparation pull request, but the preparation pull request merge must remain an ancestor of the tagged commit.
+
+Preparation pull requests intentionally use the workflow's repository-scoped `GITHUB_TOKEN`. GitHub creates their `pull_request` checks in an approval-required state, providing a human gate without exposing either release App credential to the preparation workflow.
 
 Do not run `git tag`, `git push origin vX.Y.Z`, or force-update a release tag. Rerun the failed workflow for a transient publication failure. If the release commit must change, prepare a new patch version; never move the existing tag.
 
