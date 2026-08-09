@@ -29,6 +29,11 @@ jobs:
       cancel-in-progress: false
       queue: max
     runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
+      run_attempt: ${{ steps.release.outputs.run_attempt }}
+      run_id: ${{ steps.release.outputs.run_id }}
+      version: ${{ steps.release.outputs.version }}
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -235,8 +240,477 @@ jobs:
               "https://github.com/kaito-project/aikit/.github/workflows/release.yaml@refs/tags/${VERSION}"
           echo "Published immutable app image ${image}:${VERSION}." >>"${GITHUB_STEP_SUMMARY}"
 
-  reconcile-app:
+  publish-app-release:
     needs: promote-app-version
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.name == 'Release artifacts' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      needs.promote-app-version.result == 'success'
+    environment: release-automation
+    permissions:
+      actions: read
+      contents: write
+    concurrency:
+      group: release-artifacts
+      cancel-in-progress: false
+      queue: max
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            get.helm.sh:443
+            github.com:443
+            *.githubusercontent.com:443
+            *.blob.core.windows.net:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Select the exact Helm chart artifact
+        id: chart-artifact
+        env:
+          RELEASE_COMMIT: ${{ needs.promote-app-version.outputs.commit }}
+          RUN_ATTEMPT: ${{ needs.promote-app-version.outputs.run_attempt }}
+          RUN_ID: ${{ needs.promote-app-version.outputs.run_id }}
+          VERSION: ${{ needs.promote-app-version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! [[ ${RUN_ID} =~ ^[1-9][0-9]*$ && \
+            ${RUN_ATTEMPT} =~ ^[1-9][0-9]{0,3}$ && \
+            ${RELEASE_COMMIT} =~ ^[0-9a-f]{40}$ && \
+            ${VERSION} =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Image promotion returned invalid release coordinates." >&2
+            exit 1
+          fi
+
+          artifacts_json=$(mktemp)
+          remote_tags=$(mktemp)
+          runs_json=$(mktemp)
+          selector_output=$(mktemp)
+          trap 'rm -f "${artifacts_json}" "${remote_tags}" "${runs_json}" "${selector_output}"' EXIT
+
+          scripts/ci/collect-release-attempts.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release.yaml "${runs_json}" \
+            "${RUN_ID}" "${RUN_ATTEMPT}"
+          git ls-remote --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
+            >"${remote_tags}"
+          GITHUB_OUTPUT="${selector_output}" scripts/ci/select-latest-release.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release.yaml \
+            "${runs_json}" "${remote_tags}" "${VERSION}" >/dev/null
+          for expected_output in \
+            found=true \
+            "version=${VERSION}" \
+            "commit=${RELEASE_COMMIT}" \
+            "run_id=${RUN_ID}" \
+            "run_attempt=${RUN_ATTEMPT}"; do
+            if ! grep -Fxq -- "${expected_output}" "${selector_output}"; then
+              echo "Selected app release changed before chart publication." >&2
+              exit 1
+            fi
+          done
+
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            >"${artifacts_json}"
+          artifact_name="helm-chart-${RUN_ID}-${RUN_ATTEMPT}"
+          if ! artifact_id=$(jq -er \
+            --arg artifact_name "${artifact_name}" \
+            --arg release_commit "${RELEASE_COMMIT}" \
+            --argjson run_id "${RUN_ID}" '
+              if type != "array" or any(.[]; type != "object" or (.artifacts | type != "array")) then
+                error("malformed artifact pages")
+              else
+                [.[].artifacts[] | select(.name == $artifact_name)] as $matches |
+                if ($matches | length) != 1 then
+                  error("expected exactly one chart artifact")
+                else
+                  $matches[0] |
+                  select(
+                    (.id | type == "number") and .id > 0 and
+                    (.size_in_bytes | type == "number") and .size_in_bytes > 0 and
+                    .expired == false and
+                    (.digest | type == "string") and
+                    (.digest | test("^sha256:[0-9a-f]{64}$")) and
+                    .workflow_run.id == $run_id and
+                    .workflow_run.head_sha == $release_commit
+                  ) |
+                  .id
+                end
+              end
+            ' "${artifacts_json}"); then
+            echo "GitHub did not return one valid ${artifact_name} artifact." >&2
+            exit 1
+          fi
+          echo "id=${artifact_id}" >>"${GITHUB_OUTPUT}"
+
+      - name: Download the exact Helm chart artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v5
+        with:
+          artifact-ids: ${{ steps.chart-artifact.outputs.id }}
+          path: ${{ runner.temp }}/helm-chart
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.promote-app-version.outputs.run_id }}
+          digest-mismatch: error
+
+      - name: Validate the Helm chart candidate
+        id: chart
+        env:
+          HELM_ARCHIVE_SHA256: bf56beb418bb529b5e0d6d43d56654c5a03f89c98400b409d1013a33d9586474
+          HELM_VERSION: v3.10.0
+          VERSION: ${{ needs.promote-app-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          helm_archive="${RUNNER_TEMP}/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl --fail --location --silent --show-error \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
+            --output "${helm_archive}"
+          downloaded_sha256=$(sha256sum "${helm_archive}" | awk '{print $1}')
+          if [[ ${downloaded_sha256} != "${HELM_ARCHIVE_SHA256}" ]]; then
+            echo "Helm archive digest ${downloaded_sha256} did not match the pinned digest." >&2
+            exit 1
+          fi
+          helm_dir="${RUNNER_TEMP}/helm-${HELM_VERSION}"
+          mkdir "${helm_dir}"
+          tar -xzf "${helm_archive}" -C "${helm_dir}" linux-amd64/helm
+          helm_bin="${helm_dir}/linux-amd64/helm"
+          if [[ ! -x ${helm_bin} ]]; then
+            echo "Verified Helm archive did not contain an executable Helm binary." >&2
+            exit 1
+          fi
+
+          chart_version=${VERSION#v}
+          chart_dir="${RUNNER_TEMP}/helm-chart"
+          chart_package="${chart_dir}/aikit-${chart_version}.tgz"
+          mapfile -d '' artifact_entries < <(find "${chart_dir}" -mindepth 1 -maxdepth 1 -print0)
+          if [[ ${#artifact_entries[@]} -ne 1 || \
+            ${artifact_entries[0]} != "${chart_package}" || \
+            ! -f ${chart_package} || -L ${chart_package} ]]; then
+            echo "Downloaded artifact must contain only ${chart_package}." >&2
+            exit 1
+          fi
+
+          metadata=$("${helm_bin}" show chart "${chart_package}")
+          for expected_line in \
+            'name: aikit' \
+            "version: ${chart_version}" \
+            "appVersion: ${VERSION}"; do
+            if [[ $(grep -Fxc -- "${expected_line}" <<<"${metadata}") -ne 1 ]]; then
+              echo "Downloaded chart metadata does not contain exactly one ${expected_line}." >&2
+              exit 1
+            fi
+          done
+          {
+            echo "helm=${helm_bin}"
+            echo "package=${chart_package}"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Inspect existing GitHub release
+        id: github-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.promote-app-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          release_json=$(mktemp)
+          trap 'rm -f "${release_json}"' EXIT
+          if ! http_status=$(curl --silent --show-error \
+            --output "${release_json}" \
+            --write-out '%{http_code}' \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}"); then
+            echo "Could not inspect GitHub release ${VERSION}." >&2
+            exit 1
+          fi
+
+          case ${http_status} in
+            200)
+              if ! jq -e --arg version "${VERSION}" '
+                type == "object" and
+                .tag_name == $version and
+                .draft == false and
+                .prerelease == false and
+                (.published_at | type == "string") and
+                (.id | type == "number")
+              ' "${release_json}" >/dev/null; then
+                echo "Existing GitHub release ${VERSION} is not a published stable release." >&2
+                exit 1
+              fi
+              echo "exists=true" >>"${GITHUB_OUTPUT}"
+              ;;
+            404)
+              echo "exists=false" >>"${GITHUB_OUTPUT}"
+              ;;
+            *)
+              echo "GitHub release lookup for ${VERSION} returned HTTP ${http_status}." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Publish Helm chart
+        env:
+          CHART_PACKAGE: ${{ steps.chart.outputs.package }}
+          GH_TOKEN: ${{ github.token }}
+          HELM_BIN: ${{ steps.chart.outputs.helm }}
+          RELEASE_COMMIT: ${{ needs.promote-app-version.outputs.commit }}
+          RUN_ATTEMPT: ${{ needs.promote-app-version.outputs.run_attempt }}
+          RUN_ID: ${{ needs.promote-app-version.outputs.run_id }}
+          TRUSTED_COMMIT: ${{ github.sha }}
+          VERSION: ${{ needs.promote-app-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          current_main_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')
+          if [[ ${current_main_commit} != "${TRUSTED_COMMIT}" ]]; then
+            echo "main advanced from ${TRUSTED_COMMIT} to ${current_main_commit}; rerun reconciliation." >&2
+            exit 1
+          fi
+
+          remote_tags=$(mktemp)
+          runs_json=$(mktemp)
+          selector_output=$(mktemp)
+          trap 'rm -f "${remote_tags}" "${runs_json}" "${selector_output}"' EXIT
+          scripts/ci/collect-release-attempts.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release.yaml "${runs_json}" \
+            "${RUN_ID}" "${RUN_ATTEMPT}"
+          git ls-remote --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
+            >"${remote_tags}"
+          GITHUB_OUTPUT="${selector_output}" scripts/ci/select-latest-release.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release.yaml \
+            "${runs_json}" "${remote_tags}" "${VERSION}" >/dev/null
+          for expected_output in \
+            found=true \
+            "version=${VERSION}" \
+            "commit=${RELEASE_COMMIT}" \
+            "run_id=${RUN_ID}" \
+            "run_attempt=${RUN_ATTEMPT}"; do
+            if ! grep -Fxq -- "${expected_output}" "${selector_output}"; then
+              echo "Selected app release changed before Helm publication." >&2
+              exit 1
+            fi
+          done
+
+          chart_version=${VERSION#v}
+          package_path="charts/aikit-${chart_version}.tgz"
+          index_path=charts/index.yaml
+          candidate_blob=$(git hash-object "${CHART_PACKAGE}")
+          package_sha256=$(sha256sum "${CHART_PACKAGE}" | awk '{print $1}')
+
+          base_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/gh-pages" \
+            --jq '.object.sha')
+          base_tree=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/commits/${base_commit}" \
+            --jq '.tree.sha')
+          tree_json=$(mktemp)
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/git/trees/${base_tree}?recursive=1" \
+            >"${tree_json}"
+          if ! jq -e '
+            type == "object" and
+            .truncated == false and
+            (.tree | type == "array")
+          ' "${tree_json}" >/dev/null; then
+            echo "GitHub returned a truncated or malformed gh-pages tree." >&2
+            exit 1
+          fi
+
+          for target_path in "${package_path}" "${index_path}"; do
+            target_count=$(jq --arg path "${target_path}" \
+              '[.tree[] | select(.path == $path)] | length' "${tree_json}")
+            if [[ ${target_count} -gt 1 ]]; then
+              echo "gh-pages contains duplicate ${target_path} entries." >&2
+              exit 1
+            fi
+          done
+
+          existing_package=$(jq -c --arg path "${package_path}" \
+            '[.tree[] | select(.path == $path)][0] // null' "${tree_json}")
+          if [[ ${existing_package} != null ]]; then
+            if ! jq -e \
+              --arg candidate_blob "${candidate_blob}" '
+                .mode == "100644" and
+                .type == "blob" and
+                .sha == $candidate_blob
+              ' <<<"${existing_package}" >/dev/null; then
+              echo "Immutable Helm package ${package_path} already exists with different bytes or type." >&2
+              exit 1
+            fi
+          fi
+
+          publish_dir="${RUNNER_TEMP}/helm-publish"
+          mkdir "${publish_dir}"
+          cp "${CHART_PACKAGE}" "${publish_dir}/aikit-${chart_version}.tgz"
+          existing_index=$(jq -c --arg path "${index_path}" \
+            '[.tree[] | select(.path == $path)][0] // null' "${tree_json}")
+          if [[ ${existing_index} == null ]]; then
+            "${HELM_BIN}" repo index "${publish_dir}" \
+              --url https://kaito-project.github.io/aikit/charts
+          else
+            if ! jq -e '.mode == "100644" and .type == "blob" and (.sha | type == "string")' \
+              <<<"${existing_index}" >/dev/null; then
+              echo "Existing ${index_path} is not a regular blob." >&2
+              exit 1
+            fi
+            index_blob=$(jq -r '.sha' <<<"${existing_index}")
+            index_blob_json=$(mktemp)
+            gh api "repos/${GITHUB_REPOSITORY}/git/blobs/${index_blob}" >"${index_blob_json}"
+            if ! jq -e '.encoding == "base64" and (.content | type == "string")' \
+              "${index_blob_json}" >/dev/null; then
+              echo "GitHub returned malformed ${index_path} content." >&2
+              exit 1
+            fi
+            jq -r '.content' "${index_blob_json}" | tr -d '\n' | \
+              base64 --decode >"${RUNNER_TEMP}/existing-index.yaml"
+            "${HELM_BIN}" repo index "${publish_dir}" \
+              --url https://kaito-project.github.io/aikit/charts \
+              --merge "${RUNNER_TEMP}/existing-index.yaml"
+          fi
+          if ! grep -Fq -- "digest: ${package_sha256}" "${publish_dir}/index.yaml" || \
+            ! grep -Fq -- "aikit-${chart_version}.tgz" "${publish_dir}/index.yaml"; then
+            echo "Generated Helm index does not reference the exact chart package." >&2
+            exit 1
+          fi
+
+          create_blob() {
+            local file=$1
+            local encoded payload sha
+            encoded=$(base64 <"${file}" | tr -d '\n')
+            payload=$(mktemp)
+            jq -n --arg content "${encoded}" \
+              '{content: $content, encoding: "base64"}' >"${payload}"
+            sha=$(gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/git/blobs" \
+              --input "${payload}" --jq '.sha')
+            if [[ ${sha} != "$(git hash-object "${file}")" ]]; then
+              echo "GitHub created an unexpected blob for ${file}." >&2
+              exit 1
+            fi
+            printf '%s\n' "${sha}"
+          }
+
+          package_blob=$(create_blob "${CHART_PACKAGE}")
+          index_blob=$(create_blob "${publish_dir}/index.yaml")
+          tree_payload=$(mktemp)
+          jq -n \
+            --arg base_tree "${base_tree}" \
+            --arg index_path "${index_path}" \
+            --arg index_blob "${index_blob}" \
+            --arg package_path "${package_path}" \
+            --arg package_blob "${package_blob}" '
+              {
+                base_tree: $base_tree,
+                tree: [
+                  {path: $package_path, mode: "100644", type: "blob", sha: $package_blob},
+                  {path: $index_path, mode: "100644", type: "blob", sha: $index_blob}
+                ]
+              }
+            ' >"${tree_payload}"
+          new_tree=$(gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/git/trees" \
+            --input "${tree_payload}" --jq '.sha')
+          commit_payload=$(mktemp)
+          jq -n \
+            --arg message "Publish Helm chart ${VERSION}" \
+            --arg parent "${base_commit}" \
+            --arg tree "${new_tree}" \
+            '{message: $message, tree: $tree, parents: [$parent]}' \
+            >"${commit_payload}"
+          new_commit=$(gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/git/commits" \
+            --input "${commit_payload}" --jq '.sha')
+
+          current_main_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')
+          if [[ ${current_main_commit} != "${TRUSTED_COMMIT}" ]]; then
+            echo "main advanced from ${TRUSTED_COMMIT} to ${current_main_commit}; rerun reconciliation." >&2
+            exit 1
+          fi
+          git fetch --quiet --force --no-tags origin \
+            "refs/tags/${VERSION}:refs/tags/${VERSION}"
+          tag_commit=$(git rev-parse "refs/tags/${VERSION}^{commit}")
+          if [[ ${tag_commit} != "${RELEASE_COMMIT}" ]]; then
+            echo "Tag ${VERSION} moved from ${RELEASE_COMMIT} to ${tag_commit}." >&2
+            exit 1
+          fi
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/git/refs/heads/gh-pages" \
+            -f sha="${new_commit}" -F force=false >/dev/null
+          published_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/gh-pages" \
+            --jq '.object.sha')
+          if [[ ${published_commit} != "${new_commit}" ]]; then
+            echo "gh-pages advanced to ${published_commit}, not ${new_commit}." >&2
+            exit 1
+          fi
+          echo "Published immutable Helm chart ${package_path}." >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Publish stable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.promote-app-version.outputs.commit }}
+          RELEASE_EXISTS: ${{ steps.github-release.outputs.exists }}
+          TRUSTED_COMMIT: ${{ github.sha }}
+          VERSION: ${{ needs.promote-app-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          current_main_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')
+          if [[ ${current_main_commit} != "${TRUSTED_COMMIT}" ]]; then
+            echo "main advanced from ${TRUSTED_COMMIT} to ${current_main_commit}; rerun reconciliation." >&2
+            exit 1
+          fi
+          git fetch --quiet --force --no-tags origin \
+            "refs/tags/${VERSION}:refs/tags/${VERSION}"
+          tag_commit=$(git rev-parse "refs/tags/${VERSION}^{commit}")
+          if [[ ${tag_commit} != "${RELEASE_COMMIT}" ]]; then
+            echo "Tag ${VERSION} moved from ${RELEASE_COMMIT} to ${tag_commit}." >&2
+            exit 1
+          fi
+
+          if [[ ${RELEASE_EXISTS} != true ]]; then
+            gh release create "${VERSION}" \
+              --verify-tag \
+              --generate-notes \
+              --title "${VERSION}" \
+              --latest=false
+          fi
+          release_json=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}")
+          if ! jq -e --arg version "${VERSION}" '
+            type == "object" and
+            .tag_name == $version and
+            .draft == false and
+            .prerelease == false and
+            (.published_at | type == "string") and
+            (.id | type == "number")
+          ' <<<"${release_json}" >/dev/null; then
+            echo "GitHub release ${VERSION} is not a published stable release." >&2
+            exit 1
+          fi
+          echo "Published stable GitHub release ${VERSION}; latest reconciliation runs separately." \
+            >>"${GITHUB_STEP_SUMMARY}"
+
+  reconcile-app:
+    needs:
+      - promote-app-version
+      - publish-app-release
     if: >-
       always() &&
       github.ref == 'refs/heads/main' &&
