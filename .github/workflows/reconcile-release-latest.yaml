@@ -824,8 +824,95 @@ jobs:
             echo "release_id=${release_id}"
           } >>"${GITHUB_OUTPUT}"
 
-      - name: Reconcile app and GitHub Latest
+      - name: Check durable app release floors
         if: steps.release.outputs.found == 'true'
+        id: floors
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USERNAME: ${{ github.actor }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          github_floor_output=$(mktemp)
+          latest_release_json=$(mktemp)
+          registry_floor_output=$(mktemp)
+          remote_tags=$(mktemp)
+          trap 'rm -f "${github_floor_output}" "${latest_release_json}" "${registry_floor_output}" "${remote_tags}"' EXIT
+
+          git ls-remote --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
+            >"${remote_tags}"
+          GITHUB_OUTPUT="${registry_floor_output}" scripts/ci/check-release-alias-floor.sh \
+            kaito-project/aikit/aikit latest aikit \
+            "${GITHUB_REPOSITORY}" .github/workflows/release.yaml \
+            https://token.actions.githubusercontent.com "${remote_tags}" "${VERSION}" \
+            >/dev/null
+
+          registry_floor=$(sed -n 's/^version=//p' "${registry_floor_output}")
+          registry_promote=$(sed -n 's/^promote=//p' "${registry_floor_output}")
+          registry_digest=$(sed -n 's/^digest=//p' "${registry_floor_output}")
+          if ! [[ ${registry_floor} =~ ^(none|v[0-9]+\.[0-9]+\.[0-9]+)$ && \
+            ${registry_promote} =~ ^(true|false)$ && \
+            (${registry_digest} == absent || ${registry_digest} =~ ^sha256:[0-9a-f]{64}$) ]]; then
+            echo "Alias-floor checker returned invalid app registry output." >&2
+            exit 1
+          fi
+
+          if ! latest_release_status=$(curl --silent --show-error \
+            --output "${latest_release_json}" \
+            --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest"); then
+            echo "Could not inspect the current GitHub Latest release." >&2
+            exit 1
+          fi
+
+          github_floor=none
+          github_promote=true
+          case ${latest_release_status} in
+            200)
+              github_floor=$(jq -er '
+                select(.draft == false and .prerelease == false) |
+                .tag_name |
+                select(type == "string" and
+                  test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))
+              ' "${latest_release_json}")
+              GITHUB_OUTPUT="${github_floor_output}" scripts/ci/check-release-alias-floor.sh \
+                kaito-project/aikit/aikit "${github_floor}" aikit \
+                "${GITHUB_REPOSITORY}" .github/workflows/release.yaml \
+                https://token.actions.githubusercontent.com "${remote_tags}" "${VERSION}" \
+                >/dev/null
+              github_promote=$(sed -n 's/^promote=//p' "${github_floor_output}")
+              if ! [[ ${github_promote} =~ ^(true|false)$ ]]; then
+                echo "Alias-floor checker returned invalid GitHub Latest output." >&2
+                exit 1
+              fi
+              ;;
+            404)
+              ;;
+            *)
+              echo "GitHub Latest lookup returned HTTP ${latest_release_status}." >&2
+              exit 1
+              ;;
+          esac
+
+          promote=true
+          if [[ ${registry_promote} == false || ${github_promote} == false ]]; then
+            promote=false
+          fi
+          {
+            echo "promote=${promote}"
+            echo "registry_version=${registry_floor}"
+            echo "github_version=${github_floor}"
+          } >>"${GITHUB_OUTPUT}"
+          echo "Durable app release floors: registry=${registry_floor}, GitHub Latest=${github_floor}." \
+            >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Reconcile app and GitHub Latest
+        if: steps.release.outputs.found == 'true' && steps.floors.outputs.promote == 'true'
         env:
           DIGEST: ${{ steps.image.outputs.digest }}
           GH_TOKEN: ${{ github.token }}
@@ -875,6 +962,16 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
             -f make_latest=true >/dev/null
           echo "Promoted app and GitHub Latest to ${VERSION}." >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Report preserved newer app release
+        if: steps.release.outputs.found == 'true' && steps.floors.outputs.promote == 'false'
+        env:
+          GITHUB_FLOOR: ${{ steps.floors.outputs.github_version }}
+          REGISTRY_FLOOR: ${{ steps.floors.outputs.registry_version }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          echo "Kept the current app aliases because ${VERSION} is below a durable release floor (registry=${REGISTRY_FLOOR}, GitHub Latest=${GITHUB_FLOOR})." \
+            >>"${GITHUB_STEP_SUMMARY}"
 
       - name: Report no successful app release
         if: steps.release.outputs.found != 'true'
@@ -1301,8 +1398,47 @@ jobs:
 
           echo "plan=${image_plan}" >>"${GITHUB_OUTPUT}"
 
-      - name: Reconcile every runner latest alias
+      - name: Check every durable runner release floor
         if: steps.release.outputs.found == 'true'
+        id: floors
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USERNAME: ${{ github.actor }}
+          IMAGE_PLAN: ${{ steps.images.outputs.plan }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          floor_dir=$(mktemp -d)
+          remote_tags=$(mktemp)
+          trap 'rm -rf "${floor_dir}"; rm -f "${remote_tags}"' EXIT
+
+          git ls-remote --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
+            >"${remote_tags}"
+          promote=true
+          while IFS=$'\t' read -r runner _ _; do
+            floor_output="${floor_dir}/${runner}"
+            GITHUB_OUTPUT="${floor_output}" scripts/ci/check-release-alias-floor.sh \
+              "kaito-project/aikit/runners/${runner}" latest "${runner}" \
+              "${GITHUB_REPOSITORY}" .github/workflows/release-runners.yaml \
+              https://token.actions.githubusercontent.com "${remote_tags}" "${VERSION}" \
+              >/dev/null
+            floor_version=$(sed -n 's/^version=//p' "${floor_output}")
+            floor_promote=$(sed -n 's/^promote=//p' "${floor_output}")
+            if ! [[ ${floor_version} =~ ^(none|v[0-9]+\.[0-9]+\.[0-9]+)$ && \
+              ${floor_promote} =~ ^(true|false)$ ]]; then
+              echo "Alias-floor checker returned invalid output for ${runner}." >&2
+              exit 1
+            fi
+            if [[ ${floor_promote} == false ]]; then
+              promote=false
+            fi
+            echo "Durable ${runner} release floor: ${floor_version}." >>"${GITHUB_STEP_SUMMARY}"
+          done <"${IMAGE_PLAN}"
+          echo "promote=${promote}" >>"${GITHUB_OUTPUT}"
+
+      - name: Reconcile every runner latest alias
+        if: steps.release.outputs.found == 'true' && steps.floors.outputs.promote == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1351,6 +1487,14 @@ jobs:
                 "https://github.com/kaito-project/aikit/.github/workflows/release-runners.yaml@refs/tags/${VERSION}"
           done <"${IMAGE_PLAN}"
           echo "Promoted every runner latest alias to ${VERSION}." >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Report preserved newer runner release
+        if: steps.release.outputs.found == 'true' && steps.floors.outputs.promote == 'false'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          echo "Kept every runner latest alias because ${VERSION} is below at least one durable runner release floor." \
+            >>"${GITHUB_STEP_SUMMARY}"
 
       - name: Report no successful runner release
         if: steps.release.outputs.found != 'true'

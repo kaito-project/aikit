@@ -37,7 +37,8 @@ case $url in
       printf '%s\n' '{"token":"scoped-registry-token"}'
     fi
     ;;
-  https://ghcr.io/v2/kaito-project/aikit/aikit/manifests/v1.2.3)
+  https://ghcr.io/v2/kaito-project/aikit/aikit/manifests/v1.2.3|\
+  https://ghcr.io/v2/kaito-project/aikit/aikit/manifests/latest)
     case ${FAKE_GHCR_MODE:-present} in
       present)
         printf 'HTTP/2 200\r\nDocker-Content-Digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n\r\n' \
@@ -73,12 +74,13 @@ chmod +x "$work_dir/bin/curl"
 
 run_resolver() {
   local mode=$1
+  local tag=${2:-v1.2.3}
 
   PATH="$work_dir/bin:$PATH" \
     FAKE_GHCR_MODE="$mode" \
     GHCR_USERNAME=test-user \
     GHCR_TOKEN=test-token \
-    "$resolver" kaito-project/aikit/aikit v1.2.3
+    "$resolver" kaito-project/aikit/aikit "$tag"
 }
 
 if [[ $(run_resolver present) != sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]]; then
@@ -87,6 +89,10 @@ if [[ $(run_resolver present) != sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 fi
 if [[ $(run_resolver absent) != absent ]]; then
   echo "missing GHCR tag was not reported as absent" >&2
+  exit 1
+fi
+if [[ $(run_resolver present latest) != sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]]; then
+  echo "existing GHCR latest alias returned an unexpected digest" >&2
   exit 1
 fi
 for invalid_mode in invalid-digest forbidden malformed-token; do

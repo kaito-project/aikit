@@ -7,6 +7,7 @@ artifact_publisher="$repository_root/.github/workflows/release.yaml"
 runner_publisher="$repository_root/.github/workflows/release-runners.yaml"
 reconciler="$repository_root/.github/workflows/reconcile-release-latest.yaml"
 release_publisher="$repository_root/.github/workflows/publish-release.yaml"
+docs_publisher="$repository_root/.github/workflows/deploy-docs.yaml"
 literal_dollar='$'
 publisher_candidate="candidate-${literal_dollar}{{ github.run_id }}-${literal_dollar}{{ github.run_attempt }}"
 publisher_chart_artifact="helm-chart-${literal_dollar}{{ github.run_id }}-${literal_dollar}{{ github.run_attempt }}"
@@ -37,6 +38,7 @@ extract_job() {
 promote_app_job=$(extract_job promote-app-version)
 publish_app_job=$(extract_job publish-app-release)
 reconcile_app_job=$(extract_job reconcile-app)
+reconcile_runners_job=$(extract_job reconcile-runners)
 
 for publisher in "$artifact_publisher" "$runner_publisher"; do
   if grep -q ':latest' "$publisher"; then
@@ -139,6 +141,13 @@ if [[ $(grep -cF -- "$reconciler_latest_tag" "$reconciler") -ne 2 ]]; then
   echo "app and runner global reconciliation must publish their latest aliases" >&2
   exit 1
 fi
+if [[ $(grep -c 'check-release-alias-floor.sh' <<<"$reconcile_app_job") -ne 2 ]] || \
+  [[ $(grep -c 'check-release-alias-floor.sh' <<<"$reconcile_runners_job") -ne 1 ]] || \
+  ! grep -q "steps.floors.outputs.promote == 'true'" <<<"$reconcile_app_job" || \
+  ! grep -q "steps.floors.outputs.promote == 'true'" <<<"$reconcile_runners_job"; then
+  echo "mutable latest writes must be gated by signed durable release floors" >&2
+  exit 1
+fi
 if ! grep -q -- '- promote-app-version' <<<"$reconcile_app_job" || \
   ! grep -q -- '- publish-app-release' <<<"$reconcile_app_job" || \
   ! grep -q 'needs: promote-runner-version' "$reconciler" || \
@@ -156,6 +165,13 @@ if [[ $(grep -c 'group: release-artifacts' "$artifact_publisher") -ne 1 ]] || \
   [[ $(grep -c 'group: release-runner-images' "$runner_publisher") -ne 1 ]] || \
   [[ $(grep -c 'group: release-runner-images' "$reconciler") -ne 2 ]]; then
   echo "publishers and reconcilers must share serialization groups" >&2
+  exit 1
+fi
+if ! grep -qF "github.event_name == 'push' && 'release-artifacts'" "$docs_publisher" || \
+  ! grep -qF "format('deploy-docs-{0}', github.run_id)" "$docs_publisher" || \
+  ! grep -qF 'cancel-in-progress: false' "$docs_publisher" || \
+  ! grep -qF 'queue: max' "$docs_publisher"; then
+  echo "main docs deployments must share the release-artifacts lock without queueing pull requests" >&2
   exit 1
 fi
 if [[ $(grep -cF "$release_commit_validator_arg" "$release_publisher") -ne 2 ]]; then

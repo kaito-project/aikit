@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
-  echo "Usage: $0 <ghcr-repository> <stable-version-tag>" >&2
+  echo "Usage: $0 <ghcr-repository> <latest-or-stable-version-tag>" >&2
   exit 2
 fi
 
@@ -17,8 +17,9 @@ fail() {
 if ! [[ $repository =~ ^[a-z0-9._-]+(/[a-z0-9._-]+)+$ ]]; then
   fail "invalid repository path: $repository"
 fi
-if ! [[ $tag =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-  fail "invalid stable version tag: $tag"
+if [[ $tag != latest ]] && \
+  ! [[ $tag =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+  fail "invalid release tag: $tag"
 fi
 if [[ -z ${GHCR_USERNAME:-} || -z ${GHCR_TOKEN:-} ]]; then
   fail "GHCR_USERNAME and GHCR_TOKEN are required"
