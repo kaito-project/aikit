@@ -5,6 +5,10 @@ on:
     tags:
       - v*
 
+concurrency:
+  group: release-runner-images
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
