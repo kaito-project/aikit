@@ -8,7 +8,7 @@ title: Inference API Specifications
 apiVersion: # required. only v1alpha1 is supported at the moment
 debug: # optional. if set to true, debug logs will be printed
 runtime: # optional. omit for the default CPU runtime. can be "cuda", "rocm", or "applesilicon"
-backends: # optional. list of additional backends. can be "llama-cpp" (default), "diffusers", "vllm"
+backends: # optional. list of additional backends. can be "llama-cpp" (default), "diffusers", "vllm", "vllm-cpp"
 loadToMemory: # optional. list of LocalAI model config names to load when the container starts
   - model-name
 models: # optional. list of models to build. omit for runner mode (see runners.md)
@@ -22,7 +22,7 @@ config: # optional. list of config files
 ```
 
 :::note
-If omitted, `runtime` uses the default CPU runtime. `rocm` currently supports only the `llama-cpp` backend on `linux/amd64`.
+If omitted, `runtime` uses the default CPU runtime. `rocm` currently supports only the `llama-cpp` backend on `linux/amd64`. The experimental `vllm-cpp` backend supports CPU on `linux/amd64` and `linux/arm64`, or CUDA 13 on Blackwell-class `linux/amd64` GPUs.
 :::
 
 :::tip
@@ -40,7 +40,7 @@ loadToMemory:
 
 Each item is an exact, case-sensitive LocalAI model-config name. For a baked `config`, use its `config[].name`; configs discovered or generated at runtime use the name declared in that config. Do not use a filename from the top-level `models` list. Names must be non-empty and unique, and cannot contain commas or backslashes. A model composed of several files, such as weight shards or a model plus an `mmproj` file, still has one logical name and needs one entry. Multiple names are loaded in the listed order.
 
-Runner images generate their LocalAI config after resolving the runtime model argument. The `llama-cpp` runner derives the name from the selected GGUF filename without the `.gguf` extension; Diffusers and vLLM runners use the normalized final component of the model source. Avoid a baked `loadToMemory` setting when a runner source can resolve to several GGUF files because the selected name is ambiguous.
+Runner images generate their LocalAI config after resolving the runtime model argument. The `llama-cpp` runner derives the name from the selected GGUF filename without the `.gguf` extension; Diffusers and vLLM runners use the normalized final component of the model source. The `vllm-cpp` runner downloads a Hugging Face repository containing `config.json` and safetensors weights to a local model directory, or accepts a direct HTTP(S) URL ending in `.gguf`, because the native backend cannot download bare repository IDs itself. Use a direct file URL for GGUF weights. Avoid a baked `loadToMemory` setting when a runner source can resolve to several GGUF files because the selected name is ambiguous.
 
 Loading blocks server startup and can fail if the model does not exist or there is insufficient memory, so health probes must allow enough startup time. It warms the model but does not prevent LocalAI from unloading it later, and LocalAI skips startup loading when `LOCALAI_SINGLE_ACTIVE_BACKEND=true`. The setting is disabled when omitted. At runtime, `LOCALAI_LOAD_TO_MEMORY` can replace the image default; set it to an empty value to disable startup loading.
 

@@ -50,6 +50,24 @@ func TestGetBackendTag(t *testing.T) {
 			want: fmt.Sprintf("%s-cpu-llama-cpp", localAILlamaCppBackendVersion),
 		},
 		{
+			name:    "CPU vllm-cpp amd64",
+			backend: utils.BackendVLLMCpp,
+			runtime: "",
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: fmt.Sprintf("%s-cpu-vllm-cpp", localAIBinaryVersion),
+		},
+		{
+			name:    "CPU vllm-cpp arm64",
+			backend: utils.BackendVLLMCpp,
+			runtime: "",
+			platform: specs.Platform{
+				Architecture: utils.PlatformARM64,
+			},
+			want: fmt.Sprintf("%s-cpu-vllm-cpp", localAIBinaryVersion),
+		},
+		{
 			name:    "CUDA llama-cpp",
 			backend: utils.BackendLlamaCpp,
 			runtime: utils.RuntimeNVIDIA,
@@ -75,6 +93,15 @@ func TestGetBackendTag(t *testing.T) {
 				Architecture: utils.PlatformAMD64,
 			},
 			want: fmt.Sprintf("%s-gpu-nvidia-cuda-12-vllm", localAIBinaryVersion),
+		},
+		{
+			name:    "CUDA vllm-cpp",
+			backend: utils.BackendVLLMCpp,
+			runtime: utils.RuntimeNVIDIA,
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: fmt.Sprintf("%s-gpu-nvidia-cuda-13-vllm-cpp", localAIBinaryVersion),
 		},
 		{
 			name:    "Apple Silicon llama-cpp",
@@ -196,6 +223,24 @@ func TestGetBackendVersion(t *testing.T) {
 			want: localAIBinaryVersion,
 		},
 		{
+			name:    "CPU vllm-cpp uses current backend tags",
+			backend: utils.BackendVLLMCpp,
+			runtime: "",
+			platform: specs.Platform{
+				Architecture: utils.PlatformARM64,
+			},
+			want: localAIBinaryVersion,
+		},
+		{
+			name:    "CUDA vllm-cpp uses current backend tags",
+			backend: utils.BackendVLLMCpp,
+			runtime: utils.RuntimeNVIDIA,
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: localAIBinaryVersion,
+		},
+		{
 			name:    "apple silicon stays on legacy backend tags",
 			backend: utils.BackendLlamaCpp,
 			runtime: utils.RuntimeAppleSilicon,
@@ -238,6 +283,27 @@ func TestGetLocalAIArtifactVersion(t *testing.T) {
 			config: &config.InferenceConfig{
 				Runtime:  utils.RuntimeNVIDIA,
 				Backends: []string{utils.BackendVLLM},
+			},
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: localAIBinaryVersion,
+		},
+		{
+			name: "CPU vllm-cpp uses current LocalAI binary",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendVLLMCpp},
+			},
+			platform: specs.Platform{
+				Architecture: utils.PlatformARM64,
+			},
+			want: localAIBinaryVersion,
+		},
+		{
+			name: "CUDA vllm-cpp uses current LocalAI binary",
+			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
+				Backends: []string{utils.BackendVLLMCpp},
 			},
 			platform: specs.Platform{
 				Architecture: utils.PlatformAMD64,
@@ -387,6 +453,100 @@ func TestInstallBackendVLLMHasOptimizedCopyWithoutCompatibilityPatch(t *testing.
 	}
 }
 
+func TestInstallBackendVLLMCppIsSelfContained(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      *config.InferenceConfig
+		platform    specs.Platform
+		wantImage   string
+		wantBackend string
+	}{
+		{
+			name: "CPU arm64",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendVLLMCpp},
+			},
+			platform: specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformARM64},
+			wantImage: fmt.Sprintf(
+				"%s:%s-cpu-vllm-cpp",
+				utils.BackendOCIRegistry,
+				localAIBinaryVersion,
+			),
+			wantBackend: cpuVLLMCppBackend,
+		},
+		{
+			name: "CUDA amd64",
+			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
+				Backends: []string{utils.BackendVLLMCpp},
+			},
+			platform: specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64},
+			wantImage: fmt.Sprintf(
+				"%s:%s-gpu-nvidia-cuda-13-vllm-cpp",
+				utils.BackendOCIRegistry,
+				localAIBinaryVersion,
+			),
+			wantBackend: cuda13VLLMCppBackend,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := llb.Image(utils.UbuntuBase, llb.Platform(tt.platform))
+			state := installBackend(utils.BackendVLLMCpp, tt.config, tt.platform, base, base)
+			definition, err := state.Marshal(context.Background())
+			if err != nil {
+				t.Fatalf("marshal vllm-cpp backend definition: %v", err)
+			}
+
+			var foundImage, foundMetadata bool
+			for _, data := range definition.Def {
+				op := new(pb.Op)
+				if err := op.Unmarshal(data); err != nil {
+					t.Fatalf("unmarshal LLB op: %v", err)
+				}
+
+				if source := op.GetSource(); source != nil && strings.Contains(source.Identifier, tt.wantImage) {
+					foundImage = true
+				}
+				if exec := op.GetExec(); exec != nil {
+					command := strings.Join(exec.Meta.Args, "\x00")
+					for _, unexpected := range []string{"gcc libc6-dev", "python3", "pip install", "cuda-keyring"} {
+						if strings.Contains(command, unexpected) {
+							t.Fatalf("self-contained vllm-cpp backend installs %q in command %q", unexpected, command)
+						}
+					}
+				}
+
+				fileOp := op.GetFile()
+				if fileOp == nil {
+					continue
+				}
+				metadataPath := "/backends/" + tt.wantBackend + "/metadata.json"
+				for _, action := range fileOp.Actions {
+					mkfile := action.GetMkfile()
+					if mkfile == nil || mkfile.Path != metadataPath {
+						continue
+					}
+					metadata := string(mkfile.Data)
+					if !strings.Contains(metadata, `"alias": "vllm-cpp"`) ||
+						!strings.Contains(metadata, `"name": "`+tt.wantBackend+`"`) {
+						t.Fatalf("vllm-cpp metadata = %q", metadata)
+					}
+					foundMetadata = true
+				}
+			}
+
+			if !foundImage {
+				t.Errorf("backend image %q is missing", tt.wantImage)
+			}
+			if !foundMetadata {
+				t.Errorf("backend metadata for %q is missing", tt.wantBackend)
+			}
+		})
+	}
+}
+
 func TestGetDefaultBackends(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -448,6 +608,11 @@ func TestGetBackendAlias(t *testing.T) {
 			want:    "vllm",
 		},
 		{
+			name:    "vllm-cpp backend",
+			backend: utils.BackendVLLMCpp,
+			want:    "vllm-cpp",
+		},
+		{
 			name:    "unknown backend defaults to llama-cpp",
 			backend: "unknown",
 			want:    "llama-cpp",
@@ -487,6 +652,24 @@ func TestGetBackendName(t *testing.T) {
 			want: "cpu-llama-cpp",
 		},
 		{
+			name:    "CPU vllm-cpp amd64",
+			backend: utils.BackendVLLMCpp,
+			runtime: "",
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: "cpu-vllm-cpp",
+		},
+		{
+			name:    "CPU vllm-cpp arm64",
+			backend: utils.BackendVLLMCpp,
+			runtime: "",
+			platform: specs.Platform{
+				Architecture: utils.PlatformARM64,
+			},
+			want: "cpu-vllm-cpp",
+		},
+		{
 			name:    "CUDA llama-cpp",
 			backend: utils.BackendLlamaCpp,
 			runtime: utils.RuntimeNVIDIA,
@@ -512,6 +695,15 @@ func TestGetBackendName(t *testing.T) {
 				Architecture: utils.PlatformAMD64,
 			},
 			want: "cuda12-vllm",
+		},
+		{
+			name:    "CUDA vllm-cpp",
+			backend: utils.BackendVLLMCpp,
+			runtime: utils.RuntimeNVIDIA,
+			platform: specs.Platform{
+				Architecture: utils.PlatformAMD64,
+			},
+			want: "cuda13-vllm-cpp",
 		},
 		{
 			name:    "Apple Silicon llama-cpp",

@@ -18,9 +18,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  runner:
+    name: test (${{ matrix.runner }})
     runs-on: ubuntu-latest-16-cores
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: llama-cpp-cpu
+            model_ref: https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/f0b45be0aac41bd6a100a4b5734cad5f67255bfb/gemma-3-1b-it-Q2_K.gguf
+            model_name: gemma-3-1b-it-Q2_K
+            prompt: explain kubernetes in a sentence
+            max_tokens: 64
+            expected_content: ""
+          - runner: vllm-cpp-cpu
+            model_ref: Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca
+            model_name: Qwen3-0.6B
+            prompt: What is the capital of France? Reply with only the city name. /no_think
+            max_tokens: 256
+            expected_content: Paris
+    env:
+      EXPECTED_CONTENT: ${{ matrix.expected_content }}
+      MAX_TOKENS: ${{ matrix.max_tokens }}
+      MODEL_NAME: ${{ matrix.model_name }}
+      MODEL_PROMPT: ${{ matrix.prompt }}
+      MODEL_REF: ${{ matrix.model_ref }}
+      RUNNER: ${{ matrix.runner }}
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -75,7 +99,7 @@ jobs:
       - name: build runner image
         run: |
           docker buildx build . -t runner-test:test \
-            -f runners/llama-cpp-cpu.yaml \
+            -f "runners/${RUNNER}.yaml" \
             --build-arg BUILDKIT_SYNTAX=aikit:test \
             --load --provenance=false --progress plain
 
@@ -95,14 +119,16 @@ jobs:
           '
 
       - name: run runner with model
-        run: docker run --name runner-test -d -p 8080:8080 runner-test:test https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q2_K.gguf
+        run: docker run --name runner-test -d -p 8080:8080 runner-test:test "$MODEL_REF" --context-size 1024
 
       - name: wait for model download
         run: |
           echo "Waiting for runner container to download model and start..."
+          ready=false
           for i in $(seq 1 60); do
             if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/readyz 2>/dev/null | grep -q "200"; then
               echo "Server is ready!"
+              ready=true
               break
             fi
             if ! docker ps --format '{{.Names}}' | grep -q runner-test; then
@@ -111,36 +137,76 @@ jobs:
               exit 1
             fi
             if [ $((i % 10)) -eq 0 ]; then
-              echo "Still waiting... (${i}s elapsed)"
+              echo "Still waiting... ($((i * 10))s elapsed)"
               docker logs --tail 5 runner-test 2>&1 || true
             fi
             sleep 10
           done
+          if [[ "$ready" != "true" ]]; then
+            echo "Runner did not become ready within 10 minutes" >&2
+            docker logs runner-test 2>&1 || true
+            exit 1
+          fi
 
       - name: run chat completion test
         run: |
+          payload=$(jq -n \
+            --arg model "$MODEL_NAME" \
+            --arg prompt "$MODEL_PROMPT" \
+            --argjson max_tokens "$MAX_TOKENS" \
+            '{model: $model, messages: [{role: "user", content: $prompt}], max_tokens: $max_tokens, temperature: 0}')
+          response=""
           for i in $(seq 1 30); do
-            response=$(curl -sf http://127.0.0.1:8080/v1/chat/completions \
+            response=$(curl --fail --silent --show-error --max-time 300 http://127.0.0.1:8080/v1/chat/completions \
               -H "Content-Type: application/json" \
-              -d '{"model": "gemma-3-1b-it-Q2_K", "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]}' 2>/dev/null) && break
+              -d "$payload") && break
             echo "Attempt $i failed, retrying in 10s..."
             sleep 10
           done
+          if [[ -z "$response" ]]; then
+            echo "Chat completion did not return a response" >&2
+            exit 1
+          fi
           echo "$response"
-          echo "$response" | jq -e '.choices | length > 0'
+          echo "$response" | jq -e --arg model "$MODEL_NAME" \
+            '.error == null and .object == "chat.completion" and .model == $model and (.choices | length > 0) and
+             .choices[0].message.role == "assistant"'
+          if [[ -n "$EXPECTED_CONTENT" ]]; then
+            echo "$response" | jq -e --arg expected "$EXPECTED_CONTENT" \
+              '.choices[0].finish_reason == "stop" and
+               ((.choices[0].message.content // "") | gsub("^\\s+|\\s+$"; "") == $expected)'
+          else
+            echo "$response" | jq -e \
+              '(((.choices[0].message.content // "") | type == "string" and length > 0) or
+               ((.choices[0].message.reasoning_content // .choices[0].message.reasoning // "") | type == "string" and length > 0))'
+          fi
 
       - name: save logs
         if: always()
-        run: docker logs runner-test > /tmp/docker-runner-llama-cpp-cpu.log 2>&1
+        run: docker logs runner-test > "/tmp/docker-runner-${RUNNER}.log" 2>&1 || true
 
-      - name: stop container
+      - name: remove container
         if: always()
-        run: docker stop runner-test || true
+        run: docker rm -f runner-test || true
 
       - name: publish test artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: test-runner-llama-cpp-cpu
-          path: |
-            /tmp/*.log
+          name: test-runner-${{ matrix.runner }}
+          path: /tmp/docker-runner-${{ matrix.runner }}.log
+
+  test:
+    name: test
+    if: always()
+    needs: runner
+    runs-on: ubuntu-latest
+    steps:
+      - name: verify runner tests
+        env:
+          RESULT: ${{ needs.runner.result }}
+        run: |
+          if [[ "$RESULT" != "success" ]]; then
+            echo "Runner test matrix result: $RESULT" >&2
+            exit 1
+          fi
