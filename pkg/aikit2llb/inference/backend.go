@@ -3,12 +3,17 @@ package inference
 import (
 	"encoding/json"
 	"fmt"
+	"path"
+	"slices"
 	"strings"
+	"unicode"
 
+	"github.com/kaito-project/aikit/pkg/aikit/config"
 	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
+	yaml "gopkg.in/yaml.v2"
 )
 
 type backendMetadata struct {
@@ -37,6 +42,187 @@ func installBackends(backend backendcatalog.Resolution, platform specs.Platform,
 	}
 
 	return merge
+}
+
+type localAIModelReference struct {
+	Parameters struct {
+		Model string `yaml:"model"`
+	} `yaml:"parameters"`
+}
+
+// localAIModelPaths extracts safe relative model paths without rewriting the
+// LocalAI configuration. Invalid or non-path references remain untouched.
+func localAIModelPaths(rawConfig string) []string {
+	return collapseLocalAIModelPaths(parseLocalAIModelPaths(rawConfig))
+}
+
+func parseLocalAIModelPaths(rawConfig string) []string {
+	if strings.TrimSpace(rawConfig) == "" {
+		return nil
+	}
+
+	var modelConfigs []localAIModelReference
+	if err := yaml.Unmarshal([]byte(rawConfig), &modelConfigs); err != nil {
+		var modelConfig localAIModelReference
+		if err := yaml.Unmarshal([]byte(rawConfig), &modelConfig); err != nil {
+			return nil
+		}
+		modelConfigs = []localAIModelReference{modelConfig}
+	}
+
+	paths := make(map[string]struct{}, len(modelConfigs))
+	for _, modelConfig := range modelConfigs {
+		modelPath, ok := safeLocalAIModelPath(modelConfig.Parameters.Model)
+		if ok {
+			paths[modelPath] = struct{}{}
+		}
+	}
+
+	result := make([]string, 0, len(paths))
+	for modelPath := range paths {
+		result = append(result, modelPath)
+	}
+	slices.Sort(result)
+	return result
+}
+
+func collapseLocalAIModelPaths(modelPaths []string) []string {
+	if len(modelPaths) == 0 {
+		return nil
+	}
+
+	aliases := make([]string, 0, len(modelPaths))
+	for _, modelPath := range modelPaths {
+		covered := false
+		for _, alias := range aliases {
+			if strings.HasPrefix(modelPath, alias+"/") {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			aliases = append(aliases, modelPath)
+		}
+	}
+	return aliases
+}
+
+func safeLocalAIModelPath(modelPath string) (string, bool) {
+	if modelPath != strings.TrimSpace(modelPath) || strings.Contains(modelPath, `\`) || strings.Contains(modelPath, "://") {
+		return "", false
+	}
+	for _, r := range modelPath {
+		if unicode.IsControl(r) {
+			return "", false
+		}
+	}
+
+	cleaned := path.Clean(modelPath)
+	if cleaned == "." || cleaned == ".." || path.IsAbs(cleaned) || strings.HasPrefix(cleaned, "../") {
+		return "", false
+	}
+	return cleaned, true
+}
+
+// localAIModelDirectories returns only configured model paths that AIKit can
+// prove are materialized directories. File paths and opaque source layouts are
+// left to LocalAI's ModelFile handling.
+func localAIModelDirectories(rawConfig string, models []config.Model) []string {
+	materialized := materializedModelDirectories(models)
+	if len(materialized) == 0 {
+		return nil
+	}
+
+	var aliases []string
+	for _, modelPath := range parseLocalAIModelPaths(rawConfig) {
+		if _, ok := materialized[modelPath]; ok {
+			aliases = append(aliases, modelPath)
+		}
+	}
+	return collapseLocalAIModelPaths(aliases)
+}
+
+func materializedModelDirectories(models []config.Model) map[string]struct{} {
+	directories := make(map[string]struct{})
+	for _, model := range models {
+		if strings.HasPrefix(model.Source, "huggingface://") {
+			spec, err := ParseHuggingFaceSpec(model.Source)
+			if err == nil && spec.SubPath == "" {
+				addModelDirectory(directories, path.Join(spec.Namespace, spec.Model))
+			}
+			continue
+		}
+
+		if !strings.HasPrefix(model.Source, "http://") && !strings.HasPrefix(model.Source, "https://") {
+			continue
+		}
+		modelName, ok := safeLocalAIModelPath(model.Name)
+		if !ok || !strings.Contains(modelName, "/") {
+			continue
+		}
+		addModelDirectory(directories, path.Dir(modelName))
+	}
+	return directories
+}
+
+func addModelDirectory(directories map[string]struct{}, modelDirectory string) {
+	for modelDirectory != "." && modelDirectory != "/" {
+		directories[modelDirectory] = struct{}{}
+		modelDirectory = path.Dir(modelDirectory)
+	}
+}
+
+// installBackendModelAliases exposes each configured /models path from every
+// backend working directory. LocalAI v4.8.2 passes both Model and ModelFile to
+// external backends, but some backends load Model directly as a relative path.
+func installBackendModelAliases(backend backendcatalog.Resolution, modelPaths []string, buildPlatform specs.Platform, s llb.State) llb.State {
+	if len(modelPaths) == 0 {
+		return s
+	}
+
+	artifacts := make([]backendcatalog.BackendArtifact, 0, 1+len(backend.Fallbacks))
+	artifacts = append(artifacts, backend.Backend)
+	artifacts = append(artifacts, backend.Fallbacks...)
+
+	seenInstallNames := make(map[string]struct{}, len(artifacts))
+	var script strings.Builder
+	script.WriteString("set -eu\n")
+	for _, artifact := range artifacts {
+		if _, ok := seenInstallNames[artifact.InstallName]; ok {
+			continue
+		}
+		seenInstallNames[artifact.InstallName] = struct{}{}
+
+		backendDir := path.Join("/aikit-root/backends", artifact.InstallName)
+		for _, modelPath := range modelPaths {
+			alias := path.Join(backendDir, modelPath)
+			materialized := path.Join("/aikit-root/models", modelPath)
+			target := path.Join("/models", modelPath)
+			fmt.Fprintf(&script, "alias_path=%s\n", quoteShellWord(alias))
+			fmt.Fprintf(&script, "model_path=%s\n", quoteShellWord(materialized))
+			fmt.Fprintf(&script, "model_target=%s\n", quoteShellWord(target))
+			script.WriteString("if [ ! -d \"$model_path\" ]; then\n")
+			script.WriteString("  echo \"Skipping model alias $alias_path: baked directory is missing\" >&2\n")
+			script.WriteString("elif [ -e \"$alias_path\" ] || [ -L \"$alias_path\" ]; then\n")
+			script.WriteString("  echo \"Skipping model alias $alias_path: backend path already exists\" >&2\n")
+			script.WriteString("elif mkdir -p \"${alias_path%/*}\"; then\n")
+			script.WriteString("  ln -s \"$model_target\" \"$alias_path\"\n")
+			script.WriteString("else\n")
+			script.WriteString("  echo \"Skipping model alias $alias_path: parent path conflicts with backend contents\" >&2\n")
+			script.WriteString("fi\n")
+		}
+	}
+
+	helper := llb.Image(orasImage, llb.Platform(buildPlatform))
+	run := helper.Run(
+		utils.Sh(script.String()),
+		llb.WithCustomName("Linking baked model directories into backend working directories"),
+	)
+	return run.AddMount("/aikit-root", s)
+}
+
+func quoteShellWord(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func installSystemPackages(packages []string, s llb.State, merge llb.State) llb.State {

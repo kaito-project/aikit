@@ -1176,7 +1176,7 @@ func TestVLLMCppRunnerRejectsUnsupportedModelReferences(t *testing.T) {
 	}{
 		{
 			name:      "non-GGUF direct URL",
-			model:     "https://example.com/model.safetensors",
+			model:     testSafetensorsURL,
 			wantError: "direct URLs must point to a .gguf file",
 		},
 		{

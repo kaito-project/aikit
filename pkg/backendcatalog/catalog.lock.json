@@ -5189,7 +5189,7 @@
       },
       "runtime": "rocm",
       "targetProfile": "rocm",
-      "status": "experimental",
+      "status": "quarantined",
       "channel": "stable",
       "runtimeBase": {
         "ref": "docker.io/rocm/dev-ubuntu-24.04@sha256:fe29799baf7b8db986a707110c15579dc0fb6e39d48973fbb82dfc33a0c7e179"
@@ -5233,7 +5233,7 @@
       },
       "runtime": "cpu",
       "targetProfile": "cpu",
-      "status": "experimental",
+      "status": "quarantined",
       "channel": "stable",
       "runtimeBase": {
         "ref": "docker.io/library/ubuntu@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467"
@@ -5263,7 +5263,7 @@
       },
       "runtime": "cpu",
       "targetProfile": "cpu",
-      "status": "experimental",
+      "status": "quarantined",
       "channel": "stable",
       "runtimeBase": {
         "ref": "docker.io/library/ubuntu@sha256:b17516cd982bf06bdd5d5600253d12a8de017b9eb831cc052b532a0363d294f9"
@@ -5293,7 +5293,7 @@
       },
       "runtime": "cpu",
       "targetProfile": "intel",
-      "status": "experimental",
+      "status": "quarantined",
       "channel": "stable",
       "runtimeBase": {
         "ref": "docker.io/library/ubuntu@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467"
@@ -5323,7 +5323,7 @@
       },
       "runtime": "cuda",
       "targetProfile": "cuda12",
-      "status": "experimental",
+      "status": "quarantined",
       "channel": "stable",
       "runtimeBase": {
         "ref": "docker.io/library/ubuntu@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467"
@@ -5359,7 +5359,7 @@
       },
       "runtime": "cuda",
       "targetProfile": "cuda13",
-      "status": "experimental",
+      "status": "quarantined",
       "channel": "stable",
       "runtimeBase": {
         "ref": "docker.io/library/ubuntu@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467"
@@ -5395,7 +5395,7 @@
       },
       "runtime": "cuda",
       "targetProfile": "l4t-cuda12",
-      "status": "experimental",
+      "status": "quarantined",
       "channel": "stable",
       "runtimeBase": {
         "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
@@ -5434,7 +5434,7 @@
       },
       "runtime": "cuda",
       "targetProfile": "l4t-cuda12",
-      "status": "experimental",
+      "status": "quarantined",
       "channel": "stable",
       "runtimeBase": {
         "ref": "nvcr.io/nvidia/l4t-jetpack@sha256:34ccf0f3b63c6da9eee45f2e79de9bf7fdf3beda9abfd72bbf285ae9d40bb673"
@@ -5473,7 +5473,7 @@
       },
       "runtime": "cuda",
       "targetProfile": "cuda12",
-      "status": "experimental",
+      "status": "quarantined",
       "channel": "stable",
       "runtimeBase": {
         "ref": "docker.io/library/ubuntu@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467"
@@ -14890,7 +14890,7 @@
       },
       "runtime": "cuda",
       "targetProfile": "cuda12",
-      "status": "experimental",
+      "status": "quarantined",
       "channel": "stable",
       "runtimeBase": {
         "ref": "docker.io/library/ubuntu@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467"
@@ -14998,7 +14998,7 @@
       },
       "runtime": "cuda",
       "targetProfile": "cuda12",
-      "status": "experimental",
+      "status": "quarantined",
       "channel": "stable",
       "runtimeBase": {
         "ref": "docker.io/library/ubuntu@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467"

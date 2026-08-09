@@ -79,6 +79,13 @@ func TestNewImageConfigEnvironmentUsesCatalogPlan(t *testing.T) {
 		"PATH=" + system.DefaultPathEnv(utils.PlatformLinux),
 		"CONFIG_FILE=/config.yaml",
 	}
+	standardOfflineEnv := []string{
+		localAIModelGalleriesEnv,
+		localAIBackendGalleriesEnv,
+		localAIDisableModelGalleryAutoloadEnv,
+		localAIDisableBackendGalleryAutoloadEnv,
+		localAIDisableGalleryWarmupEnv,
+	}
 	catalogEnv := []string{"ARBITRARY_ACCELERATOR=enabled", "ARBITRARY_CACHE=/var/cache/arbitrary"}
 
 	tests := []struct {
@@ -93,7 +100,10 @@ func TestNewImageConfigEnvironmentUsesCatalogPlan(t *testing.T) {
 				Models: []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
 			},
 			environment: catalogEnv,
-			wantEnv:     append(append([]string{}, defaultEnv...), catalogEnv...),
+			wantEnv: append(
+				append(append([]string{}, defaultEnv...), catalogEnv...),
+				standardOfflineEnv...,
+			),
 		},
 		{
 			name: "runner appends Hugging Face cache after catalog environment",
@@ -108,7 +118,7 @@ func TestNewImageConfigEnvironmentUsesCatalogPlan(t *testing.T) {
 			config: &config.InferenceConfig{
 				Models: []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
 			},
-			wantEnv: defaultEnv,
+			wantEnv: append(append([]string{}, defaultEnv...), standardOfflineEnv...),
 		},
 		{
 			name: "load-to-memory precedes catalog environment",
@@ -118,8 +128,11 @@ func TestNewImageConfigEnvironmentUsesCatalogPlan(t *testing.T) {
 			},
 			environment: catalogEnv,
 			wantEnv: append(
-				append(append([]string{}, defaultEnv...), localAILoadToMemoryEnv+"chat,embeddings"),
-				catalogEnv...,
+				append(
+					append(append([]string{}, defaultEnv...), localAILoadToMemoryEnv+"chat,embeddings"),
+					catalogEnv...,
+				),
+				standardOfflineEnv...,
 			),
 		},
 		{

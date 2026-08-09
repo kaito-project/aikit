@@ -137,6 +137,19 @@ func policyFor(family, selector, target, sourceRef string, platform Platform) (e
 		policy.RunnerProfile = familyVLLMCpp
 	}
 
+	// Kokoro ignores baked model paths and downloads an unpinned model at
+	// runtime. Keep every tuple unavailable until the backend can consume the
+	// immutable model materialized by AIKit.
+	if family == familyKokoro {
+		policy.Status = statusQuarantined
+	}
+
+	// LocalAI v4.8.2's CUDA 12 SGLang bundle mixes PyTorch CUDA 13.0 with
+	// TorchAudio CUDA 12.8 and exits before its gRPC service becomes ready.
+	if family == familySGLang && policy.TargetProfile == targetCUDA12 && platform.OS == platformLinux && platform.Architecture == architectureAMD64 {
+		policy.Status = statusQuarantined
+	}
+
 	return policy, nil
 }
 
@@ -226,9 +239,9 @@ func inferTargetProfile(selector, target, sourceRef string) (string, error) {
 		return targetL4TCUDA13, nil
 	case strings.HasPrefix(target, "nvidia-l4t-"), selector == selectorNVIDIAL4T, selector == selectorL4TCUDA12:
 		return targetL4TCUDA12, nil
-	case strings.HasPrefix(target, "cuda13-"), selector == "nvidia-cuda-13":
+	case strings.HasPrefix(target, "cuda13-"), selector == selectorNVIDIACUDA13:
 		return targetCUDA13, nil
-	case strings.HasPrefix(target, "cuda12-"), selector == selectorNVIDIA, selector == "nvidia-cuda-12":
+	case strings.HasPrefix(target, "cuda12-"), selector == selectorNVIDIA, selector == selectorNVIDIACUDA12:
 		return targetCUDA12, nil
 	case strings.HasPrefix(target, "rocm-"), selector == selectorAMD:
 		return targetROCm, nil

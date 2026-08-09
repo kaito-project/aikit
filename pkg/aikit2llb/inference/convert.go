@@ -13,6 +13,8 @@ import (
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
+const standardRuntimeCABundlePath = "/etc/ssl/certs/ca-certificates.crt"
+
 // Aikit2LLB converts an InferenceConfig to an LLB state.
 func Aikit2LLB(c *config.InferenceConfig, targetPlatform *specs.Platform) (llb.State, *specs.Image, error) {
 	return Aikit2LLBWithPlatforms(c, targetPlatform, targetPlatform)
@@ -72,6 +74,7 @@ func aikit2LLBWithResolvedBackend(c *config.InferenceConfig, buildPlatform, targ
 			return state, nil, err
 		}
 		state = buildBase
+		state, merge = installStandardRuntimeTrust(state, merge, *buildPlatform)
 	}
 
 	state, merge, err = addLocalAI(backend, state, merge, *buildPlatform)
@@ -81,9 +84,31 @@ func aikit2LLBWithResolvedBackend(c *config.InferenceConfig, buildPlatform, targ
 
 	// Install the exact backend artifacts selected during catalog preflight.
 	merge = installBackends(backend, *targetPlatform, state, merge)
+	if len(c.Models) > 0 {
+		merge = installBackendModelAliases(backend, localAIModelDirectories(c.Config, c.Models), *buildPlatform, merge)
+	}
 
 	imageCfg := NewImageConfigWithBackend(c, backend, targetPlatform)
 	return merge, imageCfg, nil
+}
+
+// installStandardRuntimeTrust copies the CA bundle from the existing build helper
+// into standard images without assuming that the catalog runtime base has a package manager.
+func installStandardRuntimeTrust(s llb.State, merge llb.State, buildPlatform specs.Platform) (llb.State, llb.State) {
+	savedState := s
+	trustSource := llb.Image(orasImage, llb.Platform(buildPlatform))
+	s = s.File(
+		llb.Copy(
+			trustSource,
+			standardRuntimeCABundlePath,
+			standardRuntimeCABundlePath,
+			&llb.CopyInfo{CreateDestPath: true},
+		),
+		llb.WithCustomName("Installing standard runtime CA roots"),
+	)
+
+	diff := llb.Diff(savedState, s)
+	return s, llb.Merge([]llb.State{merge, diff})
 }
 
 func runtimeBaseForConfig(c *config.InferenceConfig, backend backendcatalog.Resolution) backendcatalog.Artifact {

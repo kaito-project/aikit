@@ -11,10 +11,15 @@ import (
 )
 
 const (
-	localAIEntrypointCommand = "local-ai"
-	localAILoadToMemoryEnv   = "LOCALAI_LOAD_TO_MEMORY="
-	runnerEntrypointPath     = "/usr/local/bin/aikit-runner"
-	runnerHFHomeEnv          = "HF_HOME=/models/.cache/huggingface"
+	localAIEntrypointCommand                = "local-ai"
+	localAILoadToMemoryEnv                  = "LOCALAI_LOAD_TO_MEMORY="
+	localAIModelGalleriesEnv                = "LOCALAI_GALLERIES=[]"
+	localAIBackendGalleriesEnv              = "LOCALAI_BACKEND_GALLERIES=[]"
+	localAIDisableModelGalleryAutoloadEnv   = "LOCALAI_AUTOLOAD_GALLERIES=false"
+	localAIDisableBackendGalleryAutoloadEnv = "LOCALAI_AUTOLOAD_BACKEND_GALLERIES=false"
+	localAIDisableGalleryWarmupEnv          = "LOCALAI_VRAM_WARM_LIMIT=0"
+	runnerEntrypointPath                    = "/usr/local/bin/aikit-runner"
+	runnerHFHomeEnv                         = "HF_HOME=/models/.cache/huggingface"
 )
 
 func NewImageConfig(c *config.InferenceConfig, platform *specs.Platform) *specs.Image {
@@ -63,6 +68,13 @@ func NewImageConfigWithBackend(c *config.InferenceConfig, backend backendcatalog
 
 		img.Config.Entrypoint = []string{localAIEntrypointCommand}
 		img.Config.Cmd = cmd
+		img.Config.Env = append(img.Config.Env,
+			localAIModelGalleriesEnv,
+			localAIBackendGalleriesEnv,
+			localAIDisableModelGalleryAutoloadEnv,
+			localAIDisableBackendGalleryAutoloadEnv,
+			localAIDisableGalleryWarmupEnv,
+		)
 	}
 
 	return img

@@ -111,6 +111,82 @@ func TestAikit2LLBUsesCatalogRuntimeBaseForArbitraryFamily(t *testing.T) {
 	assertInferenceOpPlatform(t, runtimeBase, *platform)
 }
 
+func TestAikit2LLBInstallsRuntimeTrustOnlyForStandardImages(t *testing.T) {
+	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	backend := testArbitraryBackendPlan(*platform)
+	backend.SystemPackages = nil
+	backend.RunnerProfile = backendcatalog.RunnerProfileHFConfig
+
+	tests := []struct {
+		name      string
+		config    *config.InferenceConfig
+		wantTrust bool
+	}{
+		{
+			name: "standard image",
+			config: &config.InferenceConfig{
+				Backends: []string{backend.Family},
+				Models:   []config.Model{{Name: testInferenceModelName, Source: testInferenceModelSource}},
+			},
+			wantTrust: true,
+		},
+		{
+			name:   "runner image",
+			config: &config.InferenceConfig{Backends: []string{backend.Family}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state, _, err := aikit2LLBWithResolvedBackend(test.config, platform, platform, backend)
+			if err != nil {
+				t.Fatalf("convert inference config: %v", err)
+			}
+			definition, err := state.Marshal(context.Background())
+			if err != nil {
+				t.Fatalf("marshal inference definition: %v", err)
+			}
+
+			trustOps := inferenceOpsWithCustomNamePrefix(t, definition, "Installing standard runtime CA roots")
+			if !test.wantTrust {
+				if len(trustOps) != 0 {
+					t.Fatalf("standard runtime trust ops = %d, want none", len(trustOps))
+				}
+				return
+			}
+			if len(trustOps) != 1 {
+				t.Fatalf("standard runtime trust ops = %d, want 1", len(trustOps))
+			}
+
+			file := trustOps[0].op.GetFile()
+			if file == nil || len(file.Actions) != 1 {
+				t.Fatalf("standard runtime trust file actions = %v, want one copy", file)
+			}
+			copyAction := file.Actions[0].GetCopy()
+			if copyAction == nil {
+				t.Fatal("standard runtime trust action is not a copy")
+			}
+			if copyAction.Src != standardRuntimeCABundlePath || copyAction.Dest != standardRuntimeCABundlePath {
+				t.Errorf("standard runtime trust copy = %q -> %q, want %q -> %q", copyAction.Src, copyAction.Dest, standardRuntimeCABundlePath, standardRuntimeCABundlePath)
+			}
+		})
+	}
+}
+
+func inferenceOpsWithCustomNamePrefix(t *testing.T, definition *llb.Definition, prefix string) []inferenceDefinitionOp {
+	t.Helper()
+
+	var matches []inferenceDefinitionOp
+	for _, graphOp := range decodeInferenceDefinition(t, definition) {
+		metadata, ok := definition.Metadata[graphOp.digest]
+		if ok && strings.HasPrefix(metadata.Description["llb.customname"], prefix) {
+			matches = append(matches, graphOp)
+		}
+	}
+
+	return matches
+}
+
 func TestAikit2LLBUsesRunnerRuntimeBaseOnlyForRunnerMode(t *testing.T) {
 	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
 	backend := testArbitraryBackendPlan(*platform)

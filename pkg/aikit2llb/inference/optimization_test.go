@@ -17,11 +17,15 @@ import (
 )
 
 const (
-	testExactModelName      = "exact"
-	testLocalModelDirectory = "models/weights"
-	testLocalModelPath      = "models/model.gguf"
-	testLocalModelGlob      = "models/*.safetensors"
-	testLocalModelZ         = "models/z.gguf"
+	testConfigURL              = "https://example.com/config.json"
+	testExactModelName         = "exact"
+	testFasterWhisperModelPath = "Systran/faster-whisper-tiny.en"
+	testLocalModelDirectory    = "models/weights"
+	testLocalModelPath         = "models/model.gguf"
+	testLocalModelGlob         = "models/*.safetensors"
+	testLocalModelZ            = "models/z.gguf"
+	testRerankerModelPath      = "reranker"
+	testSafetensorsURL         = "https://example.com/model.safetensors"
 )
 
 type inferenceDefinitionOp struct {
@@ -335,6 +339,187 @@ func TestLocalModelFollowPaths(t *testing.T) {
 				t.Fatalf("local model follow paths = %#v, want nil for unrestricted source %q", got, source)
 			}
 		})
+	}
+}
+
+func TestLocalAIModelPaths(t *testing.T) {
+	tests := []struct {
+		name      string
+		rawConfig string
+		want      []string
+	}{
+		{
+			name:      "faster whisper repository",
+			rawConfig: "- name: faster-whisper-tiny-en\n  backend: faster-whisper\n  parameters:\n    model: " + testFasterWhisperModelPath + "\n",
+			want:      []string{testFasterWhisperModelPath},
+		},
+		{
+			name:      "reranker directory",
+			rawConfig: "- name: mini-reranker\n  backend: rerankers\n  parameters:\n    model: " + testRerankerModelPath + "\n",
+			want:      []string{testRerankerModelPath},
+		},
+		{
+			name:      "legacy llama file",
+			rawConfig: "- parameters:\n    model: Llama-3.2-1B-Instruct.Q4_K_M.gguf\n",
+			want:      []string{"Llama-3.2-1B-Instruct.Q4_K_M.gguf"},
+		},
+		{
+			name:      "vLLM repository",
+			rawConfig: "- parameters:\n    model: Qwen/Qwen2.5-0.5B-Instruct\n",
+			want:      []string{"Qwen/Qwen2.5-0.5B-Instruct"},
+		},
+		{
+			name:      "Diffusers nested file",
+			rawConfig: "- parameters:\n    model: dreamshaper_assets/DreamShaper_8_pruned.safetensors\n",
+			want:      []string{"dreamshaper_assets/DreamShaper_8_pruned.safetensors"},
+		},
+		{
+			name:      "single mapping",
+			rawConfig: "name: single\nparameters:\n  model: model.gguf\n",
+			want:      []string{"model.gguf"},
+		},
+		{
+			name: "sorted and deduplicated",
+			rawConfig: "- parameters:\n    model: z/model.bin\n" +
+				"- parameters:\n    model: a/model.bin\n" +
+				"- parameters:\n    model: a/model.bin\n",
+			want: []string{"a/model.bin", "z/model.bin"},
+		},
+		{
+			name: "ancestor alias covers descendants",
+			rawConfig: "- parameters:\n    model: repository\n" +
+				"- parameters:\n    model: repository/model.bin\n",
+			want: []string{"repository"},
+		},
+		{
+			name:      "normalizes relative path",
+			rawConfig: "- parameters:\n    model: org//repo/./model\n",
+			want:      []string{"org/repo/model"},
+		},
+		{
+			name: "unsafe and remote references are ignored",
+			rawConfig: "- parameters:\n    model: ../outside/model\n" +
+				"- parameters:\n    model: /models/absolute\n" +
+				"- parameters:\n    model: https://example.com/model\n" +
+				"- parameters:\n    model: models\\windows\n" +
+				"- parameters:\n    model: ''\n",
+			want: nil,
+		},
+		{
+			name:      "invalid YAML",
+			rawConfig: "- parameters: [",
+			want:      nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := localAIModelPaths(tt.rawConfig); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("LocalAI model paths = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLocalAIModelDirectoriesRequireMaterializedDirectories(t *testing.T) {
+	tests := []struct {
+		name      string
+		rawConfig string
+		models    []config.Model
+		want      []string
+	}{
+		{
+			name:      "full Hugging Face repository",
+			rawConfig: "- parameters:\n    model: " + testFasterWhisperModelPath + "\n",
+			models: []config.Model{{
+				Name:   testFasterWhisperModelPath,
+				Source: "huggingface://Systran/faster-whisper-tiny.en@0d3d19a32d3338f10357c0889762bd8d64bbdeba",
+			}},
+			want: []string{testFasterWhisperModelPath},
+		},
+		{
+			name:      "HTTP files sharing a directory",
+			rawConfig: "- parameters:\n    model: " + testRerankerModelPath + "\n",
+			models: []config.Model{
+				{Name: testRerankerModelPath + "/config.json", Source: testConfigURL},
+				{Name: testRerankerModelPath + "/model.safetensors", Source: testSafetensorsURL},
+			},
+			want: []string{testRerankerModelPath},
+		},
+		{
+			name:      "logical file does not become a dangling alias",
+			rawConfig: "- parameters:\n    model: repo/model.bin\n",
+			models: []config.Model{{
+				Name:   "repo/model.bin",
+				Source: "https://example.com/weights.bin",
+			}},
+			want: nil,
+		},
+		{
+			name:      "legacy file model is unchanged",
+			rawConfig: "- parameters:\n    model: model.gguf\n",
+			models: []config.Model{{
+				Name:   "model.gguf",
+				Source: "https://example.com/model.gguf",
+			}},
+			want: nil,
+		},
+		{
+			name: "materialized ancestor covers nested directory",
+			rawConfig: "- parameters:\n    model: unmaterialized\n" +
+				"- parameters:\n    model: unmaterialized/materialized\n",
+			models: []config.Model{{
+				Name:   "unmaterialized/materialized/config.json",
+				Source: testConfigURL,
+			}},
+			want: []string{"unmaterialized"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := localAIModelDirectories(tt.rawConfig, tt.models); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("LocalAI model directories = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBakedModelAliasesPreserveLocalAIConfig(t *testing.T) {
+	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	backend := testArbitraryBackendPlan(*platform)
+	backend.Fallbacks = nil
+	backend.SystemPackages = nil
+	configBody := "- name: mini-reranker\n  backend: rerankers\n  parameters:\n    model: " + testRerankerModelPath + "\n"
+	cfg := &config.InferenceConfig{
+		Backends: []string{backend.Family},
+		Models: []config.Model{
+			{Name: testRerankerModelPath + "/config.json", Source: testConfigURL},
+			{Name: testRerankerModelPath + "/model.safetensors", Source: testSafetensorsURL},
+		},
+		Config: configBody,
+	}
+
+	definition := marshalInferenceConfigWithBackend(t, cfg, backend, platform)
+	configFile := findInferenceMkfile(t, definition, "/config.yaml")
+	if got := string(configFile.Data); got != configBody {
+		t.Fatalf("LocalAI config = %q, want unchanged %q", got, configBody)
+	}
+
+	aliases := findInferenceOpByCustomNamePrefix(t, definition, "Linking baked model directories into backend working directories")
+	exec := aliases.op.GetExec()
+	if exec == nil {
+		t.Fatal("backend model alias operation is not an exec operation")
+	}
+	command := strings.Join(exec.Meta.Args, "\x00")
+	for _, expected := range []string{
+		"/aikit-root/backends/" + backend.Backend.InstallName + "/" + testRerankerModelPath,
+		"/aikit-root/models/" + testRerankerModelPath,
+		"/models/" + testRerankerModelPath,
+	} {
+		if !strings.Contains(command, expected) {
+			t.Errorf("backend model alias command does not contain %q", expected)
+		}
 	}
 }
 

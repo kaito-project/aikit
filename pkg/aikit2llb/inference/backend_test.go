@@ -492,6 +492,61 @@ func TestInstallBackendsUsesCatalogRuntimeSymlinksForArbitraryFamily(t *testing.
 	}
 }
 
+func TestInstallBackendModelAliasesCoverPrimaryAndFallbackArtifacts(t *testing.T) {
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	resolved := testArbitraryBackendPlan(platform)
+	base := llb.Image(resolved.RuntimeBase.Ref, llb.Platform(platform))
+	modelPaths := []string{testFasterWhisperModelPath, testRerankerModelPath}
+
+	state := installBackends(resolved, platform, base, base)
+	state = installBackendModelAliases(resolved, modelPaths, platform, state)
+	definition, err := state.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal backend definition: %v", err)
+	}
+
+	aliasOp := findInferenceOpByCustomNamePrefix(t, definition, "Linking baked model directories into backend working directories")
+	exec := aliasOp.op.GetExec()
+	if exec == nil {
+		t.Fatal("backend model alias operation is not an exec operation")
+	}
+	command := strings.Join(exec.Meta.Args, "\x00")
+
+	artifacts := append([]backendcatalog.BackendArtifact{resolved.Backend}, resolved.Fallbacks...)
+	for _, artifact := range artifacts {
+		for _, modelPath := range modelPaths {
+			for _, expected := range []string{
+				"/aikit-root/backends/" + artifact.InstallName + "/" + modelPath,
+				"/aikit-root/models/" + modelPath,
+				"/models/" + modelPath,
+			} {
+				if !strings.Contains(command, expected) {
+					t.Errorf("backend model alias command does not contain %q", expected)
+				}
+			}
+		}
+	}
+	for _, guard := range []string{
+		`[ ! -d "$model_path" ]`,
+		`[ -e "$alias_path" ] || [ -L "$alias_path" ]`,
+		`mkdir -p "${alias_path%/*}"`,
+	} {
+		if !strings.Contains(command, guard) {
+			t.Errorf("backend model alias command does not contain guard %q", guard)
+		}
+	}
+	mountedRoot := false
+	for _, mount := range exec.Mounts {
+		if mount.Dest == "/aikit-root" {
+			mountedRoot = true
+			break
+		}
+	}
+	if !mountedRoot {
+		t.Fatal("backend model alias operation does not mount the image root")
+	}
+}
+
 func testArbitraryBackendPlan(platform specs.Platform) backendcatalog.Resolution {
 	const (
 		runtimeBaseRef = "registry.example.com/runtime/base@sha256:1111111111111111111111111111111111111111111111111111111111111111"

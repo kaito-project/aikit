@@ -194,6 +194,39 @@ func TestDefaultResolvesCurrentRunnerTuples(t *testing.T) {
 	}
 }
 
+func TestDefaultRejectsLiveQuarantinedTuples(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := Default()
+	if err != nil {
+		t.Fatalf("parse default catalog: %v", err)
+	}
+	resolver, err := NewResolver(catalog)
+	if err != nil {
+		t.Fatalf("create resolver: %v", err)
+	}
+
+	tests := []Request{
+		{
+			Family: "kokoro", Selector: SelectorDefault, Runtime: RuntimeCPU,
+			Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64},
+		},
+		{
+			Family: "sglang", Selector: SelectorNVIDIA, Runtime: RuntimeCUDA,
+			Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64},
+		},
+		{
+			Family: "sglang", Selector: Selector("nvidia-cuda-12"), Runtime: RuntimeCUDA,
+			Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64},
+		},
+	}
+	for _, request := range tests {
+		if _, err := resolver.Resolve(request); !stderrors.Is(err, ErrUnavailable) {
+			t.Errorf("resolve %s/%s error = %v, want ErrUnavailable", request.Family, request.Selector, err)
+		}
+	}
+}
+
 func TestDefaultCatalogRuntimePlanInvariants(t *testing.T) {
 	t.Parallel()
 
