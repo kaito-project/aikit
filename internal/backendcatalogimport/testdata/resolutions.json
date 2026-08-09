@@ -1,0 +1,61 @@
+{
+  "schemaVersion": "v1alpha1",
+  "references": [
+    {
+      "sourceRef": "registry.example/local-ai-backends:v4.8.2-cpu-llama-cpp",
+      "manifests": [
+        {
+          "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "platform": {
+            "os": "linux",
+            "architecture": "x86_64"
+          }
+        },
+        {
+          "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "platform": {
+            "os": "linux",
+            "architecture": "aarch64",
+            "variant": "v8"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "registry.example/local-ai-backends:v4.8.2-gpu-nvidia-cuda-12-llama-cpp",
+      "manifests": [
+        {
+          "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "platform": {
+            "os": "linux",
+            "architecture": "amd64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "registry.example/core:v4.8.2-amd64",
+      "manifests": [
+        {
+          "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "platform": {
+            "os": "linux",
+            "architecture": "amd64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "registry.example/core:v4.8.2-arm64",
+      "manifests": [
+        {
+          "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "platform": {
+            "os": "linux",
+            "architecture": "arm64"
+          }
+        }
+      ]
+    }
+  ]
+}

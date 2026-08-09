@@ -2,744 +2,313 @@ package inference
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
+	stderrors "errors"
 	"strings"
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/solver/pb"
-	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-func TestGetBackendTag(t *testing.T) {
+const (
+	testCPULlamaCppBackend = "cpu-llama-cpp"
+	testMinimumCUDA12      = "12.0"
+	testLocalAIVersion     = "v4.8.2"
+)
+
+func TestResolveBackendCurrentCompatibility(t *testing.T) {
 	tests := []struct {
-		name     string
-		backend  string
-		runtime  string
-		platform specs.Platform
-		want     string
+		name            string
+		config          *config.InferenceConfig
+		platform        specs.Platform
+		wantName        string
+		wantVersion     string
+		wantProfile     backendcatalog.TargetProfile
+		wantRunner      backendcatalog.RunnerProfile
+		wantFallbacks   int
+		wantMinimumCUDA string
 	}{
 		{
-			name:    "CPU llama-cpp default",
-			backend: utils.BackendLlamaCpp,
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: fmt.Sprintf("%s-cpu-llama-cpp", localAILlamaCppBackendVersion),
+			name:        "default CPU llama-cpp amd64",
+			config:      &config.InferenceConfig{},
+			platform:    specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64},
+			wantName:    testCPULlamaCppBackend,
+			wantVersion: testLocalAIVersion,
+			wantProfile: backendcatalog.TargetProfileCPU,
+			wantRunner:  backendcatalog.RunnerProfileLlamaCpp,
 		},
 		{
-			name:    "CPU diffusers falls back to v4 CPU llama-cpp",
-			backend: utils.BackendDiffusers,
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: fmt.Sprintf("%s-cpu-llama-cpp", localAILlamaCppBackendVersion),
+			name:        "default CPU llama-cpp arm64",
+			config:      &config.InferenceConfig{},
+			platform:    specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformARM64},
+			wantName:    testCPULlamaCppBackend,
+			wantVersion: testLocalAIVersion,
+			wantProfile: backendcatalog.TargetProfileCPU,
+			wantRunner:  backendcatalog.RunnerProfileLlamaCpp,
 		},
 		{
-			name:    "CPU vllm falls back to v4 CPU llama-cpp",
-			backend: utils.BackendVLLM,
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: fmt.Sprintf("%s-cpu-llama-cpp", localAILlamaCppBackendVersion),
-		},
-		{
-			name:    "CPU vllm-cpp amd64",
-			backend: utils.BackendVLLMCpp,
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: fmt.Sprintf("%s-cpu-vllm-cpp", localAIBinaryVersion),
-		},
-		{
-			name:    "CPU vllm-cpp arm64",
-			backend: utils.BackendVLLMCpp,
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformARM64,
-			},
-			want: fmt.Sprintf("%s-cpu-vllm-cpp", localAIBinaryVersion),
-		},
-		{
-			name:    "CUDA llama-cpp",
-			backend: utils.BackendLlamaCpp,
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: fmt.Sprintf("%s-gpu-nvidia-cuda-12-llama-cpp", localAILlamaCppBackendVersion),
-		},
-		{
-			name:    "CUDA diffusers",
-			backend: utils.BackendDiffusers,
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: fmt.Sprintf("%s-gpu-nvidia-cuda-12-diffusers", localAILegacyBackendVersion),
-		},
-		{
-			name:    "CUDA vllm",
-			backend: utils.BackendVLLM,
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: fmt.Sprintf("%s-gpu-nvidia-cuda-12-vllm", localAIBinaryVersion),
-		},
-		{
-			name:    "CUDA vllm-cpp",
-			backend: utils.BackendVLLMCpp,
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: fmt.Sprintf("%s-gpu-nvidia-cuda-13-vllm-cpp", localAIBinaryVersion),
-		},
-		{
-			name:    "Apple Silicon llama-cpp",
-			backend: utils.BackendLlamaCpp,
-			runtime: utils.RuntimeAppleSilicon,
-			platform: specs.Platform{
-				Architecture: utils.PlatformARM64,
-			},
-			want: fmt.Sprintf("%s-gpu-vulkan-llama-cpp", localAILegacyBackendVersion),
-		},
-		{
-			name:    "Unsupported backend falls back to CPU llama-cpp",
-			backend: "unknown",
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: fmt.Sprintf("%s-cpu-llama-cpp", localAILlamaCppBackendVersion),
-		},
-		{
-			name:    "CUDA unsupported backend falls back to CUDA llama-cpp",
-			backend: "unknown",
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: fmt.Sprintf("%s-gpu-nvidia-cuda-12-llama-cpp", localAILlamaCppBackendVersion),
-		},
-		{
-			name:    "ROCm llama-cpp",
-			backend: utils.BackendLlamaCpp,
-			runtime: utils.RuntimeROCm,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: fmt.Sprintf("%s-gpu-rocm-hipblas-llama-cpp", localAIROCmBackendVersion),
-		},
-		{
-			name:    "Empty backend name defaults to CPU llama-cpp",
-			backend: "",
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: fmt.Sprintf("%s-cpu-llama-cpp", localAILlamaCppBackendVersion),
-		},
-		{
-			name:    "Empty backend with CUDA runtime defaults to CUDA llama-cpp",
-			backend: "",
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: fmt.Sprintf("%s-gpu-nvidia-cuda-12-llama-cpp", localAILlamaCppBackendVersion),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := getBackendTag(tt.backend, tt.runtime, tt.platform)
-			if got != tt.want {
-				t.Errorf("getBackendTag() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestGetBackendVersion(t *testing.T) {
-	tests := []struct {
-		name     string
-		backend  string
-		runtime  string
-		platform specs.Platform
-		want     string
-	}{
-		{
-			name:    "llama-cpp defaults to v4 backend tags",
-			backend: utils.BackendLlamaCpp,
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: localAILlamaCppBackendVersion,
-		},
-		{
-			name:    "CPU diffusers falls back to v4 backend tags",
-			backend: utils.BackendDiffusers,
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: localAILlamaCppBackendVersion,
-		},
-		{
-			name:    "CPU vllm falls back to v4 backend tags",
-			backend: utils.BackendVLLM,
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: localAILlamaCppBackendVersion,
-		},
-		{
-			name:    "diffusers stays on legacy backend tags",
-			backend: utils.BackendDiffusers,
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: localAILegacyBackendVersion,
-		},
-		{
-			name:    "vllm uses current backend tags",
-			backend: utils.BackendVLLM,
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: localAIBinaryVersion,
-		},
-		{
-			name:    "CPU vllm-cpp uses current backend tags",
-			backend: utils.BackendVLLMCpp,
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformARM64,
-			},
-			want: localAIBinaryVersion,
-		},
-		{
-			name:    "CUDA vllm-cpp uses current backend tags",
-			backend: utils.BackendVLLMCpp,
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: localAIBinaryVersion,
-		},
-		{
-			name:    "apple silicon stays on legacy backend tags",
-			backend: utils.BackendLlamaCpp,
-			runtime: utils.RuntimeAppleSilicon,
-			platform: specs.Platform{
-				Architecture: utils.PlatformARM64,
-			},
-			want: localAILegacyBackendVersion,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := getBackendVersion(tt.backend, tt.runtime, tt.platform)
-			if got != tt.want {
-				t.Errorf("getBackendVersion() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestGetLocalAIArtifactVersion(t *testing.T) {
-	tests := []struct {
-		name     string
-		config   *config.InferenceConfig
-		platform specs.Platform
-		want     string
-	}{
-		{
-			name: "default llama-cpp uses current LocalAI binary",
+			name: "CUDA llama-cpp keeps explicit CPU fallback",
 			config: &config.InferenceConfig{
-				Runtime: "",
+				Runtime: utils.RuntimeNVIDIA,
 			},
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: localAIBinaryVersion,
+			platform:        specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64},
+			wantName:        "cuda12-llama-cpp",
+			wantVersion:     testLocalAIVersion,
+			wantProfile:     backendcatalog.TargetProfileCUDA12,
+			wantRunner:      backendcatalog.RunnerProfileLlamaCpp,
+			wantFallbacks:   1,
+			wantMinimumCUDA: testMinimumCUDA12,
 		},
 		{
-			name: "vllm uses current LocalAI binary",
-			config: &config.InferenceConfig{
-				Runtime:  utils.RuntimeNVIDIA,
-				Backends: []string{utils.BackendVLLM},
-			},
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: localAIBinaryVersion,
-		},
-		{
-			name: "CPU vllm-cpp uses current LocalAI binary",
-			config: &config.InferenceConfig{
-				Backends: []string{utils.BackendVLLMCpp},
-			},
-			platform: specs.Platform{
-				Architecture: utils.PlatformARM64,
-			},
-			want: localAIBinaryVersion,
-		},
-		{
-			name: "CUDA vllm-cpp uses current LocalAI binary",
-			config: &config.InferenceConfig{
-				Runtime:  utils.RuntimeNVIDIA,
-				Backends: []string{utils.BackendVLLMCpp},
-			},
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: localAIBinaryVersion,
-		},
-		{
-			name: "diffusers uses legacy LocalAI binary",
+			name: "CUDA diffusers uses promoted release entry",
 			config: &config.InferenceConfig{
 				Runtime:  utils.RuntimeNVIDIA,
 				Backends: []string{utils.BackendDiffusers},
 			},
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: localAILegacyBackendVersion,
+			platform:        specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64},
+			wantName:        "cuda12-diffusers",
+			wantVersion:     testLocalAIVersion,
+			wantProfile:     backendcatalog.TargetProfileCUDA12,
+			wantRunner:      backendcatalog.RunnerProfileHFConfig,
+			wantMinimumCUDA: testMinimumCUDA12,
 		},
 		{
-			name: "CPU diffusers falls back to current LocalAI binary",
+			name: "CUDA vllm",
 			config: &config.InferenceConfig{
-				Runtime:  "",
-				Backends: []string{utils.BackendDiffusers},
-			},
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: localAIBinaryVersion,
-		},
-		{
-			name: "CPU vllm falls back to current LocalAI binary",
-			config: &config.InferenceConfig{
-				Runtime:  "",
+				Runtime:  utils.RuntimeNVIDIA,
 				Backends: []string{utils.BackendVLLM},
 			},
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: localAIBinaryVersion,
+			platform:        specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64},
+			wantName:        "cuda12-vllm",
+			wantVersion:     testLocalAIVersion,
+			wantProfile:     backendcatalog.TargetProfileCUDA12,
+			wantRunner:      backendcatalog.RunnerProfileHFConfig,
+			wantMinimumCUDA: testMinimumCUDA12,
 		},
 		{
-			name: "apple silicon stays on legacy LocalAI binary",
+			name: "CPU vllm-cpp arm64",
 			config: &config.InferenceConfig{
-				Runtime: utils.RuntimeAppleSilicon,
+				Backends: []string{utils.BackendVLLMCpp},
 			},
-			platform: specs.Platform{
-				Architecture: utils.PlatformARM64,
-			},
-			want: localAILegacyBackendVersion,
+			platform:    specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformARM64},
+			wantName:    "cpu-vllm-cpp",
+			wantVersion: testLocalAIVersion,
+			wantProfile: backendcatalog.TargetProfileCPU,
+			wantRunner:  backendcatalog.RunnerProfileVLLMCpp,
 		},
 		{
-			name: "llama-cpp and vllm use current LocalAI binary",
-			config: &config.InferenceConfig{
-				Runtime:  utils.RuntimeNVIDIA,
-				Backends: []string{utils.BackendLlamaCpp, utils.BackendVLLM},
-			},
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: localAIBinaryVersion,
-		},
-		{
-			name: "mixed current and legacy backends choose legacy LocalAI binary",
+			name: "CUDA vllm-cpp selects upstream nvidia default",
 			config: &config.InferenceConfig{
 				Runtime:  utils.RuntimeNVIDIA,
-				Backends: []string{utils.BackendVLLM, utils.BackendDiffusers},
+				Backends: []string{utils.BackendVLLMCpp},
 			},
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: localAILegacyBackendVersion,
+			platform:        specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64},
+			wantName:        "cuda13-vllm-cpp",
+			wantVersion:     testLocalAIVersion,
+			wantProfile:     backendcatalog.TargetProfileCUDA13,
+			wantRunner:      backendcatalog.RunnerProfileVLLMCpp,
+			wantMinimumCUDA: "13.0",
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := getLocalAIArtifactVersion(tt.config, tt.platform)
-			if got != tt.want {
-				t.Errorf("getLocalAIArtifactVersion() = %v, want %v", got, tt.want)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resolved, err := ResolveBackend(test.config, test.platform)
+			if err != nil {
+				t.Fatalf("ResolveBackend() error = %v", err)
+			}
+			if resolved.Backend.InstallName != test.wantName {
+				t.Errorf("install name = %q, want %q", resolved.Backend.InstallName, test.wantName)
+			}
+			if resolved.Version != test.wantVersion {
+				t.Errorf("version = %q, want %q", resolved.Version, test.wantVersion)
+			}
+			if resolved.TargetProfile != test.wantProfile {
+				t.Errorf("target profile = %q, want %q", resolved.TargetProfile, test.wantProfile)
+			}
+			if resolved.RunnerProfile != test.wantRunner {
+				t.Errorf("runner profile = %q, want %q", resolved.RunnerProfile, test.wantRunner)
+			}
+			if len(resolved.Fallbacks) != test.wantFallbacks {
+				t.Errorf("fallbacks = %d, want %d", len(resolved.Fallbacks), test.wantFallbacks)
+			}
+			if resolved.MinimumCUDA != test.wantMinimumCUDA {
+				t.Errorf("minimum CUDA = %q, want %q", resolved.MinimumCUDA, test.wantMinimumCUDA)
+			}
+			for _, ref := range []string{resolved.Core.Ref, resolved.Backend.Ref} {
+				if !strings.Contains(ref, "@sha256:") || strings.Contains(ref, ":latest") {
+					t.Errorf("artifact ref is not immutable: %q", ref)
+				}
 			}
 		})
 	}
 }
 
-func TestInstallBackendVLLMHasOptimizedCopyWithoutCompatibilityPatch(t *testing.T) {
+func TestResolveBackendFailsClosed(t *testing.T) {
 	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
-	cfg := &config.InferenceConfig{
-		Runtime:  utils.RuntimeNVIDIA,
-		Backends: []string{utils.BackendVLLM},
+	tests := []struct {
+		name   string
+		config *config.InferenceConfig
+	}{
+		{
+			name:   "unknown family does not become llama-cpp",
+			config: &config.InferenceConfig{Backends: []string{"unknown"}},
+		},
+		{
+			name: "unsupported exact selector does not use nvidia default",
+			config: &config.InferenceConfig{
+				Runtime:           utils.RuntimeNVIDIA,
+				Backends:          []string{utils.BackendVLLMCpp},
+				BackendCapability: "nvidia-cuda-12",
+			},
+		},
+		{
+			name: "runtime mismatch is rejected",
+			config: &config.InferenceConfig{
+				Backends:          []string{utils.BackendLlamaCpp},
+				BackendCapability: "nvidia",
+			},
+		},
 	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ResolveBackend(test.config, platform)
+			if err == nil {
+				t.Fatal("ResolveBackend() succeeded, want error")
+			}
+			if !stderrors.Is(err, backendcatalog.ErrNotFound) && !strings.Contains(err.Error(), "requires runtime") {
+				t.Fatalf("ResolveBackend() error = %v, want exact resolution failure", err)
+			}
+		})
+	}
+}
+
+func TestInstallBackendsUsesOnlyCatalogArtifacts(t *testing.T) {
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	cfg := &config.InferenceConfig{Runtime: utils.RuntimeNVIDIA}
+	resolved, err := ResolveBackend(cfg, platform)
+	if err != nil {
+		t.Fatalf("resolve backend: %v", err)
+	}
+
 	base := llb.Image(utils.UbuntuBase, llb.Platform(platform))
-	state := installBackend(utils.BackendVLLM, cfg, platform, base, base)
+	state := installBackends(resolved, platform, base, base)
 	definition, err := state.Marshal(context.Background())
 	if err != nil {
-		t.Fatalf("marshal vLLM backend definition: %v", err)
+		t.Fatalf("marshal backend definition: %v", err)
 	}
 
-	backendDir := "/backends/cuda12-vllm"
-	var backendFileOpCount int
+	wantRefs := map[string]bool{resolved.Backend.Ref: false}
+	for _, fallback := range resolved.Fallbacks {
+		wantRefs[fallback.Ref] = false
+	}
+	metadataFiles := 0
+	primaryMetadataFiles := 0
 	for _, data := range definition.Def {
 		op := new(pb.Op)
 		if err := op.Unmarshal(data); err != nil {
 			t.Fatalf("unmarshal LLB op: %v", err)
 		}
-
-		if metadata, ok := definition.Metadata[digest.FromBytes(data)]; ok {
-			customName := metadata.Description["llb.customname"]
-			if strings.Contains(customName, "Patching vLLM backend") {
-				t.Fatalf("vLLM definition contains compatibility patch op %q", customName)
+		if source := op.GetSource(); source != nil {
+			for ref := range wantRefs {
+				if strings.Contains(source.Identifier, ref) {
+					wantRefs[ref] = true
+				}
+			}
+			if strings.Contains(source.Identifier, "local-ai-backends:") {
+				t.Errorf("backend source reconstructed a mutable tag: %q", source.Identifier)
 			}
 		}
-
-		if exec := op.GetExec(); exec != nil {
-			command := strings.Join(exec.Meta.Args, "\x00")
-			if strings.Contains(command, "flash_attn") || strings.Contains(command, "get_model_config()") {
-				t.Fatalf("vLLM definition contains obsolete compatibility patch command %q", command)
-			}
-		}
-
-		fileOp := op.GetFile()
-		if fileOp == nil {
+		file := op.GetFile()
+		if file == nil {
 			continue
 		}
-
-		var backendCopy, backendMetadata bool
-		for _, action := range fileOp.Actions {
-			if copyAction := action.GetCopy(); copyAction != nil && copyAction.Src == "/" && strings.HasPrefix(copyAction.Dest, backendDir) {
-				backendCopy = true
-				if copyAction.AllowWildcard {
-					t.Fatal("backend root copy unexpectedly enables wildcard handling")
+		for _, action := range file.Actions {
+			mkfile := action.GetMkfile()
+			if mkfile == nil || !strings.HasSuffix(mkfile.Path, "/metadata.json") {
+				continue
+			}
+			var metadata backendMetadata
+			if err := json.Unmarshal(mkfile.Data, &metadata); err != nil {
+				t.Fatalf("unmarshal backend metadata: %v", err)
+			}
+			if metadata.CatalogDigest != resolved.CatalogDigest || metadata.Artifact == "" {
+				t.Errorf("metadata = %+v, want catalog and artifact digests", metadata)
+			}
+			if metadata.Artifact == resolved.Backend.Ref {
+				primaryMetadataFiles++
+				if metadata.SourceRef != resolved.SourceRef || metadata.Version != resolved.Version || metadata.Selector != string(resolved.Selector) || metadata.Status != string(resolved.Status) {
+					t.Errorf("primary metadata = %+v, want selected entry provenance", metadata)
 				}
+			} else if metadata.SourceRef != "" || metadata.Version != "" || metadata.Selector != "" || metadata.Status != "" {
+				t.Errorf("fallback metadata contains primary-only provenance: %+v", metadata)
+			}
+			metadataFiles++
+		}
+	}
+
+	for ref, found := range wantRefs {
+		if !found {
+			t.Errorf("catalog artifact source %q is missing", ref)
+		}
+	}
+	if metadataFiles != 1+len(resolved.Fallbacks) {
+		t.Errorf("metadata files = %d, want %d", metadataFiles, 1+len(resolved.Fallbacks))
+	}
+	if primaryMetadataFiles != 1 {
+		t.Errorf("primary metadata files = %d, want 1", primaryMetadataFiles)
+	}
+}
+
+func TestInstallVLLMBackendKeepsCopyAndMetadataInOneFileOp(t *testing.T) {
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	cfg := &config.InferenceConfig{Runtime: utils.RuntimeNVIDIA, Backends: []string{utils.BackendVLLM}}
+	resolved, err := ResolveBackend(cfg, platform)
+	if err != nil {
+		t.Fatalf("resolve backend: %v", err)
+	}
+
+	base := llb.Image(utils.UbuntuBase, llb.Platform(platform))
+	state := installBackends(resolved, platform, base, base)
+	definition, err := state.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal vLLM backend definition: %v", err)
+	}
+
+	backendDir := "/backends/" + resolved.Backend.InstallName
+	fileOps := 0
+	for _, data := range definition.Def {
+		op := new(pb.Op)
+		if err := op.Unmarshal(data); err != nil {
+			t.Fatalf("unmarshal LLB op: %v", err)
+		}
+		file := op.GetFile()
+		if file == nil {
+			continue
+		}
+		var hasCopy, hasMetadata bool
+		for _, action := range file.Actions {
+			if copyAction := action.GetCopy(); copyAction != nil && copyAction.Src == "/" && strings.HasPrefix(copyAction.Dest, backendDir) {
+				hasCopy = true
 			}
 			if mkfile := action.GetMkfile(); mkfile != nil && mkfile.Path == backendDir+"/metadata.json" {
-				backendMetadata = true
+				hasMetadata = true
 			}
 		}
-
-		if backendCopy || backendMetadata {
-			backendFileOpCount++
-			if !backendCopy || !backendMetadata {
-				t.Fatal("backend root copy and metadata creation are not chained in the same file op")
+		if hasCopy || hasMetadata {
+			fileOps++
+			if !hasCopy || !hasMetadata {
+				t.Fatal("backend copy and metadata are not chained in one file operation")
 			}
 		}
 	}
-
-	if backendFileOpCount != 1 {
-		t.Fatalf("vLLM backend file op count = %d, want 1", backendFileOpCount)
-	}
-}
-
-func TestInstallBackendVLLMCppIsSelfContained(t *testing.T) {
-	tests := []struct {
-		name        string
-		config      *config.InferenceConfig
-		platform    specs.Platform
-		wantImage   string
-		wantBackend string
-	}{
-		{
-			name: "CPU arm64",
-			config: &config.InferenceConfig{
-				Backends: []string{utils.BackendVLLMCpp},
-			},
-			platform: specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformARM64},
-			wantImage: fmt.Sprintf(
-				"%s:%s-cpu-vllm-cpp",
-				utils.BackendOCIRegistry,
-				localAIBinaryVersion,
-			),
-			wantBackend: cpuVLLMCppBackend,
-		},
-		{
-			name: "CUDA amd64",
-			config: &config.InferenceConfig{
-				Runtime:  utils.RuntimeNVIDIA,
-				Backends: []string{utils.BackendVLLMCpp},
-			},
-			platform: specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64},
-			wantImage: fmt.Sprintf(
-				"%s:%s-gpu-nvidia-cuda-13-vllm-cpp",
-				utils.BackendOCIRegistry,
-				localAIBinaryVersion,
-			),
-			wantBackend: cuda13VLLMCppBackend,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			base := llb.Image(utils.UbuntuBase, llb.Platform(tt.platform))
-			state := installBackend(utils.BackendVLLMCpp, tt.config, tt.platform, base, base)
-			definition, err := state.Marshal(context.Background())
-			if err != nil {
-				t.Fatalf("marshal vllm-cpp backend definition: %v", err)
-			}
-
-			var foundImage, foundMetadata bool
-			for _, data := range definition.Def {
-				op := new(pb.Op)
-				if err := op.Unmarshal(data); err != nil {
-					t.Fatalf("unmarshal LLB op: %v", err)
-				}
-
-				if source := op.GetSource(); source != nil && strings.Contains(source.Identifier, tt.wantImage) {
-					foundImage = true
-				}
-				if exec := op.GetExec(); exec != nil {
-					command := strings.Join(exec.Meta.Args, "\x00")
-					for _, unexpected := range []string{"gcc libc6-dev", "python3", "pip install", "cuda-keyring"} {
-						if strings.Contains(command, unexpected) {
-							t.Fatalf("self-contained vllm-cpp backend installs %q in command %q", unexpected, command)
-						}
-					}
-				}
-
-				fileOp := op.GetFile()
-				if fileOp == nil {
-					continue
-				}
-				metadataPath := "/backends/" + tt.wantBackend + "/metadata.json"
-				for _, action := range fileOp.Actions {
-					mkfile := action.GetMkfile()
-					if mkfile == nil || mkfile.Path != metadataPath {
-						continue
-					}
-					metadata := string(mkfile.Data)
-					if !strings.Contains(metadata, `"alias": "vllm-cpp"`) ||
-						!strings.Contains(metadata, `"name": "`+tt.wantBackend+`"`) {
-						t.Fatalf("vllm-cpp metadata = %q", metadata)
-					}
-					foundMetadata = true
-				}
-			}
-
-			if !foundImage {
-				t.Errorf("backend image %q is missing", tt.wantImage)
-			}
-			if !foundMetadata {
-				t.Errorf("backend metadata for %q is missing", tt.wantBackend)
-			}
-		})
-	}
-}
-
-func TestGetDefaultBackends(t *testing.T) {
-	tests := []struct {
-		name    string
-		runtime string
-		want    []string
-	}{
-		{
-			name:    "empty runtime (CPU) defaults to llama-cpp",
-			runtime: "",
-			want:    []string{utils.BackendLlamaCpp},
-		},
-		{
-			name:    "CUDA runtime defaults to llama-cpp",
-			runtime: utils.RuntimeNVIDIA,
-			want:    []string{utils.BackendLlamaCpp},
-		},
-		{
-			name:    "Apple Silicon runtime defaults to llama-cpp",
-			runtime: utils.RuntimeAppleSilicon,
-			want:    []string{utils.BackendLlamaCpp},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := getDefaultBackends(tt.runtime)
-			if len(got) != len(tt.want) {
-				t.Errorf("getDefaultBackends() = %v, want %v", got, tt.want)
-				return
-			}
-			for i, backend := range got {
-				if backend != tt.want[i] {
-					t.Errorf("getDefaultBackends()[%d] = %v, want %v", i, backend, tt.want[i])
-				}
-			}
-		})
-	}
-}
-
-func TestGetBackendAlias(t *testing.T) {
-	tests := []struct {
-		name    string
-		backend string
-		want    string
-	}{
-		{
-			name:    "diffusers backend",
-			backend: utils.BackendDiffusers,
-			want:    "diffusers",
-		},
-		{
-			name:    "llama-cpp backend",
-			backend: utils.BackendLlamaCpp,
-			want:    "llama-cpp",
-		},
-		{
-			name:    "vllm backend",
-			backend: utils.BackendVLLM,
-			want:    "vllm",
-		},
-		{
-			name:    "vllm-cpp backend",
-			backend: utils.BackendVLLMCpp,
-			want:    "vllm-cpp",
-		},
-		{
-			name:    "unknown backend defaults to llama-cpp",
-			backend: "unknown",
-			want:    "llama-cpp",
-		},
-		{
-			name:    "empty backend defaults to llama-cpp",
-			backend: "",
-			want:    "llama-cpp",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := getBackendAlias(tt.backend)
-			if got != tt.want {
-				t.Errorf("getBackendAlias() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestGetBackendName(t *testing.T) {
-	tests := []struct {
-		name     string
-		backend  string
-		runtime  string
-		platform specs.Platform
-		want     string
-	}{
-		{
-			name:    "CPU llama-cpp",
-			backend: utils.BackendLlamaCpp,
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: "cpu-llama-cpp",
-		},
-		{
-			name:    "CPU vllm-cpp amd64",
-			backend: utils.BackendVLLMCpp,
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: "cpu-vllm-cpp",
-		},
-		{
-			name:    "CPU vllm-cpp arm64",
-			backend: utils.BackendVLLMCpp,
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformARM64,
-			},
-			want: "cpu-vllm-cpp",
-		},
-		{
-			name:    "CUDA llama-cpp",
-			backend: utils.BackendLlamaCpp,
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: "cuda12-llama-cpp",
-		},
-		{
-			name:    "CUDA diffusers",
-			backend: utils.BackendDiffusers,
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: "cuda12-diffusers",
-		},
-		{
-			name:    "CUDA vllm",
-			backend: utils.BackendVLLM,
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: "cuda12-vllm",
-		},
-		{
-			name:    "CUDA vllm-cpp",
-			backend: utils.BackendVLLMCpp,
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: "cuda13-vllm-cpp",
-		},
-		{
-			name:    "Apple Silicon llama-cpp",
-			backend: utils.BackendLlamaCpp,
-			runtime: utils.RuntimeAppleSilicon,
-			platform: specs.Platform{
-				Architecture: utils.PlatformARM64,
-			},
-			want: "gpu-vulkan-llama-cpp",
-		},
-		{
-			name:    "Unknown backend on CPU defaults to cpu-llama-cpp",
-			backend: "unknown",
-			runtime: "",
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: "cpu-llama-cpp",
-		},
-		{
-			name:    "Unknown backend on CUDA defaults to cuda12-llama-cpp",
-			backend: "unknown",
-			runtime: utils.RuntimeNVIDIA,
-			platform: specs.Platform{
-				Architecture: utils.PlatformAMD64,
-			},
-			want: "cuda12-llama-cpp",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := getBackendName(tt.backend, tt.runtime, tt.platform)
-			if got != tt.want {
-				t.Errorf("getBackendName() = %v, want %v", got, tt.want)
-			}
-		})
+	if fileOps != 1 {
+		t.Errorf("backend file operations = %d, want 1", fileOps)
 	}
 }

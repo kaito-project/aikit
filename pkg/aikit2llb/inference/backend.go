@@ -1,246 +1,95 @@
 package inference
 
 import (
+	"encoding/json"
 	"fmt"
 
-	"github.com/kaito-project/aikit/pkg/aikit/config"
-	"github.com/kaito-project/aikit/pkg/utils"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/moby/buildkit/client/llb"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-const (
-	defaultBackendName    = "llama-cpp"
-	cpuLlamaCppBackend    = "cpu-llama-cpp"
-	cpuVLLMCppBackend     = "cpu-vllm-cpp"
-	cuda12LlamaCppBackend = "cuda12-llama-cpp"
-	cuda13VLLMCppBackend  = "cuda13-vllm-cpp"
-	vulkanLlamaCppBackend = "gpu-vulkan-llama-cpp"
-)
+const defaultBackendName = "llama-cpp"
 
-func normalizeBackend(backend string) string {
-	switch backend {
-	case utils.BackendDiffusers, utils.BackendLlamaCpp, utils.BackendVLLM, utils.BackendVLLMCpp:
-		return backend
-	default:
-		return defaultBackendName
-	}
+type backendMetadata struct {
+	Alias         string `json:"alias"`
+	Name          string `json:"name"`
+	GalleryURL    string `json:"gallery_url"`
+	GalleryCommit string `json:"gallery_commit"`
+	CatalogDigest string `json:"catalog_digest"`
+	Artifact      string `json:"artifact"`
+	SourceRef     string `json:"source_ref,omitempty"`
+	Version       string `json:"version,omitempty"`
+	Selector      string `json:"selector,omitempty"`
+	Status        string `json:"status,omitempty"`
 }
 
-// getEffectiveBackend resolves the backend that will actually be installed for
-// the requested runtime/platform combination after any fallback.
-func getEffectiveBackend(backend, runtime string, platform specs.Platform) string {
-	normalizedBackend := normalizeBackend(backend)
-
-	if runtime == utils.RuntimeAppleSilicon {
-		return defaultBackendName
-	}
-
-	if runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
-		return normalizedBackend
-	}
-	if runtime == "" && normalizedBackend == utils.BackendVLLMCpp &&
-		(platform.Architecture == utils.PlatformAMD64 || platform.Architecture == utils.PlatformARM64) {
-		return normalizedBackend
-	}
-
-	return defaultBackendName
-}
-
-// getBackendVersion returns the backend OCI tag version to use for the
-// effective runtime/platform backend. Keep Diffusers and Apple Silicon pinned
-// to the legacy tag until matching v4 artifacts are validated.
-func getBackendVersion(backend, runtime string, platform specs.Platform) string {
-	if runtime == utils.RuntimeAppleSilicon {
-		return localAILegacyBackendVersion
-	}
-
-	switch getEffectiveBackend(backend, runtime, platform) {
-	case utils.BackendDiffusers:
-		return localAILegacyBackendVersion
-	case utils.BackendVLLM, utils.BackendVLLMCpp:
-		return localAIBinaryVersion
-	default:
-		return localAILlamaCppBackendVersion
-	}
-}
-
-// getLocalAIArtifactVersion returns the LocalAI artifact version to install for
-// the image. If any configured backend still requires legacy compatibility, use
-// the legacy LocalAI binary so legacy-pinned backends are not paired with v4.
-func getLocalAIArtifactVersion(c *config.InferenceConfig, platform specs.Platform) string {
-	backends := c.Backends
-	if len(backends) == 0 {
-		backends = getDefaultBackends(c.Runtime)
-	}
-
-	for _, backend := range backends {
-		if getBackendVersion(backend, c.Runtime, platform) == localAILegacyBackendVersion {
-			return localAILegacyBackendVersion
-		}
-	}
-
-	return localAIBinaryVersion
-}
-
-// getBackendTag returns the appropriate OCI tag for the given backend and runtime.
-func getBackendTag(backend, runtime string, platform specs.Platform) string {
-	baseTag := getBackendVersion(backend, runtime, platform)
-	backendName := getEffectiveBackend(backend, runtime, platform)
-
-	// Handle Apple Silicon - use Vulkan llama-cpp.
-	if runtime == utils.RuntimeAppleSilicon {
-		return fmt.Sprintf("%s-%s", baseTag, vulkanLlamaCppBackend)
-	}
-
-	// Handle CUDA runtime
-	if runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
-		switch backendName {
-		case "diffusers":
-			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-diffusers", baseTag)
-		case "vllm":
-			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-vllm", baseTag)
-		case utils.BackendVLLMCpp:
-			return fmt.Sprintf("%s-gpu-nvidia-cuda-13-vllm-cpp", baseTag)
-		case defaultBackendName:
-			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-llama-cpp", baseTag)
-		default:
-			// Fallback to llama-cpp for unsupported backends
-			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-llama-cpp", baseTag)
-		}
-	}
-
-	// Handle ROCm runtime.
-	if runtime == utils.RuntimeROCm && platform.Architecture == utils.PlatformAMD64 {
-		return fmt.Sprintf("%s-gpu-rocm-hipblas-llama-cpp", localAIROCmBackendVersion)
-	}
-
-	// Handle CPU runtime (default).
-	if backendName == utils.BackendVLLMCpp {
-		return fmt.Sprintf("%s-cpu-vllm-cpp", baseTag)
-	}
-	return fmt.Sprintf("%s-cpu-llama-cpp", baseTag)
-}
-
-// getBackendAlias returns the alias name for the backend (used in metadata.json).
-func getBackendAlias(backend string) string {
-	return normalizeBackend(backend)
-}
-
-// getBackendName returns the full backend directory name (used in metadata.json).
-func getBackendName(backend, runtime string, platform specs.Platform) string {
-	// Handle Apple Silicon - use Vulkan llama-cpp
-	if runtime == utils.RuntimeAppleSilicon {
-		return vulkanLlamaCppBackend
-	}
-
-	// Handle CUDA runtime
-	if runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
-		switch getEffectiveBackend(backend, runtime, platform) {
-		case utils.BackendDiffusers:
-			return "cuda12-diffusers"
-		case utils.BackendVLLM:
-			return "cuda12-vllm"
-		case utils.BackendVLLMCpp:
-			return cuda13VLLMCppBackend
-		case defaultBackendName:
-			return cuda12LlamaCppBackend
-		default:
-			// Fallback to llama-cpp for unsupported backends
-			return cuda12LlamaCppBackend
-		}
-	}
-
-	// Handle ROCm runtime
-	if runtime == utils.RuntimeROCm && platform.Architecture == utils.PlatformAMD64 {
-		// Only llama-cpp backend is supported for ROCm
-		return "hipblas-llama-cpp"
-	}
-
-	// Handle CPU runtime (default)
-	if getEffectiveBackend(backend, runtime, platform) == utils.BackendVLLMCpp {
-		return cpuVLLMCppBackend
-	}
-	return cpuLlamaCppBackend
-}
-
-// installBackend downloads and installs a backend from OCI registry.
-func installBackend(backend string, c *config.InferenceConfig, platform specs.Platform, s llb.State, merge llb.State) llb.State {
-	tag := getBackendTag(backend, c.Runtime, platform)
-
-	// Install dependencies for Python-based backends
-	if backend == utils.BackendDiffusers {
+// installBackends installs the exact primary and fallback artifacts from a resolved catalog entry.
+func installBackends(backend backendcatalog.Resolution, platform specs.Platform, s llb.State, merge llb.State) llb.State {
+	switch backend.DependencyProfile {
+	case backendcatalog.DependencyProfileDiffusers:
 		merge = installDiffusersDependencies(s, merge)
-	}
-	if backend == utils.BackendVLLM {
+	case backendcatalog.DependencyProfileVLLM:
 		merge = installVLLMDependencies(s, merge)
+	case backendcatalog.DependencyProfileNone:
+		// No dependency layer is required.
+	default:
+		panic(fmt.Sprintf("unsupported validated dependency profile %q", backend.DependencyProfile))
 	}
 
-	// Build the OCI image reference
-	ociImage := fmt.Sprintf("%s:%s", utils.BackendOCIRegistry, tag)
+	merge = installBackendArtifact(backend, backend.Backend, true, platform, s, merge)
+	for _, fallback := range backend.Fallbacks {
+		merge = installBackendArtifact(backend, fallback, false, platform, s, merge)
+	}
 
-	// Create the backends directory
+	return merge
+}
+
+func installBackendArtifact(
+	backend backendcatalog.Resolution,
+	artifact backendcatalog.BackendArtifact,
+	primary bool,
+	platform specs.Platform,
+	s llb.State,
+	merge llb.State,
+) llb.State {
 	savedState := s
-	backendName := getBackendName(backend, c.Runtime, platform)
-	backendDir := fmt.Sprintf("/backends/%s", backendName)
+	backendDir := "/backends/" + artifact.InstallName
 
-	// Download the backend from OCI registry and extract to specific backend directory.
 	backendState := llb.Image(
-		ociImage,
+		artifact.Ref,
 		llb.Platform(platform),
-		llb.WithCustomName(fmt.Sprintf("Installing backend %s from %s", backend, ociImage)),
+		llb.WithCustomName(fmt.Sprintf("Installing backend %s from %s", backend.Family, artifact.Ref)),
 	)
 
-	// Copy the backend files and create metadata.json in one file operation.
-	backendAlias := getBackendAlias(backend)
-	metadataContent := fmt.Sprintf(`{
-  "alias": "%s",
-  "name": "%s",
-  "gallery_url": "github:mudler/LocalAI/backend/index.yaml@master"
-}`, backendAlias, backendName)
+	artifactMetadata := backendMetadata{
+		Alias:         backend.Family,
+		Name:          artifact.InstallName,
+		GalleryURL:    backend.Source.Repository,
+		GalleryCommit: backend.Source.Revision,
+		CatalogDigest: backend.CatalogDigest,
+		Artifact:      artifact.Ref,
+	}
+	if primary {
+		artifactMetadata.SourceRef = backend.SourceRef
+		artifactMetadata.Version = backend.Version
+		artifactMetadata.Selector = string(backend.Selector)
+		artifactMetadata.Status = string(backend.Status)
+	}
+	metadata, err := json.MarshalIndent(artifactMetadata, "", "  ")
+	if err != nil {
+		// All fields are strings from a validated catalog, so marshaling cannot fail.
+		panic(fmt.Sprintf("marshaling validated backend metadata: %v", err))
+	}
+	metadata = append(metadata, '\n')
 
 	s = s.File(
 		llb.Copy(backendState, "/", backendDir+"/", &llb.CopyInfo{
 			CreateDestPath: true,
-		}).Mkfile(fmt.Sprintf("%s/metadata.json", backendDir), 0o644, []byte(metadataContent)),
-		llb.WithCustomName(fmt.Sprintf("Creating metadata.json for backend %s", backendName)),
+		}).Mkfile(backendDir+"/metadata.json", 0o644, metadata),
+		llb.WithCustomName(fmt.Sprintf("Creating metadata.json for backend %s", artifact.InstallName)),
 	)
 
 	diff := llb.Diff(savedState, s)
 	return llb.Merge([]llb.State{merge, diff})
-}
-
-// getDefaultBackends returns the default backends based on runtime if no backends are specified.
-func getDefaultBackends(_ string) []string {
-	return []string{utils.BackendLlamaCpp}
-}
-
-// installBackends installs all specified backends or default backends if none specified.
-func installBackends(c *config.InferenceConfig, platform specs.Platform, s llb.State, merge llb.State) llb.State {
-	backends := c.Backends
-	if len(backends) == 0 {
-		backends = getDefaultBackends(c.Runtime)
-	}
-
-	for _, backend := range backends {
-		merge = installBackend(backend, c, platform, s, merge)
-
-		// For llama-cpp backend with CUDA runtime, also install the CPU version for fallback
-		if backend == utils.BackendLlamaCpp && c.Runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
-			// Create a modified config with CPU runtime to install the CPU version
-			cpuConfig := *c
-			cpuConfig.Runtime = "cpu" // Use CPU runtime to force CPU backend installation
-			merge = installBackend(backend, &cpuConfig, platform, s, merge)
-		}
-
-		// For llama-cpp backend with ROCm runtime, also install the CPU version for fallback
-		if backend == utils.BackendLlamaCpp && c.Runtime == utils.RuntimeROCm && platform.Architecture == utils.PlatformAMD64 {
-			// Create a modified config with CPU runtime to install the CPU version
-			cpuConfig := *c
-			cpuConfig.Runtime = "cpu" // Use CPU runtime to force CPU backend installation
-			merge = installBackend(backend, &cpuConfig, platform, s, merge)
-		}
-	}
-
-	return merge
 }

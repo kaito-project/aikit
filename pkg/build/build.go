@@ -7,13 +7,13 @@ import (
 	"math"
 	"net/url"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/containerd/platforms"
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	"github.com/kaito-project/aikit/pkg/aikit2llb/finetune"
 	"github.com/kaito-project/aikit/pkg/aikit2llb/inference"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/packager"
 	"github.com/kaito-project/aikit/pkg/utils"
 	controlapi "github.com/moby/buildkit/api/services/control"
@@ -151,18 +151,11 @@ func buildInference(ctx context.Context, c client.Client, cfg *config.InferenceC
 		targetPlatforms = []*specs.Platform{&defaultBuildPlatform}
 	}
 
-	// Validate backends against target platforms
-	err = validateBackendPlatformCompatibility(cfg, targetPlatforms)
+	// Resolve every target before starting any target-image solve. This makes an
+	// unsupported tuple fail atomically and prevents per-platform fallback drift.
+	backendPlans, err := resolveBackendPlans(cfg, targetPlatforms)
 	if err != nil {
-		return nil, errors.Wrap(err, "validating backend platform compatibility")
-	}
-
-	if cfg.Runtime == utils.RuntimeAppleSilicon {
-		for _, tp := range targetPlatforms {
-			if tp.Architecture != utils.PlatformARM64 {
-				return nil, errors.New("apple silicon runtime only supports arm64 platform")
-			}
-		}
+		return nil, errors.Wrap(err, "resolving backend catalog")
 	}
 
 	isMultiPlatform := len(targetPlatforms) > 1
@@ -175,9 +168,9 @@ func buildInference(ctx context.Context, c client.Client, cfg *config.InferenceC
 
 	// Solve for all target platforms in parallel
 	for i, tp := range targetPlatforms {
-		func(i int, platform *specs.Platform) {
+		func(i int, platform *specs.Platform, backend backendcatalog.Resolution) {
 			eg.Go(func() (err error) {
-				result, err := buildImage(ctx, c, cfg, &d2llb.ConvertOpt{
+				result, err := buildImage(ctx, c, cfg, backend, &d2llb.ConvertOpt{
 					MetaResolver:   c,
 					TargetPlatform: platform,
 					Config: dockerui.Config{
@@ -195,7 +188,7 @@ func buildInference(ctx context.Context, c client.Client, cfg *config.InferenceC
 
 				return nil
 			})
-		}(i, tp)
+		}(i, tp, backendPlans[i])
 	}
 
 	if err := eg.Wait(); err != nil {
@@ -246,14 +239,20 @@ func (br *buildResult) AddToClientResult(cr *client.Result) {
 }
 
 // buildImage builds an image from the given aikitfile config.
-func buildImage(ctx context.Context, c client.Client, cfg *config.InferenceConfig, convertOpts *d2llb.ConvertOpt) (*buildResult, error) {
+func buildImage(
+	ctx context.Context,
+	c client.Client,
+	cfg *config.InferenceConfig,
+	backend backendcatalog.Resolution,
+	convertOpts *d2llb.ConvertOpt,
+) (*buildResult, error) {
 	result := buildResult{
 		Platform:      convertOpts.TargetPlatform,
 		MultiPlatform: convertOpts.MultiPlatformRequested,
 	}
 
 	buildPlatform := buildPlatformFromConvertOpt(convertOpts)
-	state, image, err := inference.Aikit2LLBWithPlatforms(cfg, &buildPlatform, convertOpts.TargetPlatform)
+	state, image, err := inference.Aikit2LLBWithBackend(cfg, &buildPlatform, convertOpts.TargetPlatform, backend)
 	if err != nil {
 		return nil, err
 	}
@@ -294,6 +293,39 @@ func buildImage(ctx context.Context, c client.Client, cfg *config.InferenceConfi
 	result.ExportPlatform.ID = platforms.Format(result.ExportPlatform.Platform)
 
 	return &result, nil
+}
+
+func resolveBackendPlans(cfg *config.InferenceConfig, targetPlatforms []*specs.Platform) ([]backendcatalog.Resolution, error) {
+	catalog, err := backendcatalog.Default()
+	if err != nil {
+		return nil, errors.Wrap(err, "loading embedded catalog")
+	}
+	resolver, err := backendcatalog.NewResolver(catalog)
+	if err != nil {
+		return nil, errors.Wrap(err, "indexing embedded catalog")
+	}
+
+	plans := make([]backendcatalog.Resolution, len(targetPlatforms))
+	for i, platform := range targetPlatforms {
+		if platform == nil {
+			return nil, errors.New("target platform is required")
+		}
+		plans[i], err = inference.ResolveBackendWithResolver(cfg, *platform, resolver)
+		if err != nil {
+			return nil, err
+		}
+		if plans[i].Status == backendcatalog.StatusExperimental {
+			logrus.Warnf(
+				"backend %s selector %s for %s/%s is experimental",
+				plans[i].Family,
+				plans[i].Selector,
+				platform.OS,
+				platform.Architecture,
+			)
+		}
+	}
+
+	return plans, nil
 }
 
 func buildPlatformFromConvertOpt(convertOpts *d2llb.ConvertOpt) specs.Platform {
@@ -821,103 +853,11 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 		return errors.New("only one backend is supported at this time")
 	}
 
-	if slices.Contains(c.Backends, utils.BackendDiffusers) && c.Runtime != utils.RuntimeNVIDIA {
-		return errors.New("diffusers backend only supports nvidia cuda runtime. please add 'runtime: cuda' to your aikitfile.yaml")
-	}
-
-	if slices.Contains(c.Backends, utils.BackendVLLM) && c.Runtime != utils.RuntimeNVIDIA {
-		return errors.New("vllm backend only supports nvidia cuda runtime. please add 'runtime: cuda' to your aikitfile.yaml")
-	}
-
-	if c.Runtime == utils.RuntimeAppleSilicon && len(c.Backends) > 0 {
-		for _, backend := range c.Backends {
-			if backend != utils.BackendLlamaCpp {
-				return errors.New("apple silicon runtime only supports llama-cpp backend")
-			}
-		}
-	}
-
-	// Runner mode (backends without models) is not supported on Apple Silicon
-	// because the base image is Fedora-based and runner dependencies require apt-get.
-	if c.Runtime == utils.RuntimeAppleSilicon && len(c.Backends) > 0 && len(c.Models) == 0 {
-		return errors.New("runner mode (backends without models) is not supported on apple silicon runtime")
-	}
-
-	if c.Runtime == utils.RuntimeROCm && len(c.Backends) > 0 {
-		for _, backend := range c.Backends {
-			if backend != utils.BackendLlamaCpp {
-				return errors.New("rocm runtime only supports llama-cpp backend")
-			}
-		}
-	}
-
-	backends := []string{utils.BackendLlamaCpp, utils.BackendDiffusers, utils.BackendVLLM, utils.BackendVLLMCpp}
-	for _, b := range c.Backends {
-		if !slices.Contains(backends, b) {
-			return errors.Errorf("backend %s is not supported", b)
-		}
-	}
-
-	runtimes := []string{"", utils.RuntimeNVIDIA, utils.RuntimeROCm, utils.RuntimeAppleSilicon}
-	if !slices.Contains(runtimes, c.Runtime) {
+	switch c.Runtime {
+	case "", utils.RuntimeNVIDIA, utils.RuntimeROCm, utils.RuntimeAppleSilicon:
+		// Exact compatibility is enforced by catalog resolution for each platform.
+	default:
 		return errors.Errorf("runtime %s is not supported", c.Runtime)
-	}
-
-	return nil
-}
-
-// validateBackendPlatformCompatibility validates that backends are compatible with target platforms.
-func validateBackendPlatformCompatibility(c *config.InferenceConfig, targetPlatforms []*specs.Platform) error {
-	if slices.Contains(c.Backends, utils.BackendVLLMCpp) {
-		for _, tp := range targetPlatforms {
-			if tp != nil && tp.OS != utils.PlatformLinux {
-				return errors.Errorf("vllm-cpp backend is not supported on %s. only linux is supported", tp.OS)
-			}
-		}
-
-		switch c.Runtime {
-		case "":
-			for _, tp := range targetPlatforms {
-				if tp != nil && tp.Architecture != utils.PlatformAMD64 && tp.Architecture != utils.PlatformARM64 {
-					return errors.Errorf("vllm-cpp backend with CPU runtime is not supported on %s architecture", tp.Architecture)
-				}
-			}
-		case utils.RuntimeNVIDIA:
-			for _, tp := range targetPlatforms {
-				if tp != nil && tp.Architecture != utils.PlatformAMD64 {
-					return errors.Errorf("vllm-cpp backend with cuda runtime is not supported on %s architecture. only amd64 is supported", tp.Architecture)
-				}
-			}
-		default:
-			return errors.Errorf("vllm-cpp backend does not support %s runtime", c.Runtime)
-		}
-	}
-
-	// Check if any target platform is ARM64
-	hasARM64Platform := false
-	for _, tp := range targetPlatforms {
-		if tp != nil && tp.Architecture == utils.PlatformARM64 {
-			hasARM64Platform = true
-			break
-		}
-	}
-
-	// ROCm runtime only supports amd64.
-	if c.Runtime == utils.RuntimeROCm && hasARM64Platform {
-		return errors.New("rocm runtime is only supported on linux/amd64 platform")
-	}
-
-	// If we have ARM64 platforms, validate backend compatibility.
-	if hasARM64Platform {
-		for _, backend := range c.Backends {
-			if backend == utils.BackendLlamaCpp {
-				continue
-			}
-			if backend == utils.BackendVLLMCpp && c.Runtime == "" {
-				continue
-			}
-			return errors.Errorf("backend %s with runtime %q is not supported on arm64 platform. only llama-cpp and CPU vllm-cpp support arm64", backend, c.Runtime)
-		}
 	}
 
 	return nil

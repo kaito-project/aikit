@@ -1,0 +1,466 @@
+package backendcatalogimport
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
+)
+
+func TestGenerateDeterministicCatalog(t *testing.T) {
+	source := readFixture(t, "testdata/index.yaml")
+	resolver := readSnapshot(t, "testdata/resolutions.json")
+	options := GenerateOptions{
+		Source:          fixturePin(source),
+		Version:         LocalAIVersion,
+		CoreRefTemplate: fixtureCoreRefTemplate,
+		Resolver:        resolver,
+	}
+
+	first, err := Generate(context.Background(), source, options)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	second, err := Generate(context.Background(), source, options)
+	if err != nil {
+		t.Fatalf("Generate() second error = %v", err)
+	}
+	firstJSON, err := Marshal(first)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	secondJSON, err := Marshal(second)
+	if err != nil {
+		t.Fatalf("Marshal() second error = %v", err)
+	}
+	if !bytes.Equal(firstJSON, secondJSON) {
+		t.Fatal("Generate() output is not deterministic")
+	}
+	if _, err := backendcatalog.Parse(firstJSON); err != nil {
+		t.Fatalf("generated output does not parse as pkg/backendcatalog v1: %v\n%s", err, firstJSON)
+	}
+
+	if len(first.Entries) != 3 {
+		t.Fatalf("entry count = %d, want 3", len(first.Entries))
+	}
+	amd64CPU := first.Entries[0]
+	if amd64CPU.Family != runnerLlamaCpp || amd64CPU.Selector != selectorDefault || amd64CPU.Platform.Architecture != architectureAMD64 {
+		t.Fatalf("first entry tuple = %s/%s/%s, want llama-cpp/default/linux/amd64", amd64CPU.Family, amd64CPU.Selector, amd64CPU.Platform.key())
+	}
+	if amd64CPU.Backend.Ref != "registry.example/local-ai-backends@"+fixtureDigestA {
+		t.Errorf("CPU backend ref = %q", amd64CPU.Backend.Ref)
+	}
+	if amd64CPU.Core.Ref != "registry.example/core@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" {
+		t.Errorf("CPU core ref = %q", amd64CPU.Core.Ref)
+	}
+	if got, want := strings.Join(amd64CPU.Workloads, ","), "cpu,llm,text-to-text"; got != want {
+		t.Errorf("workloads = %q, want %q", got, want)
+	}
+	arm64CPU := first.Entries[1]
+	if arm64CPU.Platform != (Platform{OS: platformLinux, Architecture: architectureARM64}) {
+		t.Fatalf("second entry platform = %#v, want normalized linux/arm64", arm64CPU.Platform)
+	}
+	if arm64CPU.Backend.Ref != "registry.example/local-ai-backends@"+fixtureDigestB {
+		t.Errorf("arm64 backend ref = %q", arm64CPU.Backend.Ref)
+	}
+	if arm64CPU.Core.Ref != "registry.example/core@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" {
+		t.Errorf("arm64 core ref = %q", arm64CPU.Core.Ref)
+	}
+
+	nvidia := first.Entries[2]
+	if nvidia.Selector != selectorNVIDIA || nvidia.TargetProfile != targetCUDA12 || nvidia.MinimumCUDA != minimumCUDA12 {
+		t.Fatalf("NVIDIA policy = selector %q target %q minimumCUDA %q", nvidia.Selector, nvidia.TargetProfile, nvidia.MinimumCUDA)
+	}
+	if len(nvidia.Fallbacks) != 1 || nvidia.Fallbacks[0] != amd64CPU.Backend {
+		t.Fatalf("NVIDIA fallbacks = %#v, want %#v", nvidia.Fallbacks, amd64CPU.Backend)
+	}
+	if strings.Contains(string(firstJSON), "development") || strings.Contains(string(firstJSON), "latest-") {
+		t.Fatalf("generated catalog contains development or mutable latest data:\n%s", firstJSON)
+	}
+}
+
+func TestParseSourceMergeKeysAndDuplicateRules(t *testing.T) {
+	source := readFixture(t, "testdata/index.yaml")
+	entries, err := parseSource(source, fixturePin(source))
+	if err != nil {
+		t.Fatalf("parseSource() error = %v", err)
+	}
+	if len(entries) != 6 {
+		t.Fatalf("parseSource() entry count = %d, want 6 after exact duplicate collapse", len(entries))
+	}
+	var concrete sourceEntry
+	for _, entry := range entries {
+		if entry.Name == fixtureCPULlamaCpp {
+			concrete = entry
+			break
+		}
+	}
+	if concrete.URI == "" || concrete.Alias != runnerLlamaCpp || concrete.Capabilities[selectorNVIDIA] != "cuda12-llama-cpp" {
+		t.Fatalf("merge-expanded concrete entry = %#v", concrete)
+	}
+
+	conflicting := []byte("- name: duplicate\n  uri: registry.example/repo:latest-one\n- name: duplicate\n  uri: registry.example/repo:latest-two\n")
+	if _, err := parseSource(conflicting, fixturePin(conflicting)); err == nil || !strings.Contains(err.Error(), "conflicting entries") {
+		t.Fatalf("parseSource() conflict error = %v", err)
+	}
+}
+
+func TestVerifySourceRejectsWrongPinAndUnknownYAMLFields(t *testing.T) {
+	source := []byte("- name: valid\n")
+	pin := fixturePin(source)
+	pin.SHA256 = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	if _, err := parseSource(source, pin); err == nil || !strings.Contains(err.Error(), "sha256 mismatch") {
+		t.Fatalf("parseSource() digest error = %v", err)
+	}
+
+	unknown := []byte("- name: valid\n  executable: surprise\n")
+	if _, err := parseSource(unknown, fixturePin(unknown)); err == nil || !strings.Contains(err.Error(), "unknown field \"executable\"") {
+		t.Fatalf("parseSource() unknown field error = %v", err)
+	}
+
+	duplicateCapability := []byte("- name: duplicate-capability\n  capabilities:\n    default: cpu-one\n    default: cpu-two\n")
+	if _, err := parseSource(duplicateCapability, fixturePin(duplicateCapability)); err == nil || !strings.Contains(err.Error(), "duplicate capability selector") {
+		t.Fatalf("parseSource() duplicate capability error = %v", err)
+	}
+
+	badRevisionPin := fixturePin(source)
+	badRevisionPin.Revision = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+	if _, err := parseSource(source, badRevisionPin); err == nil || !strings.Contains(err.Error(), "not a full Git commit") {
+		t.Fatalf("parseSource() revision error = %v", err)
+	}
+}
+
+func TestPolicyInferencePreservesAcceleratorSemantics(t *testing.T) {
+	tests := []struct {
+		name        string
+		selector    string
+		target      string
+		platform    Platform
+		wantRuntime string
+		wantTarget  string
+		wantCUDA    string
+	}{
+		{name: "Intel", selector: targetIntel, target: "intel-sycl-f16-demo", platform: Platform{OS: platformLinux, Architecture: architectureAMD64}, wantRuntime: runtimeCPU, wantTarget: targetIntel},
+		{name: "Metal", selector: "metal-darwin-arm64", target: "metal-demo", platform: Platform{OS: fixtureOSDarwin, Architecture: architectureARM64}, wantRuntime: runtimeApple, wantTarget: targetMetal},
+		{name: "Vulkan", selector: targetVulkan, target: "vulkan-demo", platform: Platform{OS: platformLinux, Architecture: architectureAMD64}, wantRuntime: runtimeApple, wantTarget: targetVulkan},
+		{name: "L4T CUDA 12", selector: "nvidia-l4t", target: "nvidia-l4t-arm64-demo", platform: Platform{OS: platformLinux, Architecture: architectureARM64}, wantRuntime: runtimeCUDA, wantTarget: targetL4TCUDA12, wantCUDA: minimumCUDA12},
+		{name: "L4T CUDA 13", selector: "nvidia-l4t-cuda-13", target: "cuda13-nvidia-l4t-arm64-demo", platform: Platform{OS: platformLinux, Architecture: architectureARM64}, wantRuntime: runtimeCUDA, wantTarget: targetL4TCUDA13, wantCUDA: minimumCUDA13},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			policy, err := policyFor(fixtureFamilyDemo, test.selector, test.target, test.platform)
+			if err != nil {
+				t.Fatalf("policyFor() error = %v", err)
+			}
+			if policy.Runtime != test.wantRuntime || policy.TargetProfile != test.wantTarget || policy.MinimumCUDA != test.wantCUDA {
+				t.Fatalf("policyFor() = runtime %q target %q CUDA %q, want %q %q %q", policy.Runtime, policy.TargetProfile, policy.MinimumCUDA, test.wantRuntime, test.wantTarget, test.wantCUDA)
+			}
+		})
+	}
+}
+
+func TestStableVersionReference(t *testing.T) {
+	got, err := stableVersionReference("quay.io/example/backend:latest-gpu-demo", "v4.8.2")
+	if err != nil {
+		t.Fatalf("stableVersionReference() error = %v", err)
+	}
+	if want := "quay.io/example/backend:v4.8.2-gpu-demo"; got != want {
+		t.Fatalf("stableVersionReference() = %q, want %q", got, want)
+	}
+	if _, err := stableVersionReference("quay.io/example/backend:master-gpu-demo", "v4.8.2"); err == nil {
+		t.Fatal("stableVersionReference() accepted a development tag")
+	}
+	if _, err := stableVersionReference("quay.io/example/backend", "v4.8.2"); err == nil {
+		t.Fatal("stableVersionReference() accepted a reference without a tag")
+	}
+}
+
+func TestGenerateRejectsIncompleteStableMappings(t *testing.T) {
+	tests := []struct {
+		name    string
+		source  string
+		wantErr string
+	}{
+		{
+			name:    "missing concrete target",
+			source:  "- name: demo\n  capabilities:\n    default: cpu-missing\n",
+			wantErr: "targets missing concrete entry",
+		},
+		{
+			name:    "development selectors are not stable inventory",
+			source:  "- name: demo-development\n  capabilities:\n    default: cpu-demo-development\n- name: cpu-demo-development\n  uri: registry.example/repo:master-cpu-demo\n",
+			wantErr: "no stable selectable entries",
+		},
+		{
+			name:    "stable target must use latest tag",
+			source:  "- name: demo\n  capabilities:\n    default: cpu-demo\n- name: cpu-demo\n  uri: registry.example/repo:master-cpu-demo\n",
+			wantErr: "does not use a latest tag",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := []byte(test.source)
+			_, err := Generate(context.Background(), source, GenerateOptions{
+				Source:          fixturePin(source),
+				Version:         LocalAIVersion,
+				CoreRefTemplate: fixtureCoreRefTemplate,
+				Resolver:        failingResolver{},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Generate() error = %v, want containing %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestGenerateAcceptsMissingWorkloadsAndPlatformlessSpecializedCore(t *testing.T) {
+	source := []byte("- name: demo\n  capabilities:\n    default: cpu-demo\n- name: cpu-demo\n  uri: registry.example/repo:latest-cpu-demo\n")
+	resolver := staticResolver{
+		"registry.example/repo:v4.8.2-cpu-demo": {{
+			Digest:   fixtureDigestA,
+			Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
+		}},
+		"registry.example/core:v4.8.2-amd64": {{
+			Digest: fixtureDigestB,
+		}},
+	}
+	catalog, err := Generate(context.Background(), source, GenerateOptions{
+		Source:          fixturePin(source),
+		Version:         LocalAIVersion,
+		CoreRefTemplate: fixtureCoreRefTemplate,
+		Resolver:        resolver,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if len(catalog.Entries) != 1 || len(catalog.Entries[0].Workloads) != 0 {
+		t.Fatalf("entries/workloads = %d/%v, want one entry with no workloads", len(catalog.Entries), catalog.Entries[0].Workloads)
+	}
+	data, err := Marshal(catalog)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if _, err := backendcatalog.Parse(data); err != nil {
+		t.Fatalf("platformless specialized core output is invalid: %v", err)
+	}
+}
+
+func TestGenerateAppliesReviewedUnavailableSourcePolicyStrictly(t *testing.T) {
+	const (
+		availableRef = "registry.example/repo:v4.8.2-cpu-demo"
+		missingRef   = "quay.io/go-skynet/local-ai-backends:v4.8.2-cpu-kokoros"
+		coreRef      = "registry.example/core:v4.8.2-amd64"
+	)
+	source := []byte(`- name: demo
+  capabilities:
+    default: cpu-demo
+- name: cpu-demo
+  uri: registry.example/repo:latest-cpu-demo
+- name: kokoros
+  capabilities:
+    default: cpu-kokoros
+- name: cpu-kokoros
+  uri: quay.io/go-skynet/local-ai-backends:latest-cpu-kokoros
+`)
+	manifest := ResolvedManifest{
+		Digest:   fixtureDigestA,
+		Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
+	}
+	coreManifest := ResolvedManifest{
+		Digest: fixtureDigestB,
+	}
+	options := GenerateOptions{
+		Source:          fixturePin(source),
+		Version:         LocalAIVersion,
+		CoreRefTemplate: fixtureCoreRefTemplate,
+	}
+
+	t.Run("expected missing", func(t *testing.T) {
+		options.Resolver = scriptedResolver{
+			manifests: staticResolver{availableRef: {manifest}, coreRef: {coreManifest}},
+			errors: map[string]error{
+				missingRef: &ResolutionError{Reference: missingRef, Class: resolutionErrorNotFound, Err: os.ErrNotExist},
+			},
+		}
+		catalog, err := Generate(context.Background(), source, options)
+		if err != nil {
+			t.Fatalf("Generate() error = %v", err)
+		}
+		if len(catalog.Entries) != 1 || catalog.Entries[0].Family != fixtureFamilyDemo {
+			t.Fatalf("Generate() entries = %#v, want only available demo", catalog.Entries)
+		}
+	})
+
+	t.Run("stale policy resolved", func(t *testing.T) {
+		options.Resolver = scriptedResolver{manifests: staticResolver{
+			availableRef: {manifest},
+			missingRef:   {manifest},
+			coreRef:      {coreManifest},
+		}}
+		_, err := Generate(context.Background(), source, options)
+		if err == nil || !strings.Contains(err.Error(), "resolved successfully; remove stale exclusion policy") {
+			t.Fatalf("Generate() stale policy error = %v", err)
+		}
+	})
+
+	t.Run("unexpected error class", func(t *testing.T) {
+		options.Resolver = scriptedResolver{
+			manifests: staticResolver{availableRef: {manifest}, coreRef: {coreManifest}},
+			errors:    map[string]error{missingRef: os.ErrPermission},
+		}
+		_, err := Generate(context.Background(), source, options)
+		if err == nil || !strings.Contains(err.Error(), "failed with unexpected class") {
+			t.Fatalf("Generate() unexpected-class error = %v", err)
+		}
+	})
+}
+
+func TestUnavailableSourcePolicyCannotOverlapSupportedOverlay(t *testing.T) {
+	err := validateUnavailableSourcePolicies([]unavailableSourcePolicy{{
+		Version:    LocalAIVersion,
+		Family:     runnerLlamaCpp,
+		Selector:   selectorDefault,
+		SourceRef:  "registry.example/repo:v4.8.2-cpu-llama-cpp",
+		ErrorClass: resolutionErrorNotFound,
+	}})
+	if err == nil || !strings.Contains(err.Error(), "overlaps a supported policy tuple") {
+		t.Fatalf("validateUnavailableSourcePolicies() error = %v", err)
+	}
+}
+
+func TestGenerateExcludesNonLinuxManifests(t *testing.T) {
+	source := []byte(`- name: demo
+  capabilities:
+    default: cpu-demo
+- name: cpu-demo
+  uri: registry.example/repo:latest-cpu-demo
+- name: metal-demo
+  capabilities:
+    metal: metal-demo-target
+- name: metal-demo-target
+  uri: registry.example/repo:latest-metal-darwin-arm64-demo
+`)
+	resolver := staticResolver{
+		"registry.example/repo:v4.8.2-cpu-demo": {{
+			Digest:   fixtureDigestA,
+			Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
+		}},
+		"registry.example/repo:v4.8.2-metal-darwin-arm64-demo": {{
+			Digest:   fixtureDigestB,
+			Platform: Platform{OS: "darwin", Architecture: architectureARM64},
+		}},
+		"registry.example/core:v4.8.2-amd64": {{
+			Digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		}},
+	}
+	catalog, err := Generate(context.Background(), source, GenerateOptions{
+		Source:          fixturePin(source),
+		Version:         LocalAIVersion,
+		CoreRefTemplate: fixtureCoreRefTemplate,
+		Resolver:        resolver,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if len(catalog.Entries) != 1 || catalog.Entries[0].Platform.OS != platformLinux || catalog.Entries[0].Family != fixtureFamilyDemo {
+		t.Fatalf("Generate() entries = %#v, want only Linux demo", catalog.Entries)
+	}
+}
+
+func TestEntryEligibilityMatchesAIKitRuntimePlatforms(t *testing.T) {
+	tests := []struct {
+		name          string
+		platform      Platform
+		runtime       string
+		targetProfile string
+		want          bool
+	}{
+		{name: "CPU amd64", platform: Platform{OS: platformLinux, Architecture: architectureAMD64}, runtime: runtimeCPU, targetProfile: runtimeCPU, want: true},
+		{name: "CPU arm64", platform: Platform{OS: platformLinux, Architecture: architectureARM64}, runtime: runtimeCPU, targetProfile: runtimeCPU, want: true},
+		{name: "non-Linux", platform: Platform{OS: fixtureOSDarwin, Architecture: architectureARM64}, runtime: runtimeApple, targetProfile: targetMetal},
+		{name: "unsupported architecture", platform: Platform{OS: platformLinux, Architecture: "ppc64le"}, runtime: runtimeCPU, targetProfile: runtimeCPU},
+		{name: "Apple Silicon amd64", platform: Platform{OS: platformLinux, Architecture: architectureAMD64}, runtime: runtimeApple, targetProfile: targetVulkan},
+		{name: "Apple Silicon arm64", platform: Platform{OS: platformLinux, Architecture: architectureARM64}, runtime: runtimeApple, targetProfile: targetVulkan, want: true},
+		{name: "ROCm amd64", platform: Platform{OS: platformLinux, Architecture: architectureAMD64}, runtime: runtimeROCm, targetProfile: targetROCm, want: true},
+		{name: "ROCm arm64", platform: Platform{OS: platformLinux, Architecture: architectureARM64}, runtime: runtimeROCm, targetProfile: targetROCm},
+		{name: "L4T amd64", platform: Platform{OS: platformLinux, Architecture: architectureAMD64}, runtime: runtimeCUDA, targetProfile: targetL4TCUDA12},
+		{name: "L4T arm64", platform: Platform{OS: platformLinux, Architecture: architectureARM64}, runtime: runtimeCUDA, targetProfile: targetL4TCUDA13, want: true},
+		{name: "generic CUDA arm64", platform: Platform{OS: platformLinux, Architecture: architectureARM64}, runtime: runtimeCUDA, targetProfile: targetCUDA12, want: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := entryEligibleForAIKit(test.platform, test.runtime, test.targetProfile); got != test.want {
+				t.Fatalf("entryEligibleForAIKit() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+type staticResolver map[string][]ResolvedManifest
+
+func (resolver staticResolver) Resolve(_ context.Context, reference string) ([]ResolvedManifest, error) {
+	manifests, ok := resolver[reference]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+
+	return append([]ResolvedManifest(nil), manifests...), nil
+}
+
+type scriptedResolver struct {
+	manifests staticResolver
+	errors    map[string]error
+}
+
+func (resolver scriptedResolver) Resolve(ctx context.Context, reference string) ([]ResolvedManifest, error) {
+	if err, exists := resolver.errors[reference]; exists {
+		return nil, err
+	}
+
+	return resolver.manifests.Resolve(ctx, reference)
+}
+
+type failingResolver struct{}
+
+func (failingResolver) Resolve(_ context.Context, _ string) ([]ResolvedManifest, error) {
+	return nil, os.ErrInvalid
+}
+
+func readFixture(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture %q: %v", path, err)
+	}
+
+	return data
+}
+
+func readSnapshot(t *testing.T, path string) Resolver {
+	t.Helper()
+	resolver, err := ParseSnapshot(readFixture(t, path))
+	if err != nil {
+		t.Fatalf("ParseSnapshot() error = %v", err)
+	}
+
+	return resolver
+}
+
+func fixturePin(source []byte) SourcePin {
+	digest := sha256.Sum256(source)
+
+	return SourcePin{
+		Repository: "https://example.com/localai",
+		Path:       "backend/index.yaml",
+		Revision:   "1111111111111111111111111111111111111111",
+		SHA256:     "sha256:" + hex.EncodeToString(digest[:]),
+	}
+}

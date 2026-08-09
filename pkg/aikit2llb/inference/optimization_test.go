@@ -32,10 +32,14 @@ func TestInstallBackendMetadataIsDeterministic(t *testing.T) {
 	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformARM64}
 	cfg := &config.InferenceConfig{Backends: []string{utils.BackendLlamaCpp}}
 	base := llb.Image(utils.UbuntuBase, llb.Platform(platform))
+	backend, err := ResolveBackend(cfg, platform)
+	if err != nil {
+		t.Fatalf("resolve backend: %v", err)
+	}
 
 	var wantHead digest.Digest
 	for i := 0; i < 25; i++ {
-		state := installBackend(utils.BackendLlamaCpp, cfg, platform, base, base)
+		state := installBackends(backend, platform, base, base)
 		definition, err := state.Marshal(context.Background())
 		if err != nil {
 			t.Fatalf("marshal backend definition: %v", err)
@@ -54,12 +58,15 @@ func TestInstallBackendMetadataIsDeterministic(t *testing.T) {
 				t.Fatalf("unmarshal backend metadata: %v", err)
 			}
 			want := map[string]string{
-				"alias":       utils.BackendLlamaCpp,
-				"name":        cpuLlamaCppBackend,
-				"gallery_url": "github:mudler/LocalAI/backend/index.yaml@master",
+				"alias":          utils.BackendLlamaCpp,
+				"name":           testCPULlamaCppBackend,
+				"catalog_digest": backend.CatalogDigest,
+				"artifact":       backend.Backend.Ref,
 			}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("backend metadata = %#v, want %#v", got, want)
+			for key, value := range want {
+				if got[key] != value {
+					t.Fatalf("backend metadata %q = %q, want %q", key, got[key], value)
+				}
 			}
 			if _, ok := got["installed_at"]; ok {
 				t.Fatal("backend metadata unexpectedly contains installed_at")

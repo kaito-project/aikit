@@ -9,6 +9,7 @@ apiVersion: # required. only v1alpha1 is supported at the moment
 debug: # optional. if set to true, debug logs will be printed
 runtime: # optional. omit for the default CPU runtime. can be "cuda", "rocm", or "applesilicon"
 backends: # optional. list of additional backends. can be "llama-cpp" (default), "diffusers", "vllm", "vllm-cpp"
+backendCapability: # optional. exact LocalAI selector from the frontend's embedded backend catalog
 loadToMemory: # optional. list of LocalAI model config names to load when the container starts
   - model-name
 models: # optional. list of models to build. omit for runner mode (see runners.md)
@@ -26,8 +27,35 @@ If omitted, `runtime` uses the default CPU runtime. `rocm` currently supports on
 :::
 
 :::tip
-When `backends` is specified without `models`, a **runner image** is created that downloads models at container startup. See [Runner Images](runners.md) for details.
+When `backends` is specified without `models`, AIKit requests **runner mode**, which downloads models at container startup. Runner mode is available only when the exact catalog entry names an audited runner profile. See [Runner Images](runners.md) for details.
 :::
+
+### Backend catalog selection
+
+Existing `backends` and `runtime` configurations remain compatible. They select the logical backend and runtime, and AIKit chooses the default matching entry from the backend catalog embedded in the frontend release. `backendCapability` optionally narrows that choice to an exact LocalAI selector, such as a particular CUDA major or an L4T-specific build:
+
+```yaml
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
+apiVersion: v1alpha1
+runtime: cuda
+backends:
+  - vllm-cpp
+# The promoted vllm-cpp NVIDIA selector resolves to its catalog-pinned CUDA 13 target.
+backendCapability: nvidia
+```
+
+Capability names and availability are release-specific. The generated catalog lock embedded in the selected frontend is authoritative; an example in the documentation does not guarantee that an integration has been promoted in every release.
+
+Catalog entries have one of these statuses:
+
+| Status | Build behavior |
+|---|---|
+| `supported` | Available for its exact backend, runtime, capability, and target platform tuple. |
+| `experimental` | Available for the exact listed tuple, but its compatibility or interface may still change. |
+| `quarantined` | Disabled because provenance, compatibility, or validation did not pass; builds cannot select it. |
+| `deprecated` | Retained as catalog history but unavailable for new builds. |
+
+AIKit does not silently substitute another backend, CUDA major, capability, runtime, or platform. A missing, incompatible, ambiguous, quarantined, or deprecated selection fails the build with an error. Omitting `backendCapability` selects only the catalog-defined default for the requested `backends` and `runtime`; it is not permission to fall back to a different tuple.
 
 ### Loading models at startup
 

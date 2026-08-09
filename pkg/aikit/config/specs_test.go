@@ -24,6 +24,7 @@ func TestNewFromBytes(t *testing.T) {
 			args: args{b: []byte(`
 apiVersion: v1alpha1
 runtime: cuda
+backendCapability: nvidia-cuda-13
 backends:
 - diffusers
 loadToMemory:
@@ -34,8 +35,9 @@ models:
   source: foo
 `)},
 			want: &InferenceConfig{
-				APIVersion: utils.APIv1alpha1,
-				Runtime:    utils.RuntimeNVIDIA,
+				APIVersion:        utils.APIv1alpha1,
+				Runtime:           utils.RuntimeNVIDIA,
+				BackendCapability: "nvidia-cuda-13",
 				Backends: []string{
 					utils.BackendDiffusers,
 				},

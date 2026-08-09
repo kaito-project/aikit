@@ -1,10 +1,10 @@
 package inference
 
 import (
-	"slices"
 	"strings"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/util/system"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
@@ -13,12 +13,32 @@ import (
 const (
 	localAIEntrypointCommand = "local-ai"
 	localAILoadToMemoryEnv   = "LOCALAI_LOAD_TO_MEMORY="
+	nvidiaBuildTypeEnv       = "BUILD_TYPE=cublas"
+	nvidiaCapabilitiesEnv    = "NVIDIA_DRIVER_CAPABILITIES=compute,utility"
+	nvidiaVisibleDevicesEnv  = "NVIDIA_VISIBLE_DEVICES=all"
 	runnerEntrypointPath     = "/usr/local/bin/aikit-runner"
 	runnerHFHomeEnv          = "HF_HOME=/models/.cache/huggingface"
 )
 
 func NewImageConfig(c *config.InferenceConfig, platform *specs.Platform) *specs.Image {
-	img := emptyImage(c, platform)
+	backend, err := ResolveBackend(c, *platform)
+	if err != nil {
+		panic("resolving backend for image config: " + err.Error())
+	}
+
+	return NewImageConfigWithBackend(c, backend, platform)
+}
+
+// NewImageConfigWithBackend creates image metadata from a pre-resolved backend plan.
+func NewImageConfigWithBackend(c *config.InferenceConfig, backend backendcatalog.Resolution, platform *specs.Platform) *specs.Image {
+	img := emptyImage(c, backend, platform)
+	img.Config.Labels = map[string]string{
+		"ai.kaito.aikit.backend":                backend.Family,
+		"ai.kaito.aikit.backend.artifact":       backend.Backend.Ref,
+		"ai.kaito.aikit.backend.catalog.digest": backend.CatalogDigest,
+		"ai.kaito.aikit.backend.selector":       string(backend.Selector),
+		"ai.kaito.aikit.backend.status":         string(backend.Status),
+	}
 
 	if isRunnerMode(c) {
 		// Runner mode: use the aikit-runner entrypoint script
@@ -27,11 +47,7 @@ func NewImageConfig(c *config.InferenceConfig, platform *specs.Platform) *specs.
 		img.Config.Env = append(img.Config.Env, runnerHFHomeEnv)
 
 		// Add runner labels
-		backendLabel := strings.Join(c.Backends, ",")
-		img.Config.Labels = map[string]string{
-			"ai.kaito.aikit.runner":  "true",
-			"ai.kaito.aikit.backend": backendLabel,
-		}
+		img.Config.Labels["ai.kaito.aikit.runner"] = "true"
 		if c.Runtime != "" {
 			img.Config.Labels["ai.kaito.aikit.runtime"] = c.Runtime
 		}
@@ -52,7 +68,7 @@ func NewImageConfig(c *config.InferenceConfig, platform *specs.Platform) *specs.
 	return img
 }
 
-func emptyImage(c *config.InferenceConfig, platform *specs.Platform) *specs.Image {
+func emptyImage(c *config.InferenceConfig, backend backendcatalog.Resolution, platform *specs.Platform) *specs.Image {
 	img := &specs.Image{
 		Platform: specs.Platform{
 			Architecture: platform.Architecture,
@@ -70,15 +86,11 @@ func emptyImage(c *config.InferenceConfig, platform *specs.Platform) *specs.Imag
 		img.Config.Env = append(img.Config.Env, localAILoadToMemoryEnv+strings.Join(c.LoadToMemory, ","))
 	}
 
-	minimumCUDAVersion := "12.0"
-	if slices.Contains(c.Backends, utils.BackendVLLMCpp) {
-		minimumCUDAVersion = "13.0"
-	}
 	cudaEnv := []string{
-		"NVIDIA_REQUIRE_CUDA=cuda>=" + minimumCUDAVersion,
-		"NVIDIA_DRIVER_CAPABILITIES=compute,utility",
-		"NVIDIA_VISIBLE_DEVICES=all",
-		"BUILD_TYPE=cublas",
+		"NVIDIA_REQUIRE_CUDA=cuda>=" + backend.MinimumCUDA,
+		nvidiaCapabilitiesEnv,
+		nvidiaVisibleDevicesEnv,
+		nvidiaBuildTypeEnv,
 	}
 	if c.Runtime == utils.RuntimeNVIDIA {
 		img.Config.Env = append(img.Config.Env, cudaEnv...)

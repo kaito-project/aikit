@@ -4,6 +4,8 @@ title: Runner Images
 
 Runner images are reusable AIKit images that download models at runtime instead of embedding them at build time. This is useful when you want a single image that can serve different models without rebuilding.
 
+Runner mode is available only for backend catalog entries that name an audited runner profile. A backend being usable in a model image does not by itself mean its runtime downloader, cache layout, input validation, and startup behavior have been audited for runner mode. The catalog embedded in the selected frontend release is the authority for the exact backend, runtime, capability, and platform tuple.
+
 ## Pre-built Runner Images
 
 Pre-built runner images are available at `ghcr.io/kaito-project/aikit/runners/`:
@@ -18,7 +20,9 @@ Pre-built runner images are available at `ghcr.io/kaito-project/aikit/runners/`:
 | `ghcr.io/kaito-project/aikit/runners/vllm-cpp-cuda:latest` | Experimental native vllm.cpp CUDA 13 runner for Blackwell GPUs (amd64) |
 
 :::note
-Pre-built runner images are currently published for CPU and NVIDIA CUDA only. For AMD GPUs, build a custom `llama-cpp` runner with `runtime: rocm`.
+Pre-built runner images are currently published for CPU and NVIDIA CUDA only. ROCm catalog entries do not yet have an audited runner profile, so runner-mode builds for AMD GPUs fail closed.
+
+Published image names describe the intended runner families, not every possible backend capability. Consult the generated catalog lock for the selected frontend release before relying on a specific CUDA major, L4T variant, architecture, or experimental integration.
 :::
 
 ## Quick Start
@@ -117,7 +121,7 @@ spec:
 
 ## Building Custom Runner Images
 
-If you need a custom combination of backends or runtime configuration, you can build your own runner image. Define an aikitfile with `backends` but **no `models`**:
+If you need a custom backend or runtime configuration, you can request a custom runner image. Define an aikitfile with `backends` but **no `models`**:
 
 ```yaml
 #syntax=ghcr.io/kaito-project/aikit/aikit:latest
@@ -136,29 +140,21 @@ backends:
   - llama-cpp
 ```
 
-For ROCm (`llama-cpp` only):
-
-```yaml
-#syntax=ghcr.io/kaito-project/aikit/aikit:latest
-apiVersion: v1alpha1
-runtime: rocm
-backends:
-  - llama-cpp
-```
-
 Build:
 
 ```bash
 docker buildx build -t my-runner -f runner.yaml .
 ```
 
-For AMD GPUs, run the resulting image with the ROCm device flags described in [GPU Acceleration](gpu.md).
+Each example is a catalog request, not an open-ended backend download. The build succeeds only when the exact tuple has an audited runner profile with `supported` or `experimental` status. Missing, `quarantined`, and `deprecated` profiles fail the build; AIKit does not fall back to another runner or backend. Use `backendCapability` when an audited profile requires an exact selector, as described in the [Inference API Specifications](specs-inference.md#backend-catalog-selection).
 
-### Supported Backends
+### Runner-capable backend families
+
+This table describes the runner interface implemented by each backend family. Actual release availability is limited to the audited profiles in the embedded catalog.
 
 | Backend | Description |
 |---|---|
-| `llama-cpp` | GGUF models via llama.cpp (CPU, NVIDIA CUDA, or ROCm) |
+| `llama-cpp` | GGUF models via llama.cpp (CPU or NVIDIA CUDA; ROCm is not runner-enabled in the current catalog) |
 | `diffusers` | HuggingFace diffusers models (requires NVIDIA CUDA) |
 | `vllm` | HuggingFace safetensors models via vLLM (requires NVIDIA CUDA) |
 | `vllm-cpp` | Direct HTTP(S) GGUF URLs or Hugging Face safetensors repositories via the experimental native engine (CPU, or CUDA 13 on amd64 Blackwell GPUs) |

@@ -104,6 +104,7 @@ func TestInstallRunnerDependencies(t *testing.T) {
 	tests := []struct {
 		name             string
 		backend          string
+		runtime          string
 		wantDependencies bool
 	}{
 		{
@@ -114,10 +115,12 @@ func TestInstallRunnerDependencies(t *testing.T) {
 		{
 			name:    "diffusers uses bundled downloader",
 			backend: utils.BackendDiffusers,
+			runtime: utils.RuntimeNVIDIA,
 		},
 		{
 			name:    "vllm uses bundled downloader",
 			backend: utils.BackendVLLM,
+			runtime: utils.RuntimeNVIDIA,
 		},
 		{
 			name:             "vllm-cpp installs downloader dependencies",
@@ -129,7 +132,7 @@ func TestInstallRunnerDependencies(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			state, _ := installRunnerDependencies(
-				&config.InferenceConfig{Backends: []string{tt.backend}},
+				&config.InferenceConfig{Runtime: tt.runtime, Backends: []string{tt.backend}},
 				llb.Scratch(),
 				llb.Scratch(),
 				platform,
@@ -203,6 +206,7 @@ func TestGenerateRunnerScript(t *testing.T) {
 		{
 			name: "diffusers backend script",
 			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
 				Backends: []string{utils.BackendDiffusers},
 			},
 			expectContains: []string{
@@ -223,6 +227,7 @@ func TestGenerateRunnerScript(t *testing.T) {
 		{
 			name: "vllm backend script",
 			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
 				Backends: []string{utils.BackendVLLM},
 			},
 			expectContains: []string{

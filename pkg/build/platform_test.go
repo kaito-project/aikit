@@ -99,14 +99,17 @@ func TestBuildInferenceUsesBuildPlatformForArtifactHelpers(t *testing.T) {
 		modelPull := findBuildExecOp(t, definition, "example.com/models/test:latest")
 		assertBuildOpPlatform(t, modelPull, buildPlatform)
 
-		localAIPull := findBuildExecOp(t, definition, "ghcr.io/kaito-project/aikit/localai:")
+		localAIPull := findBuildExecOp(t, definition, "ghcr.io/kaito-project/aikit/localai@sha256:")
 		assertBuildOpPlatform(t, localAIPull, buildPlatform)
 
-		targetArchitecture := artifactArchitecture(t, localAIPull)
+		backendSource := findBuildSourceOp(t, definition, utils.BackendOCIRegistry)
+		if backendSource.Platform == nil {
+			t.Fatal("backend source platform is nil")
+		}
+		targetArchitecture := backendSource.Platform.Architecture
 		targetPlatform := specs.Platform{OS: utils.PlatformLinux, Architecture: targetArchitecture}
 		seenTargets[targetArchitecture] = true
 
-		backendSource := findBuildSourceOp(t, definition, utils.BackendOCIRegistry)
 		assertBuildOpPlatform(t, backendSource, targetPlatform)
 
 		baseSource := findBuildSourceOp(t, definition, "ubuntu:22.04")
@@ -252,17 +255,4 @@ func assertBuildOpPlatform(t *testing.T, op *pb.Op, want specs.Platform) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("operation platform = %#v, want %#v", got, want)
 	}
-}
-
-func artifactArchitecture(t *testing.T, localAIPull *pb.Op) string {
-	t.Helper()
-
-	command := strings.Join(localAIPull.GetExec().Meta.Args, "\x00")
-	for _, architecture := range []string{utils.PlatformAMD64, utils.PlatformARM64} {
-		if strings.Contains(command, "-"+architecture) {
-			return architecture
-		}
-	}
-	t.Fatalf("LocalAI artifact command does not select a supported target architecture: %q", command)
-	return ""
 }

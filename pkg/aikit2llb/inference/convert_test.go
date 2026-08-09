@@ -12,44 +12,24 @@ import (
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-const testInferenceModelName = "test"
+const (
+	testInferenceModelName   = "test"
+	testInferenceModelSource = "model.gguf"
+)
 
 func TestInstallRocmInstallsPciutilsForLlamaCpp(t *testing.T) {
-	tests := []struct {
-		name     string
-		backends []string
-	}{
-		{
-			name:     "implicit default llama-cpp backend",
-			backends: nil,
-		},
-		{
-			name:     "explicit llama-cpp backend",
-			backends: []string{utils.BackendLlamaCpp},
-		},
+	base := llb.Image(utils.Ubuntu24Base)
+	_, merged := installRocm(base, base)
+
+	def, err := merged.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := &config.InferenceConfig{
-				Runtime:  utils.RuntimeROCm,
-				Backends: tt.backends,
-			}
-
-			base := llb.Image(utils.Ubuntu24Base)
-			_, merged := installRocm(cfg, base, base)
-
-			def, err := merged.Marshal(context.Background())
-			if err != nil {
-				t.Fatalf("marshal failed: %v", err)
-			}
-
-			combined := marshalDefinitionToString(def)
-			wantInstall := "apt-get install -y --no-install-recommends pciutils rocm && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*"
-			if !strings.Contains(combined, wantInstall) {
-				t.Fatalf("expected ROCm install to contain %q, got: %s", wantInstall, combined)
-			}
-		})
+	combined := marshalDefinitionToString(def)
+	wantInstall := "apt-get install -y --no-install-recommends pciutils rocm && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*"
+	if !strings.Contains(combined, wantInstall) {
+		t.Fatalf("expected ROCm install to contain %q, got: %s", wantInstall, combined)
 	}
 }
 
@@ -113,10 +93,14 @@ func TestAikit2LLBWithPlatformsSeparatesHelperAndTargetPlatforms(t *testing.T) {
 		}
 	}
 
-	localAIPull := findInferenceExecOp(t, definition, localAIRepo)
+	backend, err := ResolveBackend(cfg, *targetPlatform)
+	if err != nil {
+		t.Fatalf("resolve backend: %v", err)
+	}
+	localAIPull := findInferenceExecOp(t, definition, backend.Core.Ref)
 	assertInferenceOpPlatform(t, localAIPull, *buildPlatform)
-	if command := strings.Join(localAIPull.op.GetExec().Meta.Args, "\x00"); !strings.Contains(command, "-amd64") {
-		t.Fatalf("LocalAI artifact command = %q, want amd64 artifact", command)
+	if command := strings.Join(localAIPull.op.GetExec().Meta.Args, "\x00"); !strings.Contains(command, "@sha256:") {
+		t.Fatalf("LocalAI artifact command = %q, want digest-qualified artifact", command)
 	}
 
 	buildBaseSource := findInferenceSourceOp(t, definition, "ubuntu:22.04")
@@ -157,7 +141,7 @@ func TestGetBaseImageUsesMinimalCompatibleRuntime(t *testing.T) {
 		{
 			name: "default standard llama-cpp",
 			config: &config.InferenceConfig{Models: []config.Model{{
-				Name: testInferenceModelName, Source: "model.gguf",
+				Name: testInferenceModelName, Source: testInferenceModelSource,
 			}}},
 			want: distrolessBase,
 		},
@@ -165,7 +149,7 @@ func TestGetBaseImageUsesMinimalCompatibleRuntime(t *testing.T) {
 			name: "explicit standard llama-cpp",
 			config: &config.InferenceConfig{
 				Backends: []string{utils.BackendLlamaCpp},
-				Models:   []config.Model{{Name: testInferenceModelName, Source: "model.gguf"}},
+				Models:   []config.Model{{Name: testInferenceModelName, Source: testInferenceModelSource}},
 			},
 			want: distrolessBase,
 		},
@@ -177,6 +161,7 @@ func TestGetBaseImageUsesMinimalCompatibleRuntime(t *testing.T) {
 		{
 			name: "standard Diffusers",
 			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
 				Backends: []string{utils.BackendDiffusers},
 				Models:   []config.Model{{Name: testInferenceModelName, Source: "model.safetensors"}},
 			},
@@ -185,6 +170,7 @@ func TestGetBaseImageUsesMinimalCompatibleRuntime(t *testing.T) {
 		{
 			name: "standard vLLM",
 			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
 				Backends: []string{utils.BackendVLLM},
 				Models:   []config.Model{{Name: testInferenceModelName, Source: "model.safetensors"}},
 			},
@@ -194,25 +180,19 @@ func TestGetBaseImageUsesMinimalCompatibleRuntime(t *testing.T) {
 			name: "standard vllm-cpp",
 			config: &config.InferenceConfig{
 				Backends: []string{utils.BackendVLLMCpp},
-				Models:   []config.Model{{Name: testInferenceModelName, Source: "model.gguf"}},
+				Models:   []config.Model{{Name: testInferenceModelName, Source: testInferenceModelSource}},
 			},
 			want: distrolessBase,
-		},
-		{
-			name:   "Apple Silicon",
-			config: &config.InferenceConfig{Runtime: utils.RuntimeAppleSilicon},
-			want:   utils.AppleSiliconBase,
-		},
-		{
-			name:   "ROCm",
-			config: &config.InferenceConfig{Runtime: utils.RuntimeROCm},
-			want:   utils.Ubuntu24Base,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			state := getBaseImage(tt.config, platform)
+			backend, err := ResolveBackend(tt.config, *platform)
+			if err != nil {
+				t.Fatalf("resolve backend: %v", err)
+			}
+			state := getBaseImage(tt.config, backend, platform)
 			definition, err := state.Marshal(context.Background())
 			if err != nil {
 				t.Fatalf("marshal base image: %v", err)
@@ -263,6 +243,22 @@ func TestAikit2LLBPreservesSinglePlatformBehavior(t *testing.T) {
 	}
 	if !reflect.DeepEqual(legacyImage, explicitImage) {
 		t.Errorf("compatible image config = %#v, want %#v", legacyImage, explicitImage)
+	}
+}
+
+func TestAikit2LLBWithBackendRejectsForgedResolution(t *testing.T) {
+	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	cfg := &config.InferenceConfig{
+		Models: []config.Model{{Name: testInferenceModelName, Source: testInferenceModelSource}},
+	}
+	backend, err := ResolveBackend(cfg, *platform)
+	if err != nil {
+		t.Fatalf("resolve backend: %v", err)
+	}
+	backend.Backend.Ref = strings.Split(backend.Backend.Ref, "@")[0] + "@sha256:" + strings.Repeat("f", 64)
+
+	if _, _, err := Aikit2LLBWithBackend(cfg, platform, platform, backend); err == nil || !strings.Contains(err.Error(), "does not match the embedded catalog") {
+		t.Fatalf("Aikit2LLBWithBackend() error = %v, want catalog mismatch", err)
 	}
 }
 

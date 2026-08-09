@@ -66,7 +66,7 @@ func Test_validateConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "invalid backend",
+			name: "catalog backend is deferred to platform resolution",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Backends:   []string{"foo"},
@@ -77,10 +77,10 @@ func Test_validateConfig(t *testing.T) {
 					},
 				},
 			}},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
-			name: "diffusers backend requires cuda runtime",
+			name: "backend runtime compatibility is deferred to catalog resolution",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Backends:   []string{"diffusers"},
@@ -91,7 +91,7 @@ func Test_validateConfig(t *testing.T) {
 					},
 				},
 			}},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "valid vllm backend with cuda runtime",
@@ -109,7 +109,7 @@ func Test_validateConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "vllm backend requires cuda runtime",
+			name: "vllm runtime compatibility is deferred to catalog resolution",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Backends:   []string{"vllm"},
@@ -120,7 +120,7 @@ func Test_validateConfig(t *testing.T) {
 					},
 				},
 			}},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "valid vllm-cpp backend with CPU runtime",
@@ -152,22 +152,22 @@ func Test_validateConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "vllm-cpp backend rejects rocm runtime",
+			name: "vllm-cpp rocm compatibility is deferred to catalog resolution",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Runtime:    utils.RuntimeROCm,
 				Backends:   []string{utils.BackendVLLMCpp},
 			}},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
-			name: "vllm-cpp backend rejects apple silicon runtime",
+			name: "vllm-cpp apple compatibility is deferred to catalog resolution",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Runtime:    utils.RuntimeAppleSilicon,
 				Backends:   []string{utils.BackendVLLMCpp},
 			}},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "invalid backend name",
@@ -221,13 +221,13 @@ func Test_validateConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "runner mode not supported on apple silicon",
+			name: "runner profile compatibility is deferred to catalog resolution",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Runtime:    "applesilicon",
 				Backends:   []string{"llama-cpp"},
 			}},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "loadToMemory rejects an empty model name",
@@ -287,7 +287,7 @@ func Test_validateConfig(t *testing.T) {
 	}
 }
 
-func Test_validateBackendPlatformCompatibility(t *testing.T) {
+func TestResolveBackendPlans(t *testing.T) {
 	tests := []struct {
 		name            string
 		config          *config.InferenceConfig
@@ -306,7 +306,7 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "diffusers backend with arm64 platform - should fail",
+			name: "diffusers backend without its required CUDA selector fails",
 			config: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Backends:   []string{"diffusers"},
@@ -340,7 +340,7 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "vllm backend with arm64 platform - should fail",
+			name: "vllm backend without a CPU catalog tuple fails",
 			config: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Backends:   []string{"vllm"},
@@ -431,7 +431,7 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "rocm runtime with amd64 platform - should pass",
+			name: "missing ROCm tuple fails closed",
 			config: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Runtime:    "rocm",
@@ -440,7 +440,7 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 			targetPlatforms: []*specs.Platform{
 				{Architecture: "amd64", OS: "linux"},
 			},
-			wantErr: false,
+			wantErr: true,
 		},
 		{
 			name: "rocm runtime with arm64 platform - should fail",
@@ -470,8 +470,12 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := validateBackendPlatformCompatibility(tt.config, tt.targetPlatforms); (err != nil) != tt.wantErr {
-				t.Errorf("validateBackendPlatformCompatibility() error = %v, wantErr %v", err, tt.wantErr)
+			plans, err := resolveBackendPlans(tt.config, tt.targetPlatforms)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("resolveBackendPlans() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err == nil && len(plans) != len(tt.targetPlatforms) {
+				t.Errorf("resolveBackendPlans() plans = %d, want %d", len(plans), len(tt.targetPlatforms))
 			}
 		})
 	}

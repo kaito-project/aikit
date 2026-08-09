@@ -38,16 +38,6 @@ func TestNewImageConfigEntrypoint(t *testing.T) {
 			wantEntrypoint: []string{localAIEntrypointCommand},
 		},
 		{
-			name: "cuda arm64 standard mode uses local-ai directly",
-			config: &config.InferenceConfig{
-				Runtime: utils.RuntimeNVIDIA,
-				Config:  imageTestInferenceModel,
-				Models:  []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
-			},
-			platform:       &specs.Platform{Architecture: utils.PlatformARM64, OS: utils.PlatformLinux},
-			wantEntrypoint: []string{localAIEntrypointCommand},
-		},
-		{
 			name: "cpu standard mode uses local-ai directly",
 			config: &config.InferenceConfig{
 				Config: imageTestInferenceModel,
@@ -63,15 +53,6 @@ func TestNewImageConfigEntrypoint(t *testing.T) {
 				Backends: []string{utils.BackendLlamaCpp},
 			},
 			platform:       &specs.Platform{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux},
-			wantEntrypoint: []string{runnerEntrypointPath},
-		},
-		{
-			name: "cuda arm64 runner mode uses aikit-runner directly",
-			config: &config.InferenceConfig{
-				Runtime:  utils.RuntimeNVIDIA,
-				Backends: []string{utils.BackendLlamaCpp},
-			},
-			platform:       &specs.Platform{Architecture: utils.PlatformARM64, OS: utils.PlatformLinux},
 			wantEntrypoint: []string{runnerEntrypointPath},
 		},
 	}
@@ -101,15 +82,15 @@ func TestNewImageConfigEnvironment(t *testing.T) {
 	}
 	nvidiaEnv := []string{
 		"NVIDIA_REQUIRE_CUDA=cuda>=12.0",
-		"NVIDIA_DRIVER_CAPABILITIES=compute,utility",
-		"NVIDIA_VISIBLE_DEVICES=all",
-		"BUILD_TYPE=cublas",
+		nvidiaCapabilitiesEnv,
+		nvidiaVisibleDevicesEnv,
+		nvidiaBuildTypeEnv,
 	}
 	vllmCppNVIDIAEnv := []string{
 		"NVIDIA_REQUIRE_CUDA=cuda>=13.0",
-		"NVIDIA_DRIVER_CAPABILITIES=compute,utility",
-		"NVIDIA_VISIBLE_DEVICES=all",
-		"BUILD_TYPE=cublas",
+		nvidiaCapabilitiesEnv,
+		nvidiaVisibleDevicesEnv,
+		nvidiaBuildTypeEnv,
 	}
 
 	tests := []struct {

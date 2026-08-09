@@ -2,10 +2,10 @@ package inference
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
@@ -38,7 +38,16 @@ func isRunnerMode(c *config.InferenceConfig) bool {
 
 // installRunnerDependencies installs packages needed for runtime model downloading.
 func installRunnerDependencies(c *config.InferenceConfig, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State) {
-	if !slices.Contains([]string{utils.BackendLlamaCpp, utils.BackendVLLMCpp}, runnerBackend(c)) {
+	backend, err := ResolveBackend(c, platform)
+	if err != nil {
+		panic("resolving backend for runner dependencies: " + err.Error())
+	}
+
+	return installRunnerDependenciesWithBackend(backend, s, merge, platform)
+}
+
+func installRunnerDependenciesWithBackend(backend backendcatalog.Resolution, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State) {
+	if backend.RunnerProfile != backendcatalog.RunnerProfileLlamaCpp && backend.RunnerProfile != backendcatalog.RunnerProfileVLLMCpp {
 		return s, merge
 	}
 
@@ -56,19 +65,12 @@ func installRunnerDependencies(c *config.InferenceConfig, s llb.State, merge llb
 	return s, llb.Merge([]llb.State{merge, diff})
 }
 
-func runnerBackend(c *config.InferenceConfig) string {
-	if len(c.Backends) > 0 {
-		return c.Backends[0]
-	}
-	return utils.BackendLlamaCpp
-}
-
 // installRunnerEntrypoint writes the entrypoint script and creates the /models/
 // directory with correct ownership for non-root compatibility.
-func installRunnerEntrypoint(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.State, llb.State) {
+func installRunnerEntrypoint(c *config.InferenceConfig, backend backendcatalog.Resolution, s llb.State, merge llb.State) (llb.State, llb.State) {
 	savedState := s
 
-	script := generateRunnerScript(c)
+	script := generateRunnerScriptWithBackend(c, backend)
 
 	// Write the entrypoint script
 	s = s.File(
@@ -89,13 +91,26 @@ func installRunnerEntrypoint(c *config.InferenceConfig, s llb.State, merge llb.S
 // generateRunnerScript produces the bash entrypoint script that downloads a model
 // at container startup and then exec's into local-ai.
 func generateRunnerScript(c *config.InferenceConfig) string {
-	backend := runnerBackend(c)
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	if c.Runtime == utils.RuntimeAppleSilicon {
+		platform.Architecture = utils.PlatformARM64
+	}
+	backend, err := ResolveBackend(c, platform)
+	if err != nil {
+		panic("resolving backend for runner script: " + err.Error())
+	}
+
+	return generateRunnerScriptWithBackend(c, backend)
+}
+
+func generateRunnerScriptWithBackend(c *config.InferenceConfig, backend backendcatalog.Resolution) string {
+	backendName := backend.Family
 
 	var sb strings.Builder
 	sb.WriteString(`#!/bin/bash
 set -euo pipefail
 
-BACKEND="` + backend + `"
+BACKEND="` + backendName + `"
 
 # Parse arguments: accept model as positional arg or --model flag
 MODEL=""
@@ -197,13 +212,15 @@ echo "AIKit Runner: backend=$BACKEND model=$MODEL_LOG_REF"
 `)
 
 	// Backend-specific download logic
-	switch backend {
-	case utils.BackendLlamaCpp:
+	switch backend.RunnerProfile {
+	case backendcatalog.RunnerProfileLlamaCpp:
 		sb.WriteString(generateLlamaCppDownload())
-	case utils.BackendVLLMCpp:
+	case backendcatalog.RunnerProfileVLLMCpp:
 		sb.WriteString(generateVLLMCppDownload())
-	case utils.BackendDiffusers, utils.BackendVLLM:
-		sb.WriteString(generateHFModelConfig(backend))
+	case backendcatalog.RunnerProfileHFConfig:
+		sb.WriteString(generateHFModelConfig(backendName))
+	default:
+		panic(fmt.Sprintf("unsupported validated runner profile %q", backend.RunnerProfile))
 	}
 
 	// Start LocalAI

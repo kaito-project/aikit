@@ -32,6 +32,24 @@ docker buildx imagetools inspect $IMAGE --format "{{ json .Provenance.SLSA }}"
 
 This command will output a JSON file containing the build provenance details, including the source repository, commit hash, build configuration, and more. This helps verify that the image was built from trusted sources and has not been tampered with. For more information, please visit [Docker Provenance documentation](https://docs.docker.com/build/attestations/slsa-provenance/).
 
+## Backend catalog trust
+
+AIKit selects LocalAI core and backend artifacts through a generated catalog lock embedded in the frontend image. Catalog-managed artifact references are pinned by OCI digest, so a mutable upstream tag cannot change the bytes selected by an already published frontend.
+
+Catalog generation verifies the pinned LocalAI source file against its recorded commit and SHA-256 digest, resolves backend and core images to platform-specific OCI digests, and validates every declared compatibility tuple before replacing the embedded lock. Entries are then marked `supported`, `experimental`, `quarantined`, or `deprecated`; quarantined and deprecated entries are not selectable.
+
+The current promotion path does not independently verify upstream backend signatures or the checksum of the mirrored LocalAI binary. Digest pinning prevents tag movement after a frontend is published, but it does not establish the original artifact's provenance. Treat the signed frontend and its reviewed lock as the current trust boundary rather than assuming transitive verification of every upstream artifact.
+
+Model builds read the embedded snapshot and fetch artifact content by digest when it is not already cached. They do not download mutable catalog metadata, resolve a catalog channel, or silently replace a rejected selection with another backend or runtime. Updating the catalog therefore requires a newly promoted and signed frontend release.
+
+The signed frontend image is the trust boundary for its embedded catalog. For reproducible or policy-controlled builds, pin the frontend by digest in the syntax directive and verify that digest's signature:
+
+```dockerfile
+#syntax=ghcr.io/kaito-project/aikit/aikit@sha256:<frontend-digest>
+```
+
+This lock covers catalog-managed LocalAI artifacts. Model files, base images, and other user-selected inputs retain their own pinning and verification requirements; use immutable revisions and checksums where AIKit supports them.
+
 ## Vulnerability Patching
 
 Ensuring that our images are free from known vulnerabilities is crucial. Not only AIKit uses a custom distroless-based base image to reduce the number of vulnerabilities, attack surface and size, AIKit uses [Copacetic](https://github.com/project-copacetic/copacetic) to scan and patch OS-based vulnerabilities for all [pre-made models](premade-models.md) on a weekly basis. Copacetic automates the process of identifying and remediating security issues, helping us maintain a robust and secure software supply chain.
