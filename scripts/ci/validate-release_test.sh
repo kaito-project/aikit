@@ -20,6 +20,10 @@ if [[ ${1:-} == api ]]; then
       printf '%s' "${FAKE_GH_PR_DETAILS:-}"
       exit 0
       ;;
+    *"/actions/runs "*)
+      printf '%s' "${FAKE_GH_ACTION_RUNS:-}"
+      exit 0
+      ;;
   esac
 fi
 echo "unexpected fake gh invocation: $*" >&2
@@ -53,24 +57,63 @@ git -C "$work_dir/repository" commit --quiet -m "fix release candidate"
 release_commit=$(git -C "$work_dir/repository" rev-parse HEAD)
 git -C "$work_dir/repository" push --quiet --set-upstream origin release-1.2
 
+valid_action_runs=$(printf '%s\n%s\n%s\n%s' \
+  $'2026-08-08T20:00:02Z\t102\t.github/workflows/lint.yaml\tcompleted\tsuccess' \
+  $'2026-08-08T20:00:01Z\t101\t.github/workflows/unit-test.yaml\tcompleted\tsuccess' \
+  $'2026-08-08T19:00:00Z\t100\t.github/workflows/lint.yaml\tcompleted\tfailure' \
+  $'2026-08-08T18:00:00Z\t99\t.github/workflows/dependabot.yaml\tcompleted\tskipped')
+
 run_validator() {
   local version=$1
   local commit=$2
   local release_pr_issues=$3
   local release_pr_details=$4
+  local release_action_runs=${5-$valid_action_runs}
   (
     cd "$work_dir/repository"
     PATH="$work_dir/bin:$PATH" \
       FAKE_GH_ISSUES="$release_pr_issues" \
       FAKE_GH_PR_DETAILS="$release_pr_details" \
+      FAKE_GH_ACTION_RUNS="$release_action_runs" \
       GH_TOKEN=test-token \
       GITHUB_REPOSITORY=example/aikit \
       "$validator" "$version" "$commit"
   )
 }
 
-valid_pr_details=$(printf 'true\trelease-1.2\t%s' "$release_pr_commit")
+valid_pr_details=$(printf 'true\trelease-1.2\t%s\t%s' "$release_pr_commit" "$release_pr_commit")
 run_validator v1.2.3 "$release_commit" 42 "$valid_pr_details" >/dev/null
+
+if run_validator v1.2.3 "$release_commit" 42 "$valid_pr_details" "" >/dev/null 2>&1; then
+  echo "release pull request without checks unexpectedly passed" >&2
+  exit 1
+fi
+
+failed_action_runs=$(printf '%s\n%s\n%s' \
+  $'2026-08-08T20:00:02Z\t102\t.github/workflows/lint.yaml\tcompleted\tsuccess' \
+  $'2026-08-08T20:00:01Z\t101\t.github/workflows/unit-test.yaml\tcompleted\tfailure' \
+  $'2026-08-08T19:00:00Z\t100\t.github/workflows/unit-test.yaml\tcompleted\tsuccess')
+if run_validator v1.2.3 "$release_commit" 42 "$valid_pr_details" "$failed_action_runs" >/dev/null 2>&1; then
+  echo "release pull request with a failed required workflow unexpectedly passed" >&2
+  exit 1
+fi
+
+pending_action_runs=$(printf '%s\n%s' \
+  $'2026-08-08T20:00:02Z\t102\t.github/workflows/lint.yaml\tin_progress\t-' \
+  $'2026-08-08T20:00:01Z\t101\t.github/workflows/unit-test.yaml\tcompleted\tsuccess')
+if run_validator v1.2.3 "$release_commit" 42 "$valid_pr_details" "$pending_action_runs" >/dev/null 2>&1; then
+  echo "release pull request with an unfinished workflow unexpectedly passed" >&2
+  exit 1
+fi
+
+failed_optional_action_runs=$(printf '%s\n%s\n%s' \
+  $'2026-08-08T20:00:03Z\t103\t.github/workflows/docker-test.yaml\tcompleted\tfailure' \
+  $'2026-08-08T20:00:02Z\t102\t.github/workflows/lint.yaml\tcompleted\tsuccess' \
+  $'2026-08-08T20:00:01Z\t101\t.github/workflows/unit-test.yaml\tcompleted\tsuccess')
+if run_validator v1.2.3 "$release_commit" 42 "$valid_pr_details" "$failed_optional_action_runs" >/dev/null 2>&1; then
+  echo "release pull request with another failed workflow unexpectedly passed" >&2
+  exit 1
+fi
 
 if run_validator v1.2.4 "$release_commit" 42 "$valid_pr_details" >/dev/null 2>&1; then
   echo "mismatched version unexpectedly passed" >&2

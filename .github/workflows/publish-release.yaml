@@ -19,7 +19,9 @@ permissions:
 jobs:
   preflight:
     permissions:
+      actions: read
       contents: read
+      issues: read
       pull-requests: read
     outputs:
       release_branch: ${{ steps.release.outputs.release_branch }}
@@ -282,7 +284,7 @@ jobs:
       - create-release-tag
       - plan-version-sync
     if: needs.plan-version-sync.outputs.needed == 'true'
-    environment: version-sync
+    environment: release-automation
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -400,13 +402,13 @@ jobs:
             -m "chore: sync ${target_version} version to main"
           echo "sync_commit=$(git -C "${sync_worktree}" rev-parse HEAD)" >>"${GITHUB_OUTPUT}"
 
-      - name: Create version-sync GitHub App token
+      - name: Create release-automation GitHub App token
         if: steps.sync.outputs.needed == 'true'
         id: sync-app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          client-id: ${{ vars.RELEASE_SYNC_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_SYNC_APP_PRIVATE_KEY }}
+          client-id: ${{ vars.RELEASE_AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_AUTOMATION_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
 

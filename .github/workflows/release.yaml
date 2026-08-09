@@ -11,7 +11,9 @@ permissions:
 jobs:
   preflight:
     permissions:
+      actions: read
       contents: read
+      issues: read
       pull-requests: read
     runs-on: ubuntu-latest
     steps:

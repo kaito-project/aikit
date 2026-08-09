@@ -274,16 +274,16 @@ AIKit uses semantic versioning. A `v*` tag is a production deployment event, so 
 To publish a stable release:
 
 1. Run the **Prepare release** workflow from `main` with a version in `vX.Y.Z` form.
-2. Open the generated pull request, select **Approve workflows to run**, wait for its checks, then review and merge it into `release-X.Y`. The pull request updates:
+2. Open the generated pull request, wait for its checks (approving them if GitHub prompts), then review and merge it into `release-X.Y`. The pull request updates:
    - `Makefile`: the `VERSION` variable
    - `charts/aikit/Chart.yaml`: `version` and `appVersion`
 3. Run the **Publish release** workflow from `main` with the same version and obtain approval for the `prod` environment.
 4. The workflow validates the version files, release branch ancestry, and merged release pull request before the release GitHub App creates the protected tag.
-5. The tag starts the artifact and runner-image publishing workflows. If the released major/minor line is newer than `main`, the trusted publish workflow uses a separate version-sync App to open a pull request. This includes recovery releases such as `v0.22.1` when an unusable `v0.22.0` tag must remain immutable.
+5. The tag starts the artifact and runner-image publishing workflows. If the released major/minor line is newer than `main`, the trusted publish workflow uses the separate release-automation App to open a pull request. This includes recovery releases such as `v0.22.1` when an unusable `v0.22.0` tag must remain immutable.
 
-The publisher preflight permits follow-up fixes on the release branch after the preparation pull request, but the preparation pull request merge must remain an ancestor of the tagged commit.
+The publisher preflight permits follow-up fixes on the release branch after the preparation pull request, but the preparation pull request merge must remain an ancestor of the tagged commit. The preparation pull request's `lint` and `unit-test` workflows must succeed, and every other workflow run for its latest commit must finish without failure.
 
-Preparation pull requests intentionally use the workflow's repository-scoped `GITHUB_TOKEN`. GitHub creates their `pull_request` checks in an approval-required state, providing a human gate without exposing either release App credential to the preparation workflow.
+Preparation pull requests use the non-bypass release-automation App so their `pull_request` checks run. That App cannot create protected tags; the tag-ruleset bypass remains exclusive to the release App used after `prod` approval.
 
 Do not run `git tag`, `git push origin vX.Y.Z`, or force-update a release tag. Rerun the failed workflow for a transient publication failure. If the release commit must change, prepare a new patch version; never move the existing tag.
 
@@ -292,14 +292,14 @@ Do not run `git tag`, `git push origin vX.Y.Z`, or force-update a release tag. R
 The protected flow requires these one-time repository settings:
 
 - Install a dedicated release GitHub App on this repository with only **Contents: write** permission.
-- Install a separate version-sync GitHub App with **Contents: write** and **Pull requests: write** permissions. Do not grant this App a tag-ruleset bypass.
-- Store `RELEASE_APP_CLIENT_ID` and `RELEASE_APP_PRIVATE_KEY` only in the protected `prod` environment. Require a reviewer on `prod`, disallow administrator bypass, and restrict deployments to `main`. Enable self-review prevention when a second maintainer or reviewer team is available.
-- Store `RELEASE_SYNC_APP_CLIENT_ID` and `RELEASE_SYNC_APP_PRIVATE_KEY` only in a separate `version-sync` environment. Restrict it to `main` and disallow administrator bypass. It does not need another reviewer because it runs only after the approved tag job succeeds.
+- Install a separate release-automation GitHub App with **Contents: write** and **Pull requests: write** permissions. It creates preparation and version-sync pull requests. Do not grant this App a tag-ruleset bypass.
+- Store `RELEASE_APP_CLIENT_ID` as an environment variable and `RELEASE_APP_PRIVATE_KEY` as an environment secret only in the protected `prod` environment. Require a reviewer on `prod`, disallow administrator bypass, and restrict deployments to `main`. Enable self-review prevention when a second maintainer or reviewer team is available.
+- Store `RELEASE_AUTOMATION_APP_CLIENT_ID` as an environment variable and `RELEASE_AUTOMATION_APP_PRIVATE_KEY` as an environment secret in a separate `release-automation` environment. Restrict it to `main` and disallow administrator bypass. It does not need another reviewer because the App cannot create protected tags.
 - Apply a creation ruleset to `refs/tags/v*`. Remove repository-role and administrator bypasses; grant **Always allow** bypass only to the dedicated release GitHub App.
 - Apply a second ruleset to `refs/tags/v*` that blocks updates and deletions with no bypass actors. Keeping this separate prevents the release App from moving a tag after creating it.
 - If deletion is ever required for recovery, temporarily changing the no-bypass ruleset must be a separate audited break-glass process.
 - Before the next release from any branch created before these guardrails, backport the publisher workflows and release validator. Tag-push workflows run from the tagged commit, not from the current `main` branch.
 
-GitHub App tokens are intentionally used instead of the workflow's default `GITHUB_TOKEN`: tags created with `GITHUB_TOKEN` do not start tag-push workflows, while pull requests created with the version-sync App start the required pull-request checks without a manual workflow approval step.
+GitHub App tokens are intentionally used instead of the workflow's default `GITHUB_TOKEN`: tags created with `GITHUB_TOKEN` do not start tag-push workflows, while pull requests created with the release-automation App start the required pull-request checks.
 
 Thank you for contributing to AIKit! 🚀
