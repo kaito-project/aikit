@@ -1,0 +1,16 @@
+#syntax=aikit:test
+apiVersion: v1alpha1
+debug: true
+runtime: cuda
+backendCapability: nvidia
+backends:
+  - whisper
+models:
+  - name: ggml-tiny.en.bin
+    source: https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.en.bin
+    sha256: "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f"
+config: |
+  - name: whisper-tiny-en
+    backend: whisper
+    parameters:
+      model: ggml-tiny.en.bin

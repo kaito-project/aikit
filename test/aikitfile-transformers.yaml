@@ -1,0 +1,18 @@
+#syntax=aikit:test
+apiVersion: v1alpha1
+debug: true
+runtime: cuda
+backendCapability: nvidia
+backends:
+  - transformers
+models:
+  - name: Qwen/Qwen2.5-0.5B-Instruct
+    source: huggingface://Qwen/Qwen2.5-0.5B-Instruct@7ae557604adf67be50417f59c2c2f167def9a775
+config: |
+  - name: Qwen2.5-0.5B-Instruct
+    backend: transformers
+    parameters:
+      model: Qwen/Qwen2.5-0.5B-Instruct
+    type: AutoModelForCausalLM
+    template:
+      use_tokenizer_template: true
