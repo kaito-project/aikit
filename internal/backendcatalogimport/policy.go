@@ -123,6 +123,8 @@ func policyFor(family, selector, target, sourceRef string, platform Platform) (e
 		policy.Status = statusSupported
 		policy.RuntimeBaseRef = ubuntu22RuntimeBase
 		policy.RunnerProfile = runnerHFConfig
+		policy.Environment = append(policy.Environment, vllmNativeSampler)
+		sort.Strings(policy.Environment)
 	case familyVLLMCpp + "/" + selectorDefault + "/linux/amd64", familyVLLMCpp + "/" + selectorDefault + "/linux/arm64":
 		policy.Status = statusSupported
 		policy.RuntimeBaseRef = chiseledRuntimeBase

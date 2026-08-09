@@ -21,6 +21,7 @@ const (
 	testLocalAIVersion     = "v4.8.2"
 	testLegacyLocalAI      = "v3.12.1"
 	testArbitraryFamily    = "arbitrary-family"
+	testVLLMNativeSampler  = "VLLM_USE_FLASHINFER_SAMPLER=0"
 )
 
 var (
@@ -134,7 +135,7 @@ func TestResolveBackendCurrentCompatibility(t *testing.T) {
 			wantProfile:     backendcatalog.TargetProfileCUDA12,
 			wantRunner:      backendcatalog.RunnerProfileHFConfig,
 			wantPackages:    []string{"gcc", "libc6-dev"},
-			wantEnvironment: testCUDA12Environment,
+			wantEnvironment: slices.Concat(testCUDA12Environment, []string{testVLLMNativeSampler}),
 		},
 		{
 			name: "CPU vllm-cpp arm64",

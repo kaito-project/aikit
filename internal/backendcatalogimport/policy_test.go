@@ -217,7 +217,7 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			status:         statusSupported,
 			runtimeBase:    ubuntu22RuntimeBase,
 			systemPackages: []string{"gcc", "libc6-dev"},
-			environment:    cuda12Environment,
+			environment:    append(cuda12Environment, vllmNativeSampler),
 			runner:         runnerHFConfig,
 		},
 		{

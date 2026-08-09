@@ -55,6 +55,7 @@ const (
 	cudaLibraryPath     = "LD_LIBRARY_PATH=/usr/local/cuda/lib64:"
 	cudaPath            = "PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	cudaVisibleDevices  = "NVIDIA_VISIBLE_DEVICES=all"
+	vllmNativeSampler   = "VLLM_USE_FLASHINFER_SAMPLER=0"
 )
 
 // LocalAIV482Source pins the exact upstream input accepted by the command.

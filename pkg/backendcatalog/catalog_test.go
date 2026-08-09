@@ -29,6 +29,7 @@ const (
 	testSymlinkPath       = "/usr/lib/libcompat.so.0"
 	testCUDABuildType     = "BUILD_TYPE=cublas"
 	testCUDAVisible       = "NVIDIA_VISIBLE_DEVICES=all"
+	testVLLMNativeSampler = "VLLM_USE_FLASHINFER_SAMPLER=0"
 	testUnsafePath        = "../escape"
 )
 
@@ -122,7 +123,8 @@ func TestDefaultResolvesCurrentRunnerTuples(t *testing.T) {
 			},
 			wantRuntime: RuntimeCUDA, wantTarget: TargetProfileCUDA12,
 			wantInstall: "cuda12-vllm", wantRunner: RunnerProfileHFConfig,
-			wantPackages: []string{testSystemPackageGCC, "libc6-dev"}, wantEnv: testCUDA12Environment,
+			wantPackages: []string{testSystemPackageGCC, "libc6-dev"},
+			wantEnv:      slices.Concat(testCUDA12Environment, []string{testVLLMNativeSampler}),
 		},
 		{
 			name: "vllm.cpp CPU amd64",
