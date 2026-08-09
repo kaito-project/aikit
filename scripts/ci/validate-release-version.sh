@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-  echo "Usage: $0 <release-version> <new|existing|either>" >&2
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+  echo "Usage: $0 <release-version> <new|existing|either> [<release-branch-commit|missing>]" >&2
   exit 2
 fi
 
 release_version=$1
 expected_state=$2
+release_branch_commit=${3:-}
 release_remote=${RELEASE_REMOTE:-origin}
 export LC_ALL=C
 
@@ -146,6 +147,29 @@ if [[ $tag_exists != true && -n $latest_release_line ]]; then
   fi
 fi
 
+resolved_release_branch_commit=
+if [[ -n $release_branch_commit && $release_branch_commit != missing ]]; then
+  if ! resolved_release_branch_commit=$(git rev-parse "${release_branch_commit}^{commit}" 2>/dev/null); then
+    fail "release branch commit does not resolve to a commit: $release_branch_commit"
+  fi
+fi
+
+if [[ -n $release_branch_commit && -n $latest_release_line ]]; then
+  if [[ $release_branch_commit == missing ]]; then
+    fail "release branch is missing for previously released line $latest_release_line; restore it from historical ancestry"
+  fi
+  if ! git fetch --quiet --force --no-tags "$release_remote" \
+    "refs/tags/${latest_release_line}"; then
+    fail "could not fetch latest release-line tag $latest_release_line from $release_remote"
+  fi
+  if ! latest_release_commit=$(git rev-parse 'FETCH_HEAD^{commit}' 2>/dev/null); then
+    fail "latest release-line tag $latest_release_line does not resolve to a commit"
+  fi
+  if ! git merge-base --is-ancestor "$latest_release_commit" "$resolved_release_branch_commit"; then
+    fail "release branch commit $resolved_release_branch_commit does not descend from $latest_release_line at $latest_release_commit"
+  fi
+fi
+
 publish_latest=true
 if [[ -n $latest_stable ]]; then
   compare_versions "$release_version" "$latest_stable"
@@ -161,6 +185,7 @@ if [[ -n ${GITHUB_OUTPUT:-} ]]; then
   {
     echo "tag_exists=$tag_exists"
     echo "latest_stable=${latest_stable:-none}"
+    echo "latest_release_line=${latest_release_line:-none}"
     echo "publish_latest=$publish_latest"
   } >>"$GITHUB_OUTPUT"
 fi

@@ -14,7 +14,7 @@ The publish preflight requires all version files to match, the selected commit t
 
 Before publishing a new tag from a release branch created before these guardrails, backport the complete `.github/workflows` directory and the release control scripts. **Publish release** compares the complete workflow tree and host-executed release guardrails with the immutable `main` workflow revision being approved and rejects a stale release branch. This is required because tag-push workflows execute from the tagged commit.
 
-Patch versions must increase within a release line. An older supported line can still receive a maintenance release, but its images do not replace the `latest` tags from a newer stable release. If that older release branch is missing, restore it from its historical commit before preparing the release; the workflow refuses to create it from newer `main` code.
+Patch versions must increase within a release line. An older supported line can still receive a maintenance release, but its images do not replace the `latest` tags from a newer stable release. If any release branch with an existing stable tag is missing, restore it from its historical ancestry before preparing the release; the workflow refuses to recreate a previously released line from `main`. A restored branch must descend from the latest stable tag on that line.
 
 Never create, push, force-update, or delete a `v*` tag manually. A tag is the deployment trigger, not a preparation step. For a transient publication failure, rerun the failed workflow against the same tag. If the release commit must change, prepare a new patch version instead of moving the existing tag. If `main` advances while **Publish release** is awaiting approval, rerun it from the new `main` revision.
 

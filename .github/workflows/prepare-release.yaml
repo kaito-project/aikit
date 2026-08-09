@@ -54,10 +54,18 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Stage trusted release version validator
+        run: |
+          set -euo pipefail
+          install -m 0755 \
+            scripts/ci/validate-release-version.sh \
+            "${RUNNER_TEMP}/validate-release-version.sh"
+          echo "TRUSTED_VERSION_VALIDATOR=${RUNNER_TEMP}/validate-release-version.sh" >>"${GITHUB_ENV}"
+
       - name: Validate release version policy
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
-        run: scripts/ci/validate-release-version.sh "${RELEASE_VERSION}" new
+        run: '"${TRUSTED_VERSION_VALIDATOR}" "${RELEASE_VERSION}" new'
 
       - name: Prepare release manifests
         id: manifests
@@ -84,6 +92,13 @@ jobs:
             fi
             branch_exists=true
           fi
+
+          release_branch_commit=missing
+          if [[ ${branch_exists} == true ]]; then
+            release_branch_commit=${base_commit}
+          fi
+          "${TRUSTED_VERSION_VALIDATOR}" \
+            "${NEWVERSION}" new "${release_branch_commit}"
 
           git checkout --quiet --detach "${base_commit}"
           if [[ ${branch_exists} != true ]]; then
@@ -177,11 +192,13 @@ jobs:
               echo "${TARGET_BRANCH} advanced from ${BASE_COMMIT} to ${current_commit:-absent}; rerun Prepare release." >&2
               exit 1
             fi
+            "${TRUSTED_VERSION_VALIDATOR}" "${NEWVERSION}" new "${BASE_COMMIT}"
           else
             if [[ -n ${current_commit} ]]; then
               echo "${TARGET_BRANCH} was created while this workflow was preparing it; rerun Prepare release." >&2
               exit 1
             fi
+            "${TRUSTED_VERSION_VALIDATOR}" "${NEWVERSION}" new missing
             gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
               --raw-field "ref=refs/heads/${TARGET_BRANCH}" \
               --raw-field "sha=${BASE_COMMIT}" >/dev/null
