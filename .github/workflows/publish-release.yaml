@@ -124,7 +124,10 @@ jobs:
     needs: preflight
     environment: prod
     permissions:
+      actions: read
       contents: read
+      issues: read
+      pull-requests: read
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
@@ -185,6 +188,13 @@ jobs:
             fi
             echo "tag_exists=false" >>"${GITHUB_OUTPUT}"
           fi
+
+      - name: Recheck release provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
+          RELEASE_COMMIT: ${{ needs.preflight.outputs.release_commit }}
+        run: scripts/ci/validate-release.sh "${RELEASE_VERSION}" "${RELEASE_COMMIT}"
 
       - name: Create release GitHub App token
         if: steps.state.outputs.tag_exists != 'true'
