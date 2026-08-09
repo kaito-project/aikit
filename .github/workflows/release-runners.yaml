@@ -133,7 +133,7 @@ jobs:
         with:
           images: ghcr.io/kaito-project/aikit/runners/${{ matrix.runner }}
           flavor: latest=false
-          tags: type=semver,pattern={{raw}}
+          tags: type=raw,value=${{ github.ref_name }}
 
       - name: Build and push aikit frontend
         run: |
@@ -170,13 +170,11 @@ jobs:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
         run: cosign sign --yes "ghcr.io/kaito-project/aikit/runners/${{ matrix.runner }}@${DIGEST}"
 
-      - name: Publish release tags
-        id: publish-release-tags
+      - name: Publish versioned release tag
         env:
           CANDIDATE_IMAGE: ghcr.io/kaito-project/aikit/runners/${{ matrix.runner }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
           IMAGE_TAGS: ${{ steps.docker_meta.outputs.tags }}
-          LATEST_TAG: ghcr.io/kaito-project/aikit/runners/${{ matrix.runner }}:latest
         run: |
           set -euo pipefail
           candidate_ref="${CANDIDATE_IMAGE}@${DIGEST}"
@@ -186,38 +184,15 @@ jobs:
             fi
           done <<< "$IMAGE_TAGS"
 
-          policy_output=$(mktemp)
-          trap 'rm -f "${policy_output}"' EXIT
-          GITHUB_OUTPUT="${policy_output}" \
-            scripts/ci/validate-release-version.sh "${GITHUB_REF_NAME}" existing >/dev/null
-          publish_latest=$(awk -F= '$1 == "publish_latest" { print $2 }' "${policy_output}")
-          if [[ ${publish_latest} == true ]]; then
-            docker buildx imagetools create --prefer-index=false --tag "${LATEST_TAG}" "${candidate_ref}"
-            echo "published_latest=true" >>"${GITHUB_OUTPUT}"
-          elif [[ ${publish_latest} == false ]]; then
-            echo "published_latest=false" >>"${GITHUB_OUTPUT}"
-            echo "Skipped ${LATEST_TAG} because a newer stable release exists." >>"${GITHUB_STEP_SUMMARY}"
-          else
-            echo "Release version validator returned an invalid publish_latest value." >&2
-            exit 1
-          fi
-
       - name: Verify published image signatures
         env:
           IMAGE_TAGS: ${{ steps.docker_meta.outputs.tags }}
-          LATEST_TAG: ghcr.io/kaito-project/aikit/runners/${{ matrix.runner }}:latest
-          PUBLISHED_LATEST: ${{ steps.publish-release-tags.outputs.published_latest }}
         run: |
           set -euo pipefail
           while IFS= read -r tag; do
             if [[ -n "$tag" ]]; then
               cosign verify "$tag" \
                 --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              --certificate-identity "https://github.com/kaito-project/aikit/.github/workflows/release-runners.yaml@${GITHUB_REF}"
+                --certificate-identity "https://github.com/kaito-project/aikit/.github/workflows/release-runners.yaml@${GITHUB_REF}"
             fi
           done <<< "$IMAGE_TAGS"
-          if [[ ${PUBLISHED_LATEST} == true ]]; then
-            cosign verify "${LATEST_TAG}" \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              --certificate-identity "https://github.com/kaito-project/aikit/.github/workflows/release-runners.yaml@${GITHUB_REF}"
-          fi

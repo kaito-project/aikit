@@ -85,6 +85,12 @@ jobs:
       - name: Test release sync planner
         run: scripts/ci/plan-release-sync_test.sh
 
+      - name: Test latest release selector
+        run: scripts/ci/select-latest-release_test.sh
+
+      - name: Test release latest policy
+        run: scripts/ci/release-latest-policy_test.sh
+
   llb-benchmark:
     name: llb-benchmark
     runs-on: ubuntu-latest
