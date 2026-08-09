@@ -281,13 +281,15 @@ To publish a stable release:
 4. The workflow validates the version files, release branch ancestry, and merged release pull request before the release GitHub App creates the protected tag.
 5. The tag starts the artifact and runner-image publishing workflows. If the released major/minor line is newer than `main`, the trusted publish workflow uses the separate release-automation App to open a pull request. This includes recovery releases such as `v0.22.1` when an unusable `v0.22.0` tag must remain immutable.
 
-The publisher preflight permits follow-up fixes on the release branch after the preparation pull request, but the preparation pull request must change both version manifests to the requested version and its merge must remain an ancestor of the tagged commit. The preparation pull request's `lint` and `unit-test` workflows must succeed, and every other workflow run for its latest commit must finish without failure.
+The publisher preflight permits follow-up fixes on the release branch after the preparation pull request, but the preparation pull request must change both version manifests to the requested version and its merge must remain an ancestor of the tagged commit. The preparation pull request and the exact commit selected for release must each have successful `lint` and `unit-test` workflow runs, and every other latest workflow run for each commit must finish without failure. Push CI intentionally runs for documentation-only follow-up commits so every release candidate has exact-commit evidence.
 
 Patch versions must increase within each `release-X.Y` line. Maintenance releases on an older line remain supported, but they publish only their immutable version tags; mutable `latest` image tags remain on the highest stable release.
 
 Preparation pull requests use the non-bypass release-automation App so their `pull_request` checks run. That App cannot create protected tags; the tag-ruleset bypass remains exclusive to the release App used after `prod` approval.
 
-Do not run `git tag`, `git push origin vX.Y.Z`, or force-update a release tag. Rerun the failed workflow for a transient publication failure. If the release commit must change, prepare a new patch version; never move the existing tag.
+Do not run `git tag`, `git push origin vX.Y.Z`, or force-update a release tag. Rerun the failed workflow for a transient publication failure. If the release commit must change, prepare a new patch version; never move the existing tag. If `main` advances while **Publish release** is awaiting approval, rerun it so the approved guardrails come from the current `main` revision.
+
+Rerunning **Publish release** for an existing immutable tag is a recovery operation only: it does not recreate the tag or retrigger the tag-push publishing workflows. Rerun a failed artifact or runner-image workflow directly only for tags created through this protected flow; legacy tags require a manual provenance review first.
 
 ### Release repository setup
 
@@ -300,7 +302,7 @@ The protected flow requires these one-time repository settings:
 - Apply a creation ruleset to `refs/tags/v*`. Remove repository-role and administrator bypasses; grant **Always allow** bypass only to the dedicated release GitHub App.
 - Apply a second ruleset to `refs/tags/v*` that blocks updates and deletions with no bypass actors. Keeping this separate prevents the release App from moving a tag after creating it.
 - If deletion is ever required for recovery, temporarily changing the no-bypass ruleset must be a separate audited break-glass process.
-- Before the next release from any branch created before these guardrails, backport the publisher workflows and release validator. Tag-push workflows run from the tagged commit, not from the current `main` branch.
+- Before the next release from any branch created before these guardrails, backport the complete `.github/workflows` directory and the release control scripts. Tag-push workflows run from the tagged commit, not from the current `main` branch. For a new tag, **Publish release** verifies that the complete workflow tree and host-executed release guardrails exactly match the immutable `main` workflow revision being approved and refuses stale release branches.
 
 GitHub App tokens are intentionally used instead of the workflow's default `GITHUB_TOKEN`: tags created with `GITHUB_TOKEN` do not start tag-push workflows, while pull requests created with the release-automation App start the required pull-request checks.
 

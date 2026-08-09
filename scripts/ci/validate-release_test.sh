@@ -64,10 +64,25 @@ git -C "$work_dir/repository" config user.email test@example.com
 git -C "$work_dir/repository" config user.name "Release Validator Test"
 git -C "$work_dir/repository" remote add origin "$work_dir/origin.git"
 
-mkdir -p "$work_dir/repository/charts/aikit"
+guardrail_files=(
+  .github/workflows/lint.yaml
+  .github/workflows/release-runners.yaml
+  .github/workflows/release.yaml
+  .github/workflows/unit-test.yaml
+  scripts/ci/check-image-size.sh
+  scripts/ci/validate-release-version.sh
+  scripts/ci/validate-release.sh
+)
+mkdir -p \
+  "$work_dir/repository/.github/workflows" \
+  "$work_dir/repository/charts/aikit" \
+  "$work_dir/repository/scripts/ci"
 printf '%s\n' 'VERSION := v1.2.2' >"$work_dir/repository/Makefile"
 printf '%s\n' 'version: 1.2.2' 'appVersion: v1.2.2' >"$work_dir/repository/charts/aikit/Chart.yaml"
-git -C "$work_dir/repository" add Makefile charts/aikit/Chart.yaml
+for guardrail_path in "${guardrail_files[@]}"; do
+  printf 'trusted guardrail fixture: %s\n' "$guardrail_path" >"$work_dir/repository/$guardrail_path"
+done
+git -C "$work_dir/repository" add Makefile charts/aikit/Chart.yaml "${guardrail_files[@]}"
 git -C "$work_dir/repository" commit --quiet -m "initial version"
 initial_commit=$(git -C "$work_dir/repository" rev-parse HEAD)
 git -C "$work_dir/repository" push --quiet --set-upstream origin main
@@ -111,6 +126,11 @@ run_validator() {
   local release_pr_action_runs=${5-$valid_action_runs}
   local release_pr_files=${6-$valid_pr_files}
   local release_commit_action_runs=${7-$valid_action_runs}
+  local trusted_guardrail_commit=${8-}
+  local -a validator_args=("$version" "$commit")
+  if [[ -n $trusted_guardrail_commit ]]; then
+    validator_args+=("$trusted_guardrail_commit")
+  fi
   (
     cd "$work_dir/repository"
     PATH="$work_dir/bin:$PATH" \
@@ -124,7 +144,7 @@ run_validator() {
       FAKE_EXPECTED_RELEASE_COMMIT="$commit" \
       GH_TOKEN=test-token \
       GITHUB_REPOSITORY=example/aikit \
-      "$validator" "$version" "$commit"
+      "$validator" "${validator_args[@]}"
   )
 }
 
@@ -142,6 +162,45 @@ format_pr_details() {
 valid_pr_details=$(format_pr_details \
   "$unrelated_ancestor_commit" "$release_pr_commit" "$release_pr_commit")
 run_validator v1.2.3 "$release_commit" 42 "$valid_pr_details" >/dev/null
+run_validator \
+  v1.2.3 "$release_commit" 42 "$valid_pr_details" "$valid_action_runs" "$valid_pr_files" "$valid_action_runs" "$release_commit" \
+  >/dev/null
+
+git -C "$work_dir/repository" checkout --quiet -b trusted-guardrails "$release_commit"
+printf '%s\n' 'trusted publisher update' >>"$work_dir/repository/.github/workflows/release.yaml"
+git -C "$work_dir/repository" add .github/workflows/release.yaml
+git -C "$work_dir/repository" commit --quiet -m "update trusted publisher guardrail"
+trusted_guardrail_commit=$(git -C "$work_dir/repository" rev-parse HEAD)
+if run_validator \
+  v1.2.3 "$release_commit" 42 "$valid_pr_details" "$valid_action_runs" "$valid_pr_files" "$valid_action_runs" "$trusted_guardrail_commit" \
+  >/dev/null 2>&1; then
+  echo "release commit with stale publisher guardrails unexpectedly passed" >&2
+  exit 1
+fi
+
+git -C "$work_dir/repository" checkout --quiet -b missing-guardrail "$release_commit"
+git -C "$work_dir/repository" rm --quiet scripts/ci/validate-release-version.sh
+git -C "$work_dir/repository" commit --quiet -m "remove release guardrail"
+missing_guardrail_commit=$(git -C "$work_dir/repository" rev-parse HEAD)
+if run_validator \
+  v1.2.3 "$missing_guardrail_commit" 42 "$valid_pr_details" "$valid_action_runs" "$valid_pr_files" "$valid_action_runs" "$release_commit" \
+  >/dev/null 2>&1; then
+  echo "release commit missing a trusted publisher guardrail unexpectedly passed" >&2
+  exit 1
+fi
+
+git -C "$work_dir/repository" checkout --quiet -b added-tag-workflow "$release_commit"
+printf '%s\n' 'on: push' >"$work_dir/repository/.github/workflows/untrusted.yaml"
+git -C "$work_dir/repository" add .github/workflows/untrusted.yaml
+git -C "$work_dir/repository" commit --quiet -m "add untrusted tag workflow"
+added_tag_workflow_commit=$(git -C "$work_dir/repository" rev-parse HEAD)
+if run_validator \
+  v1.2.3 "$added_tag_workflow_commit" 42 "$valid_pr_details" "$valid_action_runs" "$valid_pr_files" "$valid_action_runs" "$release_commit" \
+  >/dev/null 2>&1; then
+  echo "release commit with an untrusted workflow unexpectedly passed" >&2
+  exit 1
+fi
+
 legacy_pr_details=$(format_pr_details \
   "$unrelated_ancestor_commit" "$release_pr_commit" "$release_pr_commit" release-v1.2.3)
 run_validator v1.2.3 "$release_commit" 42 "$legacy_pr_details" >/dev/null

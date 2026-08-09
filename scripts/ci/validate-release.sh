@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-  echo "Usage: $0 <release-version> <release-commit>" >&2
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+  echo "Usage: $0 <release-version> <release-commit> [trusted-guardrail-commit]" >&2
   exit 2
 fi
 
 release_version=$1
 release_commit_input=$2
+trusted_guardrail_commit_input=${3:-}
 release_remote=${RELEASE_REMOTE:-origin}
 
 fail() {
@@ -192,6 +193,32 @@ expected_chart_version=${release_version#v}
 
 if ! release_commit=$(git rev-parse --verify "${release_commit_input}^{commit}" 2>/dev/null); then
   fail "commit does not resolve to a Git commit: $release_commit_input"
+fi
+
+if [[ -n $trusted_guardrail_commit_input ]]; then
+  if ! trusted_guardrail_commit=$(git rev-parse --verify "${trusted_guardrail_commit_input}^{commit}" 2>/dev/null); then
+    fail "trusted guardrail commit does not resolve to a Git commit: $trusted_guardrail_commit_input"
+  fi
+  release_guardrail_paths=(
+    .github/workflows
+    scripts/ci/check-image-size.sh
+    scripts/ci/validate-release-version.sh
+    scripts/ci/validate-release.sh
+  )
+  for guardrail_path in "${release_guardrail_paths[@]}"; do
+    if ! git cat-file -e "${trusted_guardrail_commit}:${guardrail_path}" 2>/dev/null; then
+      fail "trusted release guardrail is missing at $trusted_guardrail_commit: $guardrail_path"
+    fi
+    if ! git cat-file -e "${release_commit}:${guardrail_path}" 2>/dev/null; then
+      fail "release commit is missing trusted release guardrail: $guardrail_path"
+    fi
+  done
+  if ! git diff --quiet --no-ext-diff --no-textconv \
+    "$trusted_guardrail_commit" "$release_commit" -- "${release_guardrail_paths[@]}"; then
+    changed_guardrails=$(git diff --name-only --no-ext-diff --no-textconv \
+      "$trusted_guardrail_commit" "$release_commit" -- "${release_guardrail_paths[@]}")
+    fail "release commit does not contain the trusted publisher guardrails from $trusted_guardrail_commit: ${changed_guardrails//$'\n'/, }"
+  fi
 fi
 
 if ! release_manifests_match "$release_commit"; then

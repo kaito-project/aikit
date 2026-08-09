@@ -10,11 +10,15 @@ AIKit uses protected, immutable Git tags as production release events. The suppo
 4. The release GitHub App creates the protected tag. The tag starts the [artifact](https://github.com/kaito-project/aikit/actions/workflows/release.yaml) and [runner-image](https://github.com/kaito-project/aikit/actions/workflows/release-runners.yaml) publishing workflows.
 5. When the released major/minor line is newer than `main`, review and merge the version-sync pull request created by the trusted publish workflow. This also covers recovery releases whose first usable tag is a patch such as `v0.22.1`.
 
-The publish preflight requires all version files to match, the selected commit to be reachable from `release-X.Y`, and a checked, merged preparation pull request that changed both version manifests to be an ancestor. Follow-up release fixes after the preparation pull request are allowed.
+The publish preflight requires all version files to match, the selected commit to be reachable from `release-X.Y`, and a checked, merged preparation pull request that changed both version manifests to be an ancestor. Follow-up release fixes after the preparation pull request are allowed, but both the preparation pull request and the exact selected commit must have successful lint and unit-test runs. Push CI runs even for documentation-only follow-up commits so the selected commit always has evidence.
+
+Before publishing a new tag from a release branch created before these guardrails, backport the complete `.github/workflows` directory and the release control scripts. **Publish release** compares the complete workflow tree and host-executed release guardrails with the immutable `main` workflow revision being approved and rejects a stale release branch. This is required because tag-push workflows execute from the tagged commit.
 
 Patch versions must increase within a release line. An older supported line can still receive a maintenance release, but its images do not replace the `latest` tags from a newer stable release.
 
-Never create, push, force-update, or delete a `v*` tag manually. A tag is the deployment trigger, not a preparation step. For a transient publication failure, rerun the failed workflow against the same tag. If the release commit must change, prepare a new patch version instead of moving the existing tag.
+Never create, push, force-update, or delete a `v*` tag manually. A tag is the deployment trigger, not a preparation step. For a transient publication failure, rerun the failed workflow against the same tag. If the release commit must change, prepare a new patch version instead of moving the existing tag. If `main` advances while **Publish release** is awaiting approval, rerun it from the new `main` revision.
+
+Rerunning **Publish release** for an existing immutable tag is only for recovery work such as version synchronization. It does not recreate the tag or retrigger the artifact and runner-image workflows. Rerun a failed publishing workflow directly only for a tag created through this protected flow; review the provenance of legacy tags first.
 
 After publishing finishes, run [Update models](https://github.com/kaito-project/aikit/actions/workflows/update-models.yaml) to refresh the pre-built models.
 

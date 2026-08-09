@@ -100,7 +100,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ inputs.release_version }}
           RELEASE_COMMIT: ${{ steps.commit.outputs.sha }}
-        run: scripts/ci/validate-release.sh "${RELEASE_VERSION}" "${RELEASE_COMMIT}"
+          RELEASE_TAG_EXISTS: ${{ steps.commit.outputs.tag_exists }}
+          TRUSTED_GUARDRAIL_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          validator_args=("${RELEASE_VERSION}" "${RELEASE_COMMIT}")
+          if [[ ${RELEASE_TAG_EXISTS} != true ]]; then
+            validator_args+=("${TRUSTED_GUARDRAIL_COMMIT}")
+          fi
+          scripts/ci/validate-release.sh "${validator_args[@]}"
 
       - name: Summarize release candidate
         env:
@@ -158,8 +166,19 @@ jobs:
           RELEASE_BRANCH: ${{ needs.preflight.outputs.release_branch }}
           RELEASE_COMMIT: ${{ needs.preflight.outputs.release_commit }}
           RELEASE_TAG_EXISTED: ${{ needs.preflight.outputs.release_tag_exists }}
+          TRUSTED_GUARDRAIL_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
+          if [[ "${RELEASE_TAG_EXISTED}" != "true" ]]; then
+            current_main_commit=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+              --jq '.object.sha')
+            if [[ "${current_main_commit}" != "${TRUSTED_GUARDRAIL_COMMIT}" ]]; then
+              echo "main advanced from ${TRUSTED_GUARDRAIL_COMMIT} to ${current_main_commit}; rerun Publish release." >&2
+              exit 1
+            fi
+          fi
+
           current_release_commit=$(gh api \
             "repos/${GITHUB_REPOSITORY}/git/ref/heads/${RELEASE_BRANCH}" \
             --jq '.object.sha')
@@ -194,7 +213,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
           RELEASE_COMMIT: ${{ needs.preflight.outputs.release_commit }}
-        run: scripts/ci/validate-release.sh "${RELEASE_VERSION}" "${RELEASE_COMMIT}"
+          RELEASE_TAG_EXISTED: ${{ needs.preflight.outputs.release_tag_exists }}
+          TRUSTED_GUARDRAIL_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          validator_args=("${RELEASE_VERSION}" "${RELEASE_COMMIT}")
+          if [[ ${RELEASE_TAG_EXISTED} != true ]]; then
+            validator_args+=("${TRUSTED_GUARDRAIL_COMMIT}")
+          fi
+          scripts/ci/validate-release.sh "${validator_args[@]}"
 
       - name: Create release GitHub App token
         if: steps.state.outputs.tag_exists != 'true'
@@ -212,8 +239,17 @@ jobs:
           RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
           RELEASE_BRANCH: ${{ needs.preflight.outputs.release_branch }}
           RELEASE_COMMIT: ${{ needs.preflight.outputs.release_commit }}
+          TRUSTED_GUARDRAIL_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
+          current_main_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')
+          if [[ "${current_main_commit}" != "${TRUSTED_GUARDRAIL_COMMIT}" ]]; then
+            echo "main advanced from ${TRUSTED_GUARDRAIL_COMMIT} to ${current_main_commit}; rerun Publish release." >&2
+            exit 1
+          fi
+
           current_release_commit=$(gh api \
             "repos/${GITHUB_REPOSITORY}/git/ref/heads/${RELEASE_BRANCH}" \
             --jq '.object.sha')
