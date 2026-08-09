@@ -8,6 +8,15 @@ on:
     types:
       - completed
   workflow_dispatch:
+    inputs:
+      app_version:
+        description: Optional app, Helm, and GitHub Release version to recover before reconciling latest.
+        required: false
+        type: string
+      runner_version:
+        description: Optional runner image version to recover before reconciling latest.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -16,9 +25,14 @@ jobs:
   promote-app-version:
     if: >-
       github.ref == 'refs/heads/main' &&
-      github.event_name == 'workflow_run' &&
-      github.event.workflow_run.name == 'Release artifacts' &&
-      github.event.workflow_run.conclusion == 'success'
+      (
+        (
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.name == 'Release artifacts' &&
+          github.event.workflow_run.conclusion == 'success'
+        ) ||
+        (github.event_name == 'workflow_dispatch' && inputs.app_version != '')
+      )
     environment: release-automation
     permissions:
       actions: read
@@ -60,49 +74,60 @@ jobs:
           EXPECTED_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           EXPECTED_RUN_ID: ${{ github.event.workflow_run.id }}
           GH_TOKEN: ${{ github.token }}
+          RECOVERY_VERSION: ${{ inputs.app_version }}
         run: |
           set -euo pipefail
-          if ! [[ ${EXPECTED_RUN_ID} =~ ^[1-9][0-9]*$ && \
-            ${EXPECTED_RUN_ATTEMPT} =~ ^[1-9][0-9]{0,3}$ ]]; then
-            echo "Workflow event contained invalid attempt coordinates." >&2
-            exit 1
-          fi
-
           attempt_json=$(mktemp)
           remote_tags=$(mktemp)
           runs_json=$(mktemp)
           selector_output=$(mktemp)
           trap 'rm -f "${attempt_json}" "${remote_tags}" "${runs_json}" "${selector_output}"' EXIT
 
-          gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${EXPECTED_RUN_ID}/attempts/${EXPECTED_RUN_ATTEMPT}" \
-            >"${attempt_json}"
-          if ! jq -e \
-            --arg repository "${GITHUB_REPOSITORY}" \
-            --argjson run_attempt "${EXPECTED_RUN_ATTEMPT}" \
-            --argjson run_id "${EXPECTED_RUN_ID}" '
-              type == "object" and
-              .id == $run_id and
-              .run_attempt == $run_attempt and
-              .path == ".github/workflows/release.yaml" and
-              .event == "push" and
-              .status == "completed" and
-              .conclusion == "success" and
-              .head_repository.full_name == $repository and
-              (.head_branch | type == "string") and
-              (.head_branch | test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")) and
-              (.head_sha | type == "string") and
-              (.head_sha | test("^[0-9a-f]{40}$"))
-            ' "${attempt_json}" >/dev/null; then
-            echo "GitHub returned invalid metadata for the triggering release attempt." >&2
-            exit 1
+          expected_version=${RECOVERY_VERSION}
+          expected_commit=
+          if [[ -n ${EXPECTED_RUN_ID} || -n ${EXPECTED_RUN_ATTEMPT} ]]; then
+            if ! [[ ${EXPECTED_RUN_ID} =~ ^[1-9][0-9]*$ && \
+              ${EXPECTED_RUN_ATTEMPT} =~ ^[1-9][0-9]{0,3}$ ]]; then
+              echo "Workflow event contained invalid attempt coordinates." >&2
+              exit 1
+            fi
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${EXPECTED_RUN_ID}/attempts/${EXPECTED_RUN_ATTEMPT}" \
+              >"${attempt_json}"
+            if ! jq -e \
+              --arg repository "${GITHUB_REPOSITORY}" \
+              --argjson run_attempt "${EXPECTED_RUN_ATTEMPT}" \
+              --argjson run_id "${EXPECTED_RUN_ID}" '
+                type == "object" and
+                .id == $run_id and
+                .run_attempt == $run_attempt and
+                .path == ".github/workflows/release.yaml" and
+                .event == "push" and
+                .status == "completed" and
+                .conclusion == "success" and
+                .head_repository.full_name == $repository and
+                (.head_branch | type == "string") and
+                (.head_branch | test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")) and
+                (.head_sha | type == "string") and
+                (.head_sha | test("^[0-9a-f]{40}$"))
+              ' "${attempt_json}" >/dev/null; then
+              echo "GitHub returned invalid metadata for the triggering release attempt." >&2
+              exit 1
+            fi
+            expected_version=$(jq -r '.head_branch' "${attempt_json}")
+            expected_commit=$(jq -r '.head_sha' "${attempt_json}")
+            scripts/ci/collect-release-attempts.sh \
+              "${GITHUB_REPOSITORY}" .github/workflows/release.yaml "${runs_json}" \
+              "${EXPECTED_RUN_ID}" "${EXPECTED_RUN_ATTEMPT}"
+          else
+            if ! [[ ${expected_version} =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "Manual app recovery requires a stable vX.Y.Z version." >&2
+              exit 1
+            fi
+            scripts/ci/collect-release-attempts.sh \
+              "${GITHUB_REPOSITORY}" .github/workflows/release.yaml "${runs_json}"
           fi
 
-          expected_version=$(jq -r '.head_branch' "${attempt_json}")
-          expected_commit=$(jq -r '.head_sha' "${attempt_json}")
-          scripts/ci/collect-release-attempts.sh \
-            "${GITHUB_REPOSITORY}" .github/workflows/release.yaml "${runs_json}" \
-            "${EXPECTED_RUN_ID}" "${EXPECTED_RUN_ATTEMPT}"
           git ls-remote --tags \
             "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
             >"${remote_tags}"
@@ -112,13 +137,17 @@ jobs:
 
           for expected_output in \
             found=true \
-            "version=${expected_version}" \
-            "commit=${expected_commit}"; do
+            "version=${expected_version}"; do
             if ! grep -Fxq -- "${expected_output}" "${selector_output}"; then
-              echo "Triggering release attempt is no longer bound to its version tag." >&2
+              echo "Selected app release is not bound to a successful publisher run and version tag." >&2
               exit 1
             fi
           done
+          if [[ -n ${expected_commit} ]] && \
+            ! grep -Fxq -- "commit=${expected_commit}" "${selector_output}"; then
+            echo "Triggering app release commit is no longer bound to its version tag." >&2
+            exit 1
+          fi
           cat "${selector_output}" >>"${GITHUB_OUTPUT}"
 
       - name: Install Cosign
@@ -171,8 +200,6 @@ jobs:
           RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
           RUN_ATTEMPT: ${{ steps.release.outputs.run_attempt }}
           RUN_ID: ${{ steps.release.outputs.run_id }}
-          TRIGGER_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
           TRUSTED_COMMIT: ${{ github.sha }}
           VERSION: ${{ steps.release.outputs.version }}
         run: |
@@ -192,7 +219,7 @@ jobs:
           trap 'rm -f "${remote_tags}" "${runs_json}" "${selector_output}"' EXIT
           scripts/ci/collect-release-attempts.sh \
             "${GITHUB_REPOSITORY}" .github/workflows/release.yaml "${runs_json}" \
-            "${TRIGGER_RUN_ID}" "${TRIGGER_RUN_ATTEMPT}"
+            "${RUN_ID}" "${RUN_ATTEMPT}"
           git ls-remote --tags \
             "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
             >"${remote_tags}"
@@ -206,7 +233,7 @@ jobs:
             "run_id=${RUN_ID}" \
             "run_attempt=${RUN_ATTEMPT}"; do
             if ! grep -Fxq -- "${expected_output}" "${selector_output}"; then
-              echo "Triggering release attempt or version tag changed before promotion." >&2
+              echo "Selected app release attempt or version tag changed before promotion." >&2
               exit 1
             fi
           done
@@ -244,9 +271,14 @@ jobs:
     needs: promote-app-version
     if: >-
       github.ref == 'refs/heads/main' &&
-      github.event_name == 'workflow_run' &&
-      github.event.workflow_run.name == 'Release artifacts' &&
-      github.event.workflow_run.conclusion == 'success' &&
+      (
+        (
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.name == 'Release artifacts' &&
+          github.event.workflow_run.conclusion == 'success'
+        ) ||
+        (github.event_name == 'workflow_dispatch' && inputs.app_version != '')
+      ) &&
       needs.promote-app-version.result == 'success'
     environment: release-automation
     permissions:
@@ -980,9 +1012,14 @@ jobs:
   promote-runner-version:
     if: >-
       github.ref == 'refs/heads/main' &&
-      github.event_name == 'workflow_run' &&
-      github.event.workflow_run.name == 'Release runner images' &&
-      github.event.workflow_run.conclusion == 'success'
+      (
+        (
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.name == 'Release runner images' &&
+          github.event.workflow_run.conclusion == 'success'
+        ) ||
+        (github.event_name == 'workflow_dispatch' && inputs.runner_version != '')
+      )
     environment: release-automation
     permissions:
       actions: read
@@ -1019,49 +1056,60 @@ jobs:
           EXPECTED_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           EXPECTED_RUN_ID: ${{ github.event.workflow_run.id }}
           GH_TOKEN: ${{ github.token }}
+          RECOVERY_VERSION: ${{ inputs.runner_version }}
         run: |
           set -euo pipefail
-          if ! [[ ${EXPECTED_RUN_ID} =~ ^[1-9][0-9]*$ && \
-            ${EXPECTED_RUN_ATTEMPT} =~ ^[1-9][0-9]{0,3}$ ]]; then
-            echo "Workflow event contained invalid attempt coordinates." >&2
-            exit 1
-          fi
-
           attempt_json=$(mktemp)
           runs_json=$(mktemp)
           remote_tags=$(mktemp)
           selection_output=$(mktemp)
           trap 'rm -f "${attempt_json}" "${runs_json}" "${remote_tags}" "${selection_output}"' EXIT
 
-          gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${EXPECTED_RUN_ID}/attempts/${EXPECTED_RUN_ATTEMPT}" \
-            >"${attempt_json}"
-          if ! jq -e \
-            --arg repository "${GITHUB_REPOSITORY}" \
-            --argjson run_attempt "${EXPECTED_RUN_ATTEMPT}" \
-            --argjson run_id "${EXPECTED_RUN_ID}" '
-              type == "object" and
-              .id == $run_id and
-              .run_attempt == $run_attempt and
-              .path == ".github/workflows/release-runners.yaml" and
-              .event == "push" and
-              .status == "completed" and
-              .conclusion == "success" and
-              .head_repository.full_name == $repository and
-              (.head_branch | type == "string") and
-              (.head_branch | test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")) and
-              (.head_sha | type == "string") and
-              (.head_sha | test("^[0-9a-f]{40}$"))
-            ' "${attempt_json}" >/dev/null; then
-            echo "GitHub returned invalid metadata for the triggering runner release attempt." >&2
-            exit 1
+          expected_version=${RECOVERY_VERSION}
+          expected_commit=
+          if [[ -n ${EXPECTED_RUN_ID} || -n ${EXPECTED_RUN_ATTEMPT} ]]; then
+            if ! [[ ${EXPECTED_RUN_ID} =~ ^[1-9][0-9]*$ && \
+              ${EXPECTED_RUN_ATTEMPT} =~ ^[1-9][0-9]{0,3}$ ]]; then
+              echo "Workflow event contained invalid attempt coordinates." >&2
+              exit 1
+            fi
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${EXPECTED_RUN_ID}/attempts/${EXPECTED_RUN_ATTEMPT}" \
+              >"${attempt_json}"
+            if ! jq -e \
+              --arg repository "${GITHUB_REPOSITORY}" \
+              --argjson run_attempt "${EXPECTED_RUN_ATTEMPT}" \
+              --argjson run_id "${EXPECTED_RUN_ID}" '
+                type == "object" and
+                .id == $run_id and
+                .run_attempt == $run_attempt and
+                .path == ".github/workflows/release-runners.yaml" and
+                .event == "push" and
+                .status == "completed" and
+                .conclusion == "success" and
+                .head_repository.full_name == $repository and
+                (.head_branch | type == "string") and
+                (.head_branch | test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")) and
+                (.head_sha | type == "string") and
+                (.head_sha | test("^[0-9a-f]{40}$"))
+              ' "${attempt_json}" >/dev/null; then
+              echo "GitHub returned invalid metadata for the triggering runner release attempt." >&2
+              exit 1
+            fi
+            expected_version=$(jq -r '.head_branch' "${attempt_json}")
+            expected_commit=$(jq -r '.head_sha' "${attempt_json}")
+            scripts/ci/collect-release-attempts.sh \
+              "${GITHUB_REPOSITORY}" .github/workflows/release-runners.yaml "${runs_json}" \
+              "${EXPECTED_RUN_ID}" "${EXPECTED_RUN_ATTEMPT}"
+          else
+            if ! [[ ${expected_version} =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "Manual runner recovery requires a stable vX.Y.Z version." >&2
+              exit 1
+            fi
+            scripts/ci/collect-release-attempts.sh \
+              "${GITHUB_REPOSITORY}" .github/workflows/release-runners.yaml "${runs_json}"
           fi
 
-          expected_version=$(jq -r '.head_branch' "${attempt_json}")
-          expected_commit=$(jq -r '.head_sha' "${attempt_json}")
-          scripts/ci/collect-release-attempts.sh \
-            "${GITHUB_REPOSITORY}" .github/workflows/release-runners.yaml "${runs_json}" \
-            "${EXPECTED_RUN_ID}" "${EXPECTED_RUN_ATTEMPT}"
           git ls-remote --tags \
             "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
             >"${remote_tags}"
@@ -1071,13 +1119,17 @@ jobs:
 
           for expected_output in \
             found=true \
-            "version=${expected_version}" \
-            "commit=${expected_commit}"; do
+            "version=${expected_version}"; do
             if ! grep -Fxq -- "${expected_output}" "${selection_output}"; then
-              echo "Triggering runner release attempt is no longer bound to its version tag." >&2
+              echo "Selected runner release is not bound to a successful publisher run and version tag." >&2
               exit 1
             fi
           done
+          if [[ -n ${expected_commit} ]] && \
+            ! grep -Fxq -- "commit=${expected_commit}" "${selection_output}"; then
+            echo "Triggering runner release commit is no longer bound to its version tag." >&2
+            exit 1
+          fi
           cat "${selection_output}" >>"${GITHUB_OUTPUT}"
 
       - name: Select successful runner candidate attempts
@@ -1179,8 +1231,6 @@ jobs:
           RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
           RUN_ATTEMPT: ${{ steps.release.outputs.run_attempt }}
           RUN_ID: ${{ steps.release.outputs.run_id }}
-          TRIGGER_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
           current_main_commit=$(gh api \
@@ -1197,7 +1247,7 @@ jobs:
           trap 'rm -f "${remote_tags}" "${runs_json}" "${selector_output}"' EXIT
           scripts/ci/collect-release-attempts.sh \
             "${GITHUB_REPOSITORY}" .github/workflows/release-runners.yaml "${runs_json}" \
-            "${TRIGGER_RUN_ID}" "${TRIGGER_RUN_ATTEMPT}"
+            "${RUN_ID}" "${RUN_ATTEMPT}"
           git ls-remote --tags \
             "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
             >"${remote_tags}"
@@ -1211,7 +1261,7 @@ jobs:
             "run_id=${RUN_ID}" \
             "run_attempt=${RUN_ATTEMPT}"; do
             if ! grep -Fxq -- "${expected_output}" "${selector_output}"; then
-              echo "Triggering runner release attempt or version tag changed before promotion." >&2
+              echo "Selected runner release attempt or version tag changed before promotion." >&2
               exit 1
             fi
           done

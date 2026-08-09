@@ -19,6 +19,11 @@ reconciler_latest_tag="--tag \"${literal_dollar}{image}:latest\""
 release_commit_validator_arg="validator_args+=(\"${literal_dollar}{RELEASE_COMMIT}\")"
 trusted_main_environment="TRUSTED_MAIN_COMMIT: ${literal_dollar}{{ github.sha }}"
 trusted_main_check="if [[ \"${literal_dollar}{main_commit}\" != \"${literal_dollar}{TRUSTED_MAIN_COMMIT}\" ]]"
+manual_app_predicate="github.event_name == 'workflow_dispatch' && inputs.app_version != ''"
+manual_runner_predicate="github.event_name == 'workflow_dispatch' && inputs.runner_version != ''"
+manual_app_version="RECOVERY_VERSION: ${literal_dollar}{{ inputs.app_version }}"
+manual_runner_version="RECOVERY_VERSION: ${literal_dollar}{{ inputs.runner_version }}"
+selected_attempt_args="\"${literal_dollar}{RUN_ID}\" \"${literal_dollar}{RUN_ATTEMPT}\""
 
 extract_job() {
   local job=$1
@@ -38,6 +43,7 @@ extract_job() {
 promote_app_job=$(extract_job promote-app-version)
 publish_app_job=$(extract_job publish-app-release)
 reconcile_app_job=$(extract_job reconcile-app)
+promote_runner_job=$(extract_job promote-runner-version)
 reconcile_runners_job=$(extract_job reconcile-runners)
 
 for publisher in "$artifact_publisher" "$runner_publisher"; do
@@ -100,6 +106,28 @@ fi
 if ! grep -q 'workflow_run:' "$reconciler" || \
   ! grep -q 'select-latest-release.sh' "$reconciler"; then
   echo "trusted latest reconciliation trigger or selector is missing" >&2
+  exit 1
+fi
+if [[ $(grep -c '^      app_version:' "$reconciler") -ne 1 ]] || \
+  [[ $(grep -c '^      runner_version:' "$reconciler") -ne 1 ]] || \
+  ! grep -qF "$manual_app_predicate" <<<"$promote_app_job" || \
+  ! grep -qF "$manual_app_predicate" <<<"$publish_app_job" || \
+  ! grep -qF "$manual_runner_predicate" <<<"$promote_runner_job" || \
+  ! grep -qF "$manual_app_version" <<<"$promote_app_job" || \
+  ! grep -qF "$manual_runner_version" <<<"$promote_runner_job"; then
+  echo "manual recovery must target canonical app and runner versions independently" >&2
+  exit 1
+fi
+if grep -qF "$manual_runner_predicate" <<<"$promote_app_job" || \
+  grep -qF "$manual_runner_predicate" <<<"$publish_app_job" || \
+  grep -qF "$manual_app_predicate" <<<"$promote_runner_job" || \
+  grep -q 'TRIGGER_RUN_' "$reconciler"; then
+  echo "manual recovery must not cross components or depend on stale event coordinates" >&2
+  exit 1
+fi
+if [[ $(grep -cF "$selected_attempt_args" <<<"$promote_app_job") -lt 1 ]] || \
+  [[ $(grep -cF "$selected_attempt_args" <<<"$promote_runner_job") -lt 1 ]]; then
+  echo "exact publication must revalidate the selected canonical attempt before mutation" >&2
   exit 1
 fi
 if ! grep -qF "$publisher_candidate" "$artifact_publisher" || \
