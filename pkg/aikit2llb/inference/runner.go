@@ -21,15 +21,16 @@ const (
 	runnerLlamaCppModelMarker   = "/models/.aikit-llama-cpp-model-ref"
 	runnerVLLMCppModelDir       = "/models/vllm-cpp-model"
 	runnerVLLMCppModelMarker    = "/models/.aikit-vllm-cpp-model-ref"
-	runnerDependenciesCommand   = "if [ -f /etc/apt/sources.list ]; then sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g; " +
+	runnerAPTSetupCommand       = "if [ -f /etc/apt/sources.list ]; then sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g; " +
 		"s|http://security.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list; fi && " +
 		"if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g; " +
 		"s|http://security.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources; fi && " +
-		"apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update && " +
-		"apt-get install --no-install-recommends -y curl ca-certificates python3 python3-pip && " +
-		"(pip install --no-cache-dir --no-compile --break-system-packages huggingface-hub==" + runnerHuggingFaceHubVersion + " 2>/dev/null || " +
-		"pip install --no-cache-dir --no-compile huggingface-hub==" + runnerHuggingFaceHubVersion + ") && " +
-		"apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /root/.cache/pip"
+		"apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update && "
+	runnerDependenciesCleanup = "apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /root/.cache/pip"
+	runnerDownloaderPackages  = "curl ca-certificates python3 python3-pip"
+	runnerTrustStorePackage   = "ca-certificates"
+	runnerHFCLIInstallCommand = "(pip install --no-cache-dir --no-compile --break-system-packages huggingface-hub==" + runnerHuggingFaceHubVersion + " 2>/dev/null || " +
+		"pip install --no-cache-dir --no-compile huggingface-hub==" + runnerHuggingFaceHubVersion + ")"
 )
 
 // isRunnerMode returns true when the config defines backends but no models,
@@ -39,22 +40,44 @@ func isRunnerMode(c *config.InferenceConfig) bool {
 }
 
 func installRunnerDependenciesWithBackend(backend backendcatalog.Resolution, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State) {
-	if backend.RunnerProfile != backendcatalog.RunnerProfileLlamaCpp && backend.RunnerProfile != backendcatalog.RunnerProfileVLLMCpp {
+	command := runnerDependenciesCommand(backend.RunnerProfile)
+	if command == "" {
 		return s, merge
 	}
 
 	savedState := s
 
-	// Install curl for HTTP/HTTPS downloads and the hf CLI for repository downloads.
+	// Install a trust store for every runtime downloader and add the hf CLI only for native model payloads.
 	// Note: Runner mode is not supported for Apple Silicon (validated in build).
 	s = s.Run(
-		utils.Sh(runnerDependenciesCommand),
+		utils.Sh(command),
 		llb.WithCustomNamef("Installing runner dependencies for platform %s/%s", platform.OS, platform.Architecture),
 		llb.IgnoreCache,
 	).Root()
 
 	diff := llb.Diff(savedState, s)
 	return s, llb.Merge([]llb.State{merge, diff})
+}
+
+func runnerDependenciesCommand(profile backendcatalog.RunnerProfile) string {
+	packages := runnerTrustStorePackage
+	installHFCLI := false
+
+	switch profile {
+	case backendcatalog.RunnerProfileHFConfig:
+	case backendcatalog.RunnerProfileLlamaCpp, backendcatalog.RunnerProfileVLLMCpp:
+		packages = runnerDownloaderPackages
+		installHFCLI = true
+	default:
+		return ""
+	}
+
+	command := runnerAPTSetupCommand + "apt-get install --no-install-recommends -y " + packages + " && "
+	if installHFCLI {
+		command += runnerHFCLIInstallCommand + " && "
+	}
+
+	return command + runnerDependenciesCleanup
 }
 
 // installRunnerEntrypoint writes the entrypoint script and creates the /models/

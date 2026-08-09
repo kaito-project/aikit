@@ -63,6 +63,7 @@ jobs:
             fi
             test ! -d /root/.cache/pip
             test ! -e /usr/local/cuda
+            test -s /etc/ssl/certs/ca-certificates.crt
           '
           if [[ "$BACKEND" == diffusers-cuda || "$BACKEND" == vllm-cuda ]]; then
             docker run --rm --entrypoint /bin/bash runner-test:test -c 'test ! -x /usr/bin/python3'

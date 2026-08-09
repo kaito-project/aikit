@@ -106,15 +106,18 @@ func TestInstallRunnerDependencies(t *testing.T) {
 		name             string
 		runnerProfile    backendcatalog.RunnerProfile
 		wantDependencies bool
+		wantDownloader   bool
 	}{
 		{
 			name:             "llama-cpp profile installs downloader dependencies",
 			runnerProfile:    backendcatalog.RunnerProfileLlamaCpp,
 			wantDependencies: true,
+			wantDownloader:   true,
 		},
 		{
-			name:          "HF config profile uses bundled downloader",
-			runnerProfile: backendcatalog.RunnerProfileHFConfig,
+			name:             "HF config profile installs runtime trust store",
+			runnerProfile:    backendcatalog.RunnerProfileHFConfig,
+			wantDependencies: true,
 		},
 		{
 			name:          "unsupported profile has no runner dependencies",
@@ -124,6 +127,7 @@ func TestInstallRunnerDependencies(t *testing.T) {
 			name:             "vllm-cpp profile installs downloader dependencies",
 			runnerProfile:    backendcatalog.RunnerProfileVLLMCpp,
 			wantDependencies: true,
+			wantDownloader:   true,
 		},
 	}
 
@@ -155,8 +159,7 @@ func TestInstallRunnerDependencies(t *testing.T) {
 				"s|http://security.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g",
 				"Acquire::Retries=5",
 				"APT::Update::Error-Mode=any",
-				"apt-get install --no-install-recommends -y curl ca-certificates python3 python3-pip",
-				"huggingface-hub==" + runnerHuggingFaceHubVersion,
+				"ca-certificates",
 				"apt-get clean",
 				"rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /root/.cache/pip",
 			} {
@@ -164,14 +167,33 @@ func TestInstallRunnerDependencies(t *testing.T) {
 					t.Errorf("runner dependency command does not contain %q: %s", expected, command)
 				}
 			}
-			if count := strings.Count(command, "--no-cache-dir"); count != 2 {
-				t.Errorf("--no-cache-dir count = %d, want 2 in both pip install paths: %s", count, command)
-			}
-			if count := strings.Count(command, "--no-compile"); count != 2 {
-				t.Errorf("--no-compile count = %d, want 2 in both pip install paths: %s", count, command)
-			}
-			if strings.Contains(command, "huggingface-hub[cli]") {
-				t.Errorf("runner dependency command should install the pinned core package without the legacy CLI extra: %s", command)
+			if tt.wantDownloader {
+				for _, expected := range []string{
+					"apt-get install --no-install-recommends -y " + runnerDownloaderPackages,
+					"huggingface-hub==" + runnerHuggingFaceHubVersion,
+				} {
+					if !strings.Contains(command, expected) {
+						t.Errorf("runner dependency command does not contain %q: %s", expected, command)
+					}
+				}
+				if count := strings.Count(command, "--no-cache-dir"); count != 2 {
+					t.Errorf("--no-cache-dir count = %d, want 2 in both pip install paths: %s", count, command)
+				}
+				if count := strings.Count(command, "--no-compile"); count != 2 {
+					t.Errorf("--no-compile count = %d, want 2 in both pip install paths: %s", count, command)
+				}
+				if strings.Contains(command, "huggingface-hub[cli]") {
+					t.Errorf("runner dependency command should install the pinned core package without the legacy CLI extra: %s", command)
+				}
+			} else {
+				if !strings.Contains(command, "apt-get install --no-install-recommends -y "+runnerTrustStorePackage) {
+					t.Errorf("HF config trust-store command does not install only %q: %s", runnerTrustStorePackage, command)
+				}
+				for _, unexpected := range []string{"curl ", "python3", "huggingface-hub=="} {
+					if strings.Contains(command, unexpected) {
+						t.Errorf("HF config trust-store command unexpectedly contains %q: %s", unexpected, command)
+					}
+				}
 			}
 		})
 	}

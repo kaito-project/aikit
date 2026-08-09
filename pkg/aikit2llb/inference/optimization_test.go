@@ -199,30 +199,55 @@ func TestModelChangesDoNotInvalidateRuntimeBranches(t *testing.T) {
 
 func TestRunnerDependenciesAndEntrypointRemainSequential(t *testing.T) {
 	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
-	cfg := &config.InferenceConfig{
-		Backends: []string{utils.BackendLlamaCpp},
-		Config:   "model: runtime\n",
+	tests := []struct {
+		name               string
+		config             *config.InferenceConfig
+		dependencyFragment string
+		commandFragments   []string
+		unexpectedFragment string
+	}{
+		{
+			name: "native downloader runner",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendLlamaCpp},
+				Config:   "model: runtime\n",
+			},
+			dependencyFragment: "huggingface-hub==" + runnerHuggingFaceHubVersion,
+			commandFragments:   []string{"--no-cache-dir", "--no-compile", "/root/.cache/pip"},
+		},
+		{
+			name: "HF config runner",
+			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
+				Backends: []string{utils.BackendVLLM},
+				Config:   "model: runtime\n",
+			},
+			dependencyFragment: "apt-get install --no-install-recommends -y " + runnerTrustStorePackage,
+			unexpectedFragment: "huggingface-hub==",
+		},
 	}
-	definition := marshalInferenceConfig(t, cfg, platform)
 
-	dependencies := findInferenceExecOp(t, definition, "huggingface-hub=="+runnerHuggingFaceHubVersion)
-	dependencyCommand := strings.Join(dependencies.op.GetExec().Meta.Args, "\x00")
-	for _, fragment := range []string{
-		"--no-cache-dir",
-		"--no-compile",
-		"rm -rf /var/lib/apt/lists/*",
-		"/root/.cache/pip",
-	} {
-		if !strings.Contains(dependencyCommand, fragment) {
-			t.Fatalf("runner dependency command = %q, want %q", dependencyCommand, fragment)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			definition := marshalInferenceConfig(t, tt.config, platform)
+			dependencies := findInferenceExecOp(t, definition, tt.dependencyFragment)
+			dependencyCommand := strings.Join(dependencies.op.GetExec().Meta.Args, "\x00")
+			for _, fragment := range append(tt.commandFragments, "rm -rf /var/lib/apt/lists/*") {
+				if !strings.Contains(dependencyCommand, fragment) {
+					t.Fatalf("runner dependency command = %q, want %q", dependencyCommand, fragment)
+				}
+			}
+			if tt.unexpectedFragment != "" && strings.Contains(dependencyCommand, tt.unexpectedFragment) {
+				t.Fatalf("runner dependency command = %q, do not want %q", dependencyCommand, tt.unexpectedFragment)
+			}
+
+			entrypoint := findInferenceOpByCustomNamePrefix(t, definition, "Creating runner entrypoint script")
+			modelsDirectory := findInferenceOpByCustomNamePrefix(t, definition, "Creating /models directory with correct ownership")
+
+			assertInferenceOpInput(t, entrypoint, dependencies.digest)
+			assertInferenceOpInput(t, modelsDirectory, entrypoint.digest)
+		})
 	}
-
-	entrypoint := findInferenceOpByCustomNamePrefix(t, definition, "Creating runner entrypoint script")
-	modelsDirectory := findInferenceOpByCustomNamePrefix(t, definition, "Creating /models directory with correct ownership")
-
-	assertInferenceOpInput(t, entrypoint, dependencies.digest)
-	assertInferenceOpInput(t, modelsDirectory, entrypoint.digest)
 }
 
 func TestArbitraryBackendInstallsOnlyCatalogSystemPackages(t *testing.T) {
