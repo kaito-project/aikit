@@ -12,6 +12,7 @@ on:
 concurrency:
   group: prepare-release
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read
