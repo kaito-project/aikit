@@ -12,13 +12,15 @@ import (
 const (
 	defaultBackendName    = "llama-cpp"
 	cpuLlamaCppBackend    = "cpu-llama-cpp"
+	cpuVLLMCppBackend     = "cpu-vllm-cpp"
 	cuda12LlamaCppBackend = "cuda12-llama-cpp"
+	cuda13VLLMCppBackend  = "cuda13-vllm-cpp"
 	vulkanLlamaCppBackend = "gpu-vulkan-llama-cpp"
 )
 
 func normalizeBackend(backend string) string {
 	switch backend {
-	case utils.BackendDiffusers, utils.BackendLlamaCpp, utils.BackendVLLM:
+	case utils.BackendDiffusers, utils.BackendLlamaCpp, utils.BackendVLLM, utils.BackendVLLMCpp:
 		return backend
 	default:
 		return defaultBackendName
@@ -37,6 +39,10 @@ func getEffectiveBackend(backend, runtime string, platform specs.Platform) strin
 	if runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
 		return normalizedBackend
 	}
+	if runtime == "" && normalizedBackend == utils.BackendVLLMCpp &&
+		(platform.Architecture == utils.PlatformAMD64 || platform.Architecture == utils.PlatformARM64) {
+		return normalizedBackend
+	}
 
 	return defaultBackendName
 }
@@ -52,7 +58,7 @@ func getBackendVersion(backend, runtime string, platform specs.Platform) string 
 	switch getEffectiveBackend(backend, runtime, platform) {
 	case utils.BackendDiffusers:
 		return localAILegacyBackendVersion
-	case utils.BackendVLLM:
+	case utils.BackendVLLM, utils.BackendVLLMCpp:
 		return localAIBinaryVersion
 	default:
 		return localAILlamaCppBackendVersion
@@ -94,6 +100,8 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-diffusers", baseTag)
 		case "vllm":
 			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-vllm", baseTag)
+		case utils.BackendVLLMCpp:
+			return fmt.Sprintf("%s-gpu-nvidia-cuda-13-vllm-cpp", baseTag)
 		case defaultBackendName:
 			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-llama-cpp", baseTag)
 		default:
@@ -108,6 +116,9 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 	}
 
 	// Handle CPU runtime (default).
+	if backendName == utils.BackendVLLMCpp {
+		return fmt.Sprintf("%s-cpu-vllm-cpp", baseTag)
+	}
 	return fmt.Sprintf("%s-cpu-llama-cpp", baseTag)
 }
 
@@ -130,6 +141,8 @@ func getBackendName(backend, runtime string, platform specs.Platform) string {
 			return "cuda12-diffusers"
 		case utils.BackendVLLM:
 			return "cuda12-vllm"
+		case utils.BackendVLLMCpp:
+			return cuda13VLLMCppBackend
 		case defaultBackendName:
 			return cuda12LlamaCppBackend
 		default:
@@ -145,6 +158,9 @@ func getBackendName(backend, runtime string, platform specs.Platform) string {
 	}
 
 	// Handle CPU runtime (default)
+	if getEffectiveBackend(backend, runtime, platform) == utils.BackendVLLMCpp {
+		return cpuVLLMCppBackend
+	}
 	return cpuLlamaCppBackend
 }
 

@@ -14,7 +14,7 @@ import (
 
 const (
 	distrolessBase                = "ghcr.io/kaito-project/aikit/base:latest"
-	localAIBinaryVersion          = "v4.7.1"
+	localAIBinaryVersion          = "v4.8.2"
 	localAILlamaCppBackendVersion = localAIBinaryVersion
 	localAILegacyBackendVersion   = "v3.12.1"
 	localAIROCmBackendVersion     = "rocm7"
@@ -92,10 +92,12 @@ func getBaseImage(c *config.InferenceConfig, platform *specs.Platform) llb.State
 		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
 	}
 
-	// LocalAI and the llama-cpp backend are self-contained. Keep the full Ubuntu
+	// LocalAI, llama-cpp, and vllm-cpp are self-contained. Keep the full Ubuntu
 	// base only for Python backends whose portable environments still rely on
 	// additional system runtime libraries.
-	if len(c.Backends) > 1 || (len(c.Backends) == 1 && c.Backends[0] != utils.BackendLlamaCpp) {
+	selfContainedBackend := len(c.Backends) == 0 ||
+		(len(c.Backends) == 1 && slices.Contains([]string{utils.BackendLlamaCpp, utils.BackendVLLMCpp}, c.Backends[0]))
+	if !selfContainedBackend {
 		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
 	}
 

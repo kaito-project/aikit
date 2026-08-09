@@ -14,6 +14,8 @@ Pre-built runner images are available at `ghcr.io/kaito-project/aikit/runners/`:
 | `ghcr.io/kaito-project/aikit/runners/llama-cpp-cuda:latest` | NVIDIA CUDA + CPU fallback llama.cpp runner (amd64) |
 | `ghcr.io/kaito-project/aikit/runners/diffusers-cuda:latest` | NVIDIA CUDA diffusers runner (amd64) |
 | `ghcr.io/kaito-project/aikit/runners/vllm-cuda:latest` | NVIDIA CUDA vLLM runner (amd64) |
+| `ghcr.io/kaito-project/aikit/runners/vllm-cpp-cpu:latest` | Experimental native vllm.cpp CPU runner (amd64, arm64) |
+| `ghcr.io/kaito-project/aikit/runners/vllm-cpp-cuda:latest` | Experimental native vllm.cpp CUDA 13 runner for Blackwell GPUs (amd64) |
 
 :::note
 Pre-built runner images are currently published for CPU and NVIDIA CUDA only. For AMD GPUs, build a custom `llama-cpp` runner with `runtime: rocm`.
@@ -35,10 +37,14 @@ docker run -p 8080:8080 ghcr.io/kaito-project/aikit/runners/llama-cpp-cpu:latest
 # With GPU support
 docker run --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/runners/llama-cpp-cuda:latest \
   https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf
+
+# Native vllm.cpp with a safetensors repository pinned to an immutable revision
+docker run -p 8080:8080 ghcr.io/kaito-project/aikit/runners/vllm-cpp-cpu:latest \
+  Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca
 ```
 
 :::tip
-For HuggingFace repos with many quantization variants, use a **direct URL** to a specific file to avoid downloading all variants.
+For GGUF repositories with many quantization variants, use a **direct URL** to a specific `.gguf` file to avoid downloading all variants. The vllm.cpp runner accepts safetensors only as a repository reference; use `owner/repository@commit` with the full 40-character lowercase commit SHA for reproducible downloads.
 :::
 
 Then query the model:
@@ -50,7 +56,7 @@ curl http://localhost:8080/v1/chat/completions \
 ```
 
 :::note
-The model name in the API request is the GGUF filename without the `.gguf` extension.
+The model name in the API request is the GGUF filename without the `.gguf` extension. For a vllm.cpp safetensors repository, it is the repository name without the owner or pinned revision (for example, `Qwen3-0.6B`).
 :::
 
 ## GPU Support
@@ -81,7 +87,7 @@ docker run -e HF_TOKEN=hf_xxx -p 8080:8080 \
 
 ## Volume Caching
 
-Mount a volume to `/models` to cache downloaded models across container restarts. The llama.cpp runner stores GGUF files directly in `/models`; Diffusers and vLLM store their Hugging Face cache under `/models/.cache/huggingface`:
+Mount a volume to `/models` to cache downloaded models across container restarts. The llama.cpp and vllm.cpp runners keep their payloads in `/models/llama-cpp-model` and `/models/vllm-cpp-model`, respectively. Diffusers and Python vLLM store their Hugging Face cache under `/models/.cache/huggingface`:
 
 ```bash
 docker run -v models:/models -p 8080:8080 \
@@ -89,7 +95,7 @@ docker run -v models:/models -p 8080:8080 \
   https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf
 ```
 
-The llama.cpp runner detects when a different model is requested and re-downloads automatically. Diffusers and vLLM update their generated model configuration while retaining the shared Hugging Face cache for reuse.
+Native runners detect when a different model is requested and replace only their backend-owned cache. Their generated configs live at `/models/llama-cpp-model/model.yaml` and `/models/vllm-cpp-model/model.yaml`; downloaded payloads stay under each directory's unscanned `payload/` subtree. Diffusers and Python vLLM use `/models/aikit-runner/model.yaml` while retaining the shared Hugging Face cache for reuse. LocalAI scans only the active runner's config directory, not unrelated YAML elsewhere in the mounted volume.
 
 ## Kubernetes / kubeairunway
 
@@ -155,3 +161,4 @@ For AMD GPUs, run the resulting image with the ROCm device flags described in [G
 | `llama-cpp` | GGUF models via llama.cpp (CPU, NVIDIA CUDA, or ROCm) |
 | `diffusers` | HuggingFace diffusers models (requires NVIDIA CUDA) |
 | `vllm` | HuggingFace safetensors models via vLLM (requires NVIDIA CUDA) |
+| `vllm-cpp` | Direct HTTP(S) GGUF URLs or Hugging Face safetensors repositories via the experimental native engine (CPU, or CUDA 13 on amd64 Blackwell GPUs) |

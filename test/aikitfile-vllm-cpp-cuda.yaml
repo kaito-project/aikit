@@ -1,0 +1,20 @@
+#syntax=aikit:test
+apiVersion: v1alpha1
+debug: true
+runtime: cuda
+backends:
+  - vllm-cpp
+models:
+  - name: qwen35-vllmcpp-smoke
+    source: https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/6ab461498e2023f6e3c1baea90a8f0fe38ab64d0/Qwen3.5-0.8B-Q3_K_S.gguf
+    sha256: "4649ee78ff7cbad4e9fe4c0bab3b73a7c70096b51e36ef299469b08989a93c39"
+config: |
+  - name: qwen35-vllmcpp-smoke
+    backend: vllm-cpp
+    context_size: 1024
+    parameters:
+      model: Qwen3.5-0.8B-Q3_K_S.gguf
+    template:
+      use_tokenizer_template: true
+    options:
+      - max_num_seqs:1

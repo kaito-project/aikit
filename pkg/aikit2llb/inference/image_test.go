@@ -105,6 +105,12 @@ func TestNewImageConfigEnvironment(t *testing.T) {
 		"NVIDIA_VISIBLE_DEVICES=all",
 		"BUILD_TYPE=cublas",
 	}
+	vllmCppNVIDIAEnv := []string{
+		"NVIDIA_REQUIRE_CUDA=cuda>=13.0",
+		"NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+		"NVIDIA_VISIBLE_DEVICES=all",
+		"BUILD_TYPE=cublas",
+	}
 
 	tests := []struct {
 		name    string
@@ -126,6 +132,15 @@ func TestNewImageConfigEnvironment(t *testing.T) {
 				Backends: []string{utils.BackendVLLM},
 			},
 			wantEnv: append(append(append([]string{}, defaultEnv...), nvidiaEnv...), runnerHFHomeEnv),
+		},
+		{
+			name: "vllm-cpp NVIDIA image requires CUDA 13",
+			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
+				Backends: []string{utils.BackendVLLMCpp},
+				Models:   []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
+			},
+			wantEnv: append(append([]string{}, defaultEnv...), vllmCppNVIDIAEnv...),
 		},
 		{
 			name: "standard CPU image does not add runner cache",

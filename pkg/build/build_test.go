@@ -123,6 +123,53 @@ func Test_validateConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "valid vllm-cpp backend with CPU runtime",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{utils.BackendVLLMCpp},
+				Models: []config.Model{
+					{
+						Name:   "test",
+						Source: "foo",
+					},
+				},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "valid vllm-cpp backend with cuda runtime",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    utils.RuntimeNVIDIA,
+				Backends:   []string{utils.BackendVLLMCpp},
+				Models: []config.Model{
+					{
+						Name:   "test",
+						Source: "foo",
+					},
+				},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "vllm-cpp backend rejects rocm runtime",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    utils.RuntimeROCm,
+				Backends:   []string{utils.BackendVLLMCpp},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "vllm-cpp backend rejects apple silicon runtime",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    utils.RuntimeAppleSilicon,
+				Backends:   []string{utils.BackendVLLMCpp},
+			}},
+			wantErr: true,
+		},
+		{
 			name: "invalid backend name",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
@@ -300,6 +347,86 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 			},
 			targetPlatforms: []*specs.Platform{
 				{Architecture: "arm64", OS: "linux"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "vllm-cpp CPU backend with amd64 platform - should pass",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{utils.BackendVLLMCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux},
+			},
+			wantErr: false,
+		},
+		{
+			name: "vllm-cpp CPU backend with arm64 platform - should pass",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{utils.BackendVLLMCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformARM64, OS: utils.PlatformLinux},
+			},
+			wantErr: false,
+		},
+		{
+			name: "vllm-cpp CUDA backend with amd64 platform - should pass",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    utils.RuntimeNVIDIA,
+				Backends:   []string{utils.BackendVLLMCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux},
+			},
+			wantErr: false,
+		},
+		{
+			name: "vllm-cpp CUDA backend with arm64 platform - should fail",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    utils.RuntimeNVIDIA,
+				Backends:   []string{utils.BackendVLLMCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformARM64, OS: utils.PlatformLinux},
+			},
+			wantErr: true,
+		},
+		{
+			name: "vllm-cpp CPU backend with unsupported architecture - should fail",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{utils.BackendVLLMCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: "ppc64le", OS: utils.PlatformLinux},
+			},
+			wantErr: true,
+		},
+		{
+			name: "vllm-cpp CPU backend with darwin platform - should fail",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{utils.BackendVLLMCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformARM64, OS: "darwin"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "vllm-cpp CUDA backend with windows platform - should fail",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    utils.RuntimeNVIDIA,
+				Backends:   []string{utils.BackendVLLMCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformAMD64, OS: "windows"},
 			},
 			wantErr: true,
 		},
