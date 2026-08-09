@@ -387,6 +387,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
           SYNC_BRANCH: sync-released-version-to-main
+          TRUSTED_MAIN_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
           manifest_dir=$(mktemp -d)
@@ -394,6 +395,10 @@ jobs:
 
           git fetch --quiet --no-tags origin refs/heads/main
           main_commit=$(git rev-parse 'FETCH_HEAD^{commit}')
+          if [[ "${main_commit}" != "${TRUSTED_MAIN_COMMIT}" ]]; then
+            echo "main advanced from ${TRUSTED_MAIN_COMMIT} to ${main_commit}; rerun Publish release." >&2
+            exit 1
+          fi
           git show "${main_commit}:Makefile" >"${manifest_dir}/main-Makefile"
           git show "${main_commit}:charts/aikit/Chart.yaml" >"${manifest_dir}/main-Chart.yaml"
           planner_arguments=(

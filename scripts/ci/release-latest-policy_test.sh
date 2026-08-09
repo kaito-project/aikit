@@ -162,8 +162,8 @@ if [[ $(grep -cF "$release_commit_validator_arg" "$release_publisher") -ne 2 ]];
   echo "new release validation must bind release-line ancestry to the selected commit before and after approval" >&2
   exit 1
 fi
-if [[ $(grep -cF "$trusted_main_environment" "$release_publisher") -ne 1 ]] || \
-  ! grep -qF "$trusted_main_check" "$release_publisher"; then
+if [[ $(grep -cF "$trusted_main_environment" "$release_publisher") -ne 2 ]] || \
+  [[ $(grep -cF "$trusted_main_check" "$release_publisher") -ne 2 ]]; then
   echo "privileged version sync must reject a stale trusted main snapshot before minting its App token" >&2
   exit 1
 fi
