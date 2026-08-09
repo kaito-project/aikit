@@ -27,24 +27,36 @@ jobs:
       matrix:
         include:
           - runner: llama-cpp-cpu
+            test_type: chat
             model_ref: https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/f0b45be0aac41bd6a100a4b5734cad5f67255bfb/gemma-3-1b-it-Q2_K.gguf
             model_name: gemma-3-1b-it-Q2_K
             prompt: explain kubernetes in a sentence
             max_tokens: 64
             expected_content: ""
           - runner: vllm-cpp-cpu
+            test_type: chat
             model_ref: Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca
             model_name: Qwen3-0.6B
             prompt: What is the capital of France? Reply with only the city name. /no_think
             max_tokens: 256
             expected_content: Paris
+          - runner: parakeet-cpp-cpu
+            test_type: transcription
+            model_ref: huggingface://mudler/parakeet-cpp-gguf@bf0af9f425fa01809cadec671b3cb672709d13e9/tdt_ctc-110m-q4_k.gguf
+            model_name: tdt_ctc-110m-q4_k
+            audio_ref: https://raw.githubusercontent.com/mudler/parakeet.cpp/1bfbebfaaf493866f49597cd3b7901959d395c60/tests/fixtures/speech.wav
+            audio_sha256: 5fceacff0315d49cb59fcc505bcecf1ed5f2f35c2897b1e65a59f30e5d922150
+            expected_content: "Well, I don't wish to see it any more, observed Phoebe, turning away her eyes. It is certainly very like the old portrait."
     env:
+      AUDIO_REF: ${{ matrix.audio_ref }}
+      AUDIO_SHA256: ${{ matrix.audio_sha256 }}
       EXPECTED_CONTENT: ${{ matrix.expected_content }}
       MAX_TOKENS: ${{ matrix.max_tokens }}
       MODEL_NAME: ${{ matrix.model_name }}
       MODEL_PROMPT: ${{ matrix.prompt }}
       MODEL_REF: ${{ matrix.model_ref }}
       RUNNER: ${{ matrix.runner }}
+      TEST_TYPE: ${{ matrix.test_type }}
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -117,9 +129,28 @@ jobs:
             test ! -d /root/.cache/pip
             test ! -e /usr/local/cuda
           '
+          if [[ "$TEST_TYPE" == "transcription" ]]; then
+            docker run --rm --entrypoint ffmpeg runner-test:test -version
+          fi
+
+      - name: download transcription fixture
+        if: matrix.test_type == 'transcription'
+        run: |
+          curl --fail --location --retry 3 --output /tmp/parakeet-speech.wav "$AUDIO_REF"
+          echo "$AUDIO_SHA256  /tmp/parakeet-speech.wav" | sha256sum --check
+          docker run --rm \
+            --volume /tmp:/fixtures \
+            --entrypoint ffmpeg \
+            runner-test:test \
+            -y -i /fixtures/parakeet-speech.wav -ar 44100 -ac 2 -c:a pcm_s16le /fixtures/parakeet-speech-input.wav
 
       - name: run runner with model
-        run: docker run --name runner-test -d -p 8080:8080 runner-test:test "$MODEL_REF" --context-size 1024
+        run: |
+          extra_args=()
+          if [[ "$TEST_TYPE" == "chat" ]]; then
+            extra_args+=(--context-size 1024)
+          fi
+          docker run --name runner-test -d -p 8080:8080 runner-test:test "$MODEL_REF" "${extra_args[@]}"
 
       - name: wait for model download
         run: |
@@ -149,6 +180,7 @@ jobs:
           fi
 
       - name: run chat completion test
+        if: matrix.test_type == 'chat'
         run: |
           payload=$(jq -n \
             --arg model "$MODEL_NAME" \
@@ -180,6 +212,27 @@ jobs:
               '(((.choices[0].message.content // "") | type == "string" and length > 0) or
                ((.choices[0].message.reasoning_content // .choices[0].message.reasoning // "") | type == "string" and length > 0))'
           fi
+
+      - name: run transcription test
+        if: matrix.test_type == 'transcription'
+        run: |
+          response=""
+          for i in $(seq 1 10); do
+            response=$(curl --fail --silent --show-error --max-time 300 \
+              http://127.0.0.1:8080/v1/audio/transcriptions \
+              -F "file=@/tmp/parakeet-speech-input.wav;type=audio/wav" \
+              -F "model=$MODEL_NAME" \
+              -F "response_format=json") && break
+            echo "Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+          if [[ -z "$response" ]]; then
+            echo "Transcription did not return a response" >&2
+            exit 1
+          fi
+          echo "$response"
+          echo "$response" | jq -e --arg expected "$EXPECTED_CONTENT" \
+            '.error == null and .text == $expected'
 
       - name: save logs
         if: always()

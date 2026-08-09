@@ -5,10 +5,11 @@ const (
 	RuntimeROCm         = "rocm"
 	RuntimeAppleSilicon = "applesilicon" // experimental apple silicon runtime with vulkan arm64 support
 
-	BackendDiffusers = "diffusers"
-	BackendLlamaCpp  = "llama-cpp"
-	BackendVLLM      = "vllm"
-	BackendVLLMCpp   = "vllm-cpp"
+	BackendDiffusers   = "diffusers"
+	BackendLlamaCpp    = "llama-cpp"
+	BackendParakeetCpp = "parakeet-cpp"
+	BackendVLLM        = "vllm"
+	BackendVLLMCpp     = "vllm-cpp"
 
 	BackendOCIRegistry = "quay.io/go-skynet/local-ai-backends"
 

@@ -199,6 +199,14 @@ func TestGetBaseImageUsesMinimalCompatibleRuntime(t *testing.T) {
 			want: distrolessBase,
 		},
 		{
+			name: "standard parakeet-cpp",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendParakeetCpp},
+				Models:   []config.Model{{Name: testInferenceModelName, Source: "parakeet-model.gguf"}},
+			},
+			want: distrolessBase,
+		},
+		{
 			name:   "Apple Silicon",
 			config: &config.InferenceConfig{Runtime: utils.RuntimeAppleSilicon},
 			want:   utils.AppleSiliconBase,

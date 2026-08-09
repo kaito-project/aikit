@@ -170,6 +170,53 @@ func Test_validateConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "valid parakeet-cpp backend with CPU runtime",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: utils.APIv1alpha1,
+				Backends:   []string{utils.BackendParakeetCpp},
+				Models: []config.Model{
+					{
+						Name:   "parakeet",
+						Source: "parakeet-cpu.gguf",
+					},
+				},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "valid parakeet-cpp backend with cuda runtime",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: utils.APIv1alpha1,
+				Runtime:    utils.RuntimeNVIDIA,
+				Backends:   []string{utils.BackendParakeetCpp},
+				Models: []config.Model{
+					{
+						Name:   "parakeet",
+						Source: "parakeet-cuda.gguf",
+					},
+				},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "parakeet-cpp backend rejects rocm runtime",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: utils.APIv1alpha1,
+				Runtime:    utils.RuntimeROCm,
+				Backends:   []string{utils.BackendParakeetCpp},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "parakeet-cpp backend rejects apple silicon runtime",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: utils.APIv1alpha1,
+				Runtime:    utils.RuntimeAppleSilicon,
+				Backends:   []string{utils.BackendParakeetCpp},
+			}},
+			wantErr: true,
+		},
+		{
 			name: "invalid backend name",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
@@ -217,6 +264,23 @@ func Test_validateConfig(t *testing.T) {
 				APIVersion: "v1alpha1",
 				Runtime:    "cuda",
 				Backends:   []string{"vllm"},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "valid runner mode - parakeet-cpp with CPU",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: utils.APIv1alpha1,
+				Backends:   []string{utils.BackendParakeetCpp},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "valid runner mode - parakeet-cpp with cuda",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: utils.APIv1alpha1,
+				Runtime:    utils.RuntimeNVIDIA,
+				Backends:   []string{utils.BackendParakeetCpp},
 			}},
 			wantErr: false,
 		},
@@ -427,6 +491,79 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 			},
 			targetPlatforms: []*specs.Platform{
 				{Architecture: utils.PlatformAMD64, OS: "windows"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "parakeet-cpp CPU backend with amd64 platform - should pass",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendParakeetCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux},
+			},
+			wantErr: false,
+		},
+		{
+			name: "parakeet-cpp CPU backend with arm64 platform - should pass",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendParakeetCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformARM64, OS: utils.PlatformLinux},
+			},
+			wantErr: false,
+		},
+		{
+			name: "parakeet-cpp CPU backend with mixed platforms - should pass",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendParakeetCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux},
+				{Architecture: utils.PlatformARM64, OS: utils.PlatformLinux},
+			},
+			wantErr: false,
+		},
+		{
+			name: "parakeet-cpp CUDA backend with amd64 platform - should pass",
+			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
+				Backends: []string{utils.BackendParakeetCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux},
+			},
+			wantErr: false,
+		},
+		{
+			name: "parakeet-cpp CUDA backend with arm64 platform - should fail",
+			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
+				Backends: []string{utils.BackendParakeetCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformARM64, OS: utils.PlatformLinux},
+			},
+			wantErr: true,
+		},
+		{
+			name: "parakeet-cpp CPU backend with unsupported architecture - should fail",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendParakeetCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: "ppc64le", OS: utils.PlatformLinux},
+			},
+			wantErr: true,
+		},
+		{
+			name: "parakeet-cpp CPU backend with non-linux platform - should fail",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendParakeetCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformARM64, OS: "freebsd"},
 			},
 			wantErr: true,
 		},

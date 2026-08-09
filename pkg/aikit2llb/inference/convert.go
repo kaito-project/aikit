@@ -92,11 +92,11 @@ func getBaseImage(c *config.InferenceConfig, platform *specs.Platform) llb.State
 		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
 	}
 
-	// LocalAI, llama-cpp, and vllm-cpp are self-contained. Keep the full Ubuntu
-	// base only for Python backends whose portable environments still rely on
-	// additional system runtime libraries.
+	// LocalAI and the native C++ backend bundles can use the minimal base. Any
+	// supplemental runtime tools are layered explicitly by the backend installer;
+	// Python backends retain Ubuntu for their additional system libraries.
 	selfContainedBackend := len(c.Backends) == 0 ||
-		(len(c.Backends) == 1 && slices.Contains([]string{utils.BackendLlamaCpp, utils.BackendVLLMCpp}, c.Backends[0]))
+		(len(c.Backends) == 1 && slices.Contains([]string{utils.BackendLlamaCpp, utils.BackendParakeetCpp, utils.BackendVLLMCpp}, c.Backends[0]))
 	if !selfContainedBackend {
 		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
 	}
