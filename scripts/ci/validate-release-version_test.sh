@@ -119,14 +119,17 @@ if run_validator v00.22.1 new "$work_dir/invalid-output" >/dev/null 2>&1; then
   exit 1
 fi
 
-oci_tag_digits=
-for _ in {1..123}; do
-  oci_tag_digits+="1"
+run_validator \
+  v18446744073709551615.18446744073709551615.18446744073709551615 \
+  new "$work_dir/max-component-output" >/dev/null
+for oversized_version in \
+  v18446744073709551616.0.0 \
+  v0.18446744073709551616.0 \
+  v0.0.18446744073709551616; do
+  if run_validator "$oversized_version" new "$work_dir/oversized-component-output" >/dev/null 2>&1; then
+    echo "version exceeding Helm's uint64 component limit unexpectedly passed: $oversized_version" >&2
+    exit 1
+  fi
 done
-run_validator "v${oci_tag_digits}.0.0" new "$work_dir/max-oci-tag-output" >/dev/null
-if run_validator "v${oci_tag_digits}1.0.0" new "$work_dir/long-oci-tag-output" >/dev/null 2>&1; then
-  echo "version exceeding the OCI tag limit unexpectedly passed" >&2
-  exit 1
-fi
 
 echo "release version validator tests passed"

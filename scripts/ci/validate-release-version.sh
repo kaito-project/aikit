@@ -87,6 +87,18 @@ if ((${#release_version} > 128)); then
 fi
 release_major=$parsed_major
 release_minor=$parsed_minor
+release_patch=$parsed_patch
+
+# Helm's SemVer parser stores each numeric component as an unsigned 64-bit
+# integer. Reject larger values here so an accepted release can always be
+# packaged as a Helm chart.
+max_version_component=18446744073709551615
+for component in "$release_major" "$release_minor" "$release_patch"; do
+  compare_component "$component" "$max_version_component"
+  if ((component_comparison > 0)); then
+    fail "version component exceeds Helm's uint64 limit ($max_version_component): $release_version"
+  fi
+done
 
 case $expected_state in
   new | existing | either) ;;
