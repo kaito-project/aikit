@@ -523,7 +523,4 @@ jobs:
             IFS=$'\t' read -r pull_number pull_url <<<"${pull_details}"
           fi
 
-          printf '{"labels":["%s"]}\n' "${TARGET_VERSION}" | \
-            gh api --method PUT "repos/${GITHUB_REPOSITORY}/issues/${pull_number}/labels" \
-              --input - >/dev/null
           printf 'Version-sync pull request: %s\n' "${pull_url}" >>"${GITHUB_STEP_SUMMARY}"
