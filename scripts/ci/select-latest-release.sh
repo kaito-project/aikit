@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
-  echo "Usage: $0 <owner/repository> <workflow-path> <runs-json> <remote-tags>" >&2
+if [[ $# -lt 4 || $# -gt 5 ]]; then
+  echo "Usage: $0 <owner/repository> <workflow-path> <runs-json> <remote-tags> [target-version]" >&2
   exit 2
 fi
 
@@ -10,6 +10,7 @@ repository=$1
 workflow_path=$2
 runs_json=$3
 remote_tags=$4
+target_version=${5:-}
 export LC_ALL=C
 
 fail() {
@@ -85,6 +86,9 @@ fi
 if ! [[ $workflow_path =~ ^\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml$ ]]; then
   fail "invalid workflow path: $workflow_path"
 fi
+if [[ -n $target_version ]] && ! parse_version "$target_version"; then
+  fail "invalid target version: $target_version"
+fi
 if [[ ! -f $runs_json || ! -f $remote_tags ]]; then
   fail "run metadata and remote tag inputs must be regular files"
 fi
@@ -147,11 +151,13 @@ resolve_tag_commit() {
 
 best_version=
 best_commit=
-while IFS=$'\t' read -r version head_sha; do
+best_run_id=
+best_run_attempt=
+while IFS=$'\t' read -r version head_sha run_id run_attempt; do
   if ! parse_version "$version"; then
     continue
   fi
-  if ! [[ $head_sha =~ ^[0-9a-f]{40}$ ]]; then
+  if ! [[ $head_sha =~ ^[0-9a-f]{40}$ && $run_id =~ ^[1-9][0-9]*$ && $run_attempt =~ ^[1-9][0-9]*$ ]]; then
     fail "Actions returned malformed successful release metadata"
   fi
   if ! resolve_tag_commit "$version" || [[ $resolved_tag_commit != "$head_sha" ]]; then
@@ -161,17 +167,34 @@ while IFS=$'\t' read -r version head_sha; do
   if [[ -z $best_version ]]; then
     best_version=$version
     best_commit=$head_sha
+    best_run_id=$run_id
+    best_run_attempt=$run_attempt
     continue
   fi
   compare_versions "$version" "$best_version"
+  replace=false
   if ((version_comparison > 0)); then
+    replace=true
+  elif ((version_comparison == 0)); then
+    if [[ $run_id != "$best_run_id" ]]; then
+      fail "multiple successful workflow runs exist for $version"
+    fi
+    compare_component "$run_attempt" "$best_run_attempt"
+    if ((component_comparison < 0)); then
+      replace=true
+    fi
+  fi
+  if [[ $replace == true ]]; then
     best_version=$version
     best_commit=$head_sha
+    best_run_id=$run_id
+    best_run_attempt=$run_attempt
   fi
 done < <(
   jq -r \
     --arg repository "$repository" \
-    --arg workflow_path "$workflow_path" '
+    --arg workflow_path "$workflow_path" \
+    --arg target_version "$target_version" '
       .[] | .workflow_runs[] |
       select(
         .path == $workflow_path and
@@ -179,10 +202,13 @@ done < <(
         .status == "completed" and
         .conclusion == "success" and
         .head_repository.full_name == $repository and
+        ($target_version == "" or .head_branch == $target_version) and
         (.head_branch | type == "string") and
-        (.head_sha | type == "string")
+        (.head_sha | type == "string") and
+        (.id | type == "number") and
+        (.run_attempt | type == "number")
       ) |
-      [.head_branch, .head_sha] | @tsv
+      [.head_branch, .head_sha, .id, .run_attempt] | @tsv
     ' "$runs_json"
 )
 
@@ -197,5 +223,7 @@ if [[ -n ${GITHUB_OUTPUT:-} ]]; then
     echo "found=$found"
     echo "version=${best_version:-none}"
     echo "commit=${best_commit:-none}"
+    echo "run_id=${best_run_id:-none}"
+    echo "run_attempt=${best_run_attempt:-none}"
   } >>"$GITHUB_OUTPUT"
 fi

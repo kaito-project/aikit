@@ -34,6 +34,8 @@ run_record() {
   local event=${4:-push}
   local repository=${5:-kaito-project/aikit}
   local path=${6:-.github/workflows/release.yaml}
+  local run_id=${7:-100}
+  local run_attempt=${8:-1}
 
   jq -cn \
     --arg version "$version" \
@@ -42,7 +44,11 @@ run_record() {
     --arg event "$event" \
     --arg repository "$repository" \
     --arg path "$path" \
+    --argjson run_id "$run_id" \
+    --argjson run_attempt "$run_attempt" \
     '{
+      id: $run_id,
+      run_attempt: $run_attempt,
       path: $path,
       event: $event,
       status: "completed",
@@ -55,10 +61,17 @@ run_record() {
 
 run_selector() {
   local output=$1
+  local target_version=${2:-}
 
-  GITHUB_OUTPUT="$output" "$selector" \
-    kaito-project/aikit .github/workflows/release.yaml \
-    "$work_dir/runs.json" "$work_dir/tags" >/dev/null
+  if [[ -n $target_version ]]; then
+    GITHUB_OUTPUT="$output" "$selector" \
+      kaito-project/aikit .github/workflows/release.yaml \
+      "$work_dir/runs.json" "$work_dir/tags" "$target_version" >/dev/null
+  else
+    GITHUB_OUTPUT="$output" "$selector" \
+      kaito-project/aikit .github/workflows/release.yaml \
+      "$work_dir/runs.json" "$work_dir/tags" >/dev/null
+  fi
 }
 
 assert_output() {
@@ -84,6 +97,8 @@ run_selector "$output"
 assert_output "$output" 'found=true'
 assert_output "$output" 'version=v0.22.0'
 assert_output "$output" "commit=$sha_022"
+assert_output "$output" 'run_id=100'
+assert_output "$output" 'run_attempt=1'
 
 runs=$(jq -cn \
   --argjson newer "$(run_record v0.23.0 "$sha_023")" \
@@ -94,6 +109,24 @@ output="$work_dir/out-of-order.out"
 run_selector "$output"
 assert_output "$output" 'version=v0.23.0'
 
+# Exact-trigger promotion passes only the completed workflow_run record to the
+# same selector. It must retain an older maintenance version even when a newer
+# stable tag exists remotely; the separate global reconciliation sees all runs.
+runs=$(jq -cn \
+  --argjson newer "$(run_record v0.23.0 "$sha_023")" \
+  --argjson maintenance "$(run_record v0.22.0 "$sha_022")" \
+  '[$newer, $maintenance]')
+write_runs "$runs"
+output="$work_dir/older-maintenance-trigger.out"
+run_selector "$output" v0.22.0
+assert_output "$output" 'version=v0.22.0'
+assert_output "$output" "commit=$sha_022"
+
+if run_selector "$work_dir/invalid-target.out" v0.22 >/dev/null 2>&1; then
+  echo "invalid target version unexpectedly passed" >&2
+  exit 1
+fi
+
 runs=$(jq -cn \
   --argjson big "$(run_record v9223372036854775808.0.0 "$sha_big")" \
   --argjson normal "$(run_record v0.23.0 "$sha_023")" \
@@ -102,6 +135,38 @@ write_runs "$runs"
 output="$work_dir/large-version.out"
 run_selector "$output"
 assert_output "$output" 'version=v9223372036854775808.0.0'
+
+runs=$(jq -cn \
+  --argjson first "$(run_record v0.23.0 "$sha_023" failure push kaito-project/aikit .github/workflows/release.yaml 300 1)" \
+  --argjson failed "$(run_record v0.23.0 "$sha_023" failure push kaito-project/aikit .github/workflows/release.yaml 300 3)" \
+  --argjson second "$(run_record v0.23.0 "$sha_023" success push kaito-project/aikit .github/workflows/release.yaml 300 2)" \
+  '[$failed, $first, $second]')
+write_runs "$runs"
+output="$work_dir/successful-attempt.out"
+run_selector "$output"
+assert_output "$output" 'version=v0.23.0'
+assert_output "$output" 'run_id=300'
+assert_output "$output" 'run_attempt=2'
+
+runs=$(jq -cn \
+  --argjson first "$(run_record v0.23.0 "$sha_023" success push kaito-project/aikit .github/workflows/release.yaml 300 1)" \
+  --argjson second "$(run_record v0.23.0 "$sha_023" success push kaito-project/aikit .github/workflows/release.yaml 300 2)" \
+  '[$second, $first]')
+write_runs "$runs"
+output="$work_dir/first-successful-attempt.out"
+run_selector "$output" v0.23.0
+assert_output "$output" 'run_id=300'
+assert_output "$output" 'run_attempt=1'
+
+runs=$(jq -cn \
+  --argjson first "$(run_record v0.23.0 "$sha_023" success push kaito-project/aikit .github/workflows/release.yaml 300 1)" \
+  --argjson duplicate "$(run_record v0.23.0 "$sha_023" success push kaito-project/aikit .github/workflows/release.yaml 301 1)" \
+  '[$first, $duplicate]')
+write_runs "$runs"
+if run_selector "$work_dir/duplicate-run.out" v0.23.0 >/dev/null 2>&1; then
+  echo "multiple successful workflow runs for one version unexpectedly passed" >&2
+  exit 1
+fi
 
 runs=$(jq -cn \
   --argjson wrong_sha "$(run_record v0.23.0 ffffffffffffffffffffffffffffffffffffffff)" \
@@ -126,6 +191,8 @@ run_selector "$output"
 assert_output "$output" 'found=false'
 assert_output "$output" 'version=none'
 assert_output "$output" 'commit=none'
+assert_output "$output" 'run_id=none'
+assert_output "$output" 'run_attempt=none'
 
 printf '[{"workflow_runs":"invalid"}]\n' >"$work_dir/runs.json"
 if run_selector "$work_dir/invalid-json.out" >/dev/null 2>&1; then

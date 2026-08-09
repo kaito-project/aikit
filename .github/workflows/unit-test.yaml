@@ -88,6 +88,15 @@ jobs:
       - name: Test latest release selector
         run: scripts/ci/select-latest-release_test.sh
 
+      - name: Test release attempt collector
+        run: scripts/ci/collect-release-attempts_test.sh
+
+      - name: Test runner candidate selector
+        run: scripts/ci/select-runner-candidates_test.sh
+
+      - name: Test GHCR tag resolver
+        run: scripts/ci/resolve-ghcr-tag-digest_test.sh
+
       - name: Test release latest policy
         run: scripts/ci/release-latest-policy_test.sh
 

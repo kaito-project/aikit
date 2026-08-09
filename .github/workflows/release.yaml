@@ -97,7 +97,7 @@ jobs:
         with:
           images: ghcr.io/kaito-project/aikit/aikit
           flavor: latest=false
-          tags: type=raw,value=${{ github.ref_name }}
+          tags: type=raw,value=candidate-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Set LDFLAGS
         run: |
@@ -123,13 +123,23 @@ jobs:
       - name: Sign the images with GitHub OIDC Token
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
-        run: cosign sign --yes "ghcr.io/kaito-project/aikit/aikit@${DIGEST}"
+        run: |
+          cosign sign --yes \
+            -a release-artifact=aikit \
+            -a "release-commit=${GITHUB_SHA}" \
+            -a "release-run-attempt=${GITHUB_RUN_ATTEMPT}" \
+            -a "release-run-id=${GITHUB_RUN_ID}" \
+            "ghcr.io/kaito-project/aikit/aikit@${DIGEST}"
 
       - name: Verify image signature
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
         run: |
           cosign verify "ghcr.io/kaito-project/aikit/aikit@${DIGEST}" \
+            -a release-artifact=aikit \
+            -a "release-commit=${GITHUB_SHA}" \
+            -a "release-run-attempt=${GITHUB_RUN_ATTEMPT}" \
+            -a "release-run-id=${GITHUB_RUN_ID}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity "https://github.com/kaito-project/aikit/.github/workflows/release.yaml@${GITHUB_REF}"
 
