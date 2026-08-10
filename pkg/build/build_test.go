@@ -493,6 +493,22 @@ func TestResolveBackendPlans(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "llama-cpp ROCm standard model tuple preserves compatibility",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    utils.RuntimeROCm,
+				Backends:   []string{utils.BackendLlamaCpp},
+				Models: []config.Model{{
+					Name:   "test",
+					Source: "model.gguf",
+				}},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux},
+			},
+			wantErr: false,
+		},
+		{
 			name: "llama-cpp ROCm runner tuple preserves compatibility",
 			config: &config.InferenceConfig{
 				APIVersion: "v1alpha1",

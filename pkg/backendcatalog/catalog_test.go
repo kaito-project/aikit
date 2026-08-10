@@ -260,7 +260,7 @@ func TestDefaultCatalogRuntimePlanInvariants(t *testing.T) {
 			wantEnvironment := []string{
 				testCUDABuildType,
 				"CUDA_HOME=/usr/local/cuda",
-				"LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+				"LD_LIBRARY_PATH=/usr/local/cuda/lib64",
 				"NVIDIA_DRIVER_CAPABILITIES=all",
 				"NVIDIA_REQUIRE_CUDA=cuda>=" + minimumCUDA,
 				testCUDAVisible,
@@ -403,6 +403,16 @@ func TestParseRejectsInvalidCatalogFields(t *testing.T) {
 			tt.mutate(&catalog)
 			assertParseErrorIs(t, marshalCatalog(t, catalog), ErrInvalidCatalog)
 		})
+	}
+}
+
+func TestNewResolverRejectsNilEntries(t *testing.T) {
+	t.Parallel()
+
+	catalog := validTestCatalog()
+	catalog.Entries = nil
+	if _, err := NewResolver(&catalog); !stderrors.Is(err, ErrInvalidCatalog) {
+		t.Fatalf("NewResolver() error = %v, want ErrInvalidCatalog", err)
 	}
 }
 

@@ -32,7 +32,7 @@ AIKit enters **runner mode** only when `backends` contains one family and `model
 
 ### Backend catalog selection
 
-The existing `backends` and `runtime` fields remain source-compatible. `backends` selects one logical LocalAI family and `runtime` selects `cpu`, `cuda`, `rocm`, or `applesilicon`. Omitting `backends` uses the catalog's default family; omitting `backendCapability` uses the catalog's default selector for the requested runtime.
+The existing `backends` and `runtime` fields remain source-compatible. `backends` selects one logical LocalAI family. Set `runtime` to `cuda`, `rocm`, or `applesilicon`, or omit it to select CPU. Omitting `backends` uses the catalog's default family; omitting `backendCapability` uses the catalog's default selector for the requested runtime.
 
 Source compatibility does not guarantee identical image contents across frontend releases. A newer frontend can embed different artifact digests, defaults, statuses, or install instructions. Pin the frontend by digest when those choices must remain fixed.
 

@@ -59,7 +59,7 @@ const (
 	cudaCapabilities     = "NVIDIA_DRIVER_CAPABILITIES=compute,utility"
 	cudaAllCapabilities  = "NVIDIA_DRIVER_CAPABILITIES=all"
 	cudaHome             = "CUDA_HOME=/usr/local/cuda"
-	cudaLibraryPath      = "LD_LIBRARY_PATH=/usr/local/cuda/lib64:"
+	cudaLibraryPath      = "LD_LIBRARY_PATH=/usr/local/cuda/lib64"
 	cudaPath             = "PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	cudaVisibleDevices   = "NVIDIA_VISIBLE_DEVICES=all"
 	vllmNativeSampler    = "VLLM_USE_FLASHINFER_SAMPLER=0"

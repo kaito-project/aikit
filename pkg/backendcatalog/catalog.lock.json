@@ -468,7 +468,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -506,7 +506,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -544,7 +544,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -1103,7 +1103,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -1148,7 +1148,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -1193,7 +1193,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -1573,7 +1573,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -1614,7 +1614,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -1655,7 +1655,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -1900,7 +1900,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -1938,7 +1938,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -1976,7 +1976,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -2471,7 +2471,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -2512,7 +2512,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -2553,7 +2553,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -2839,7 +2839,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -2880,7 +2880,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -2921,7 +2921,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -3243,7 +3243,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -3282,7 +3282,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -3321,7 +3321,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -3498,7 +3498,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -3807,7 +3807,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -3850,7 +3850,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -3893,7 +3893,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -4155,7 +4155,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -4194,7 +4194,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -4233,7 +4233,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -4508,7 +4508,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -4546,7 +4546,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -4825,7 +4825,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -4864,7 +4864,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -4903,7 +4903,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -5412,7 +5412,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -5451,7 +5451,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -5722,7 +5722,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -6113,7 +6113,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -6162,7 +6162,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -6211,7 +6211,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -6765,7 +6765,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -6806,7 +6806,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -6847,7 +6847,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -7175,7 +7175,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -7217,7 +7217,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -7259,7 +7259,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -7487,7 +7487,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -7768,7 +7768,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -7806,7 +7806,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -7844,7 +7844,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -8086,7 +8086,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -8127,7 +8127,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -8168,7 +8168,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -8352,7 +8352,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -8392,7 +8392,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -8432,7 +8432,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -8617,7 +8617,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -8658,7 +8658,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -8699,7 +8699,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -8880,7 +8880,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -8919,7 +8919,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -8958,7 +8958,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -9389,7 +9389,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -9430,7 +9430,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -9471,7 +9471,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -9823,7 +9823,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -9862,7 +9862,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -9901,7 +9901,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -10191,7 +10191,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -10235,7 +10235,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -10279,7 +10279,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -11062,7 +11062,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -11102,7 +11102,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -11142,7 +11142,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -11628,7 +11628,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -11669,7 +11669,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -11710,7 +11710,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -12114,7 +12114,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -12152,7 +12152,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -12190,7 +12190,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -12759,7 +12759,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -12797,7 +12797,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -12835,7 +12835,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -13108,7 +13108,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -13146,7 +13146,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -13184,7 +13184,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -13469,7 +13469,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -13509,7 +13509,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -13549,7 +13549,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -13926,7 +13926,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -13967,7 +13967,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -14008,7 +14008,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -14321,7 +14321,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -14361,7 +14361,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -14578,7 +14578,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -14619,7 +14619,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -14660,7 +14660,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -14977,7 +14977,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -15532,7 +15532,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -15574,7 +15574,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -15616,7 +15616,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -16145,7 +16145,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -16187,7 +16187,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -16229,7 +16229,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -16712,7 +16712,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -16756,7 +16756,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -16800,7 +16800,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -17244,7 +17244,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -17286,7 +17286,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -17328,7 +17328,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -17678,7 +17678,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -17716,7 +17716,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -17754,7 +17754,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -17938,7 +17938,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -17980,7 +17980,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -18228,7 +18228,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -18498,7 +18498,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -18818,7 +18818,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -18861,7 +18861,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -18904,7 +18904,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -19542,7 +19542,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -19583,7 +19583,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -19624,7 +19624,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -19902,7 +19902,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -19941,7 +19941,7 @@
       "environment": [
         "BUILD_TYPE=cublas",
         "CUDA_HOME=/usr/local/cuda",
-        "LD_LIBRARY_PATH=/usr/local/cuda/lib64:",
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64",
         "NVIDIA_DRIVER_CAPABILITIES=all",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
         "NVIDIA_VISIBLE_DEVICES=all",

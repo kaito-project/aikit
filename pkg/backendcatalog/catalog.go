@@ -403,9 +403,11 @@ func cloneCatalog(catalog Catalog) Catalog {
 			}
 		}
 	}
-	clone.Entries = make([]Entry, len(catalog.Entries))
-	for i, entry := range catalog.Entries {
-		clone.Entries[i] = cloneEntry(entry)
+	if catalog.Entries != nil {
+		clone.Entries = make([]Entry, len(catalog.Entries))
+		for i, entry := range catalog.Entries {
+			clone.Entries[i] = cloneEntry(entry)
+		}
 	}
 
 	return clone

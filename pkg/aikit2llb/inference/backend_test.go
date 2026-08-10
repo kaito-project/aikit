@@ -239,6 +239,38 @@ func TestResolveBackendFailsClosed(t *testing.T) {
 	}
 }
 
+func TestResolveBackendRejectsInvalidBackendLists(t *testing.T) {
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	tests := []struct {
+		name      string
+		backends  []string
+		wantError string
+	}{
+		{
+			name:      "explicit empty family",
+			backends:  []string{""},
+			wantError: "backend cannot be empty",
+		},
+		{
+			name:      "multiple families",
+			backends:  []string{utils.BackendLlamaCpp, utils.BackendVLLM},
+			wantError: "only one backend is supported at this time",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ResolveBackend(&config.InferenceConfig{Backends: test.backends}, platform)
+			if err == nil {
+				t.Fatal("ResolveBackend() succeeded, want error")
+			}
+			if !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("ResolveBackend() error = %v, want %q", err, test.wantError)
+			}
+		})
+	}
+}
+
 func TestInstallBackendsUsesOnlyCatalogArtifacts(t *testing.T) {
 	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
 	resolved := testArbitraryBackendPlan(platform)

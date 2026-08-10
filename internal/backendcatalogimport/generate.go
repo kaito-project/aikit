@@ -89,7 +89,14 @@ func Generate(ctx context.Context, source []byte, options GenerateOptions) (Cata
 				}
 				actualClass, classified := resolutionErrorClass(resolveErr)
 				if !classified || actualClass != unavailablePolicy.ErrorClass {
-					return Catalog{}, errors.Wrapf(resolveErr, "reviewed unavailable source %q for family %q selector %q failed with unexpected class (want %q)", sourceRef, family, selector, unavailablePolicy.ErrorClass)
+					return Catalog{}, errors.Wrapf(
+						resolveErr,
+						"reviewed unavailable source %q for family %q selector %q failed with unexpected class (want %q)",
+						sourceRef,
+						family,
+						selector,
+						unavailablePolicy.ErrorClass,
+					)
 				}
 
 				continue

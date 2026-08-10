@@ -34,9 +34,17 @@ func ResolveBackendWithResolver(c *config.InferenceConfig, platform specs.Platfo
 		return backendcatalog.Resolution{}, errors.New("backend catalog resolver is nil")
 	}
 
-	family := ""
-	if len(c.Backends) > 0 {
+	var family string
+	switch len(c.Backends) {
+	case 0:
+		// An omitted family selects the catalog default.
+	case 1:
 		family = c.Backends[0]
+		if family == "" {
+			return backendcatalog.Resolution{}, errors.New("backend cannot be empty")
+		}
+	default:
+		return backendcatalog.Resolution{}, errors.New("only one backend is supported at this time")
 	}
 
 	selector := backendcatalog.Selector(c.BackendCapability)
