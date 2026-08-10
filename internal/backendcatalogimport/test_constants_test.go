@@ -19,4 +19,5 @@ const (
 	fixtureOSDarwin        = "darwin"
 	fixtureVulkanARM64Name = "Vulkan arm64"
 	fixtureVulkanTarget    = "vulkan-demo"
+	fixtureFutureVersion   = "v5.0.0"
 )

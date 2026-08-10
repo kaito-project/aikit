@@ -6,6 +6,7 @@ type unavailableSourcePolicy struct {
 	Version    string
 	Family     string
 	Selector   string
+	Target     string
 	SourceRef  string
 	ErrorClass ResolutionErrorClass
 }
@@ -15,6 +16,7 @@ var reviewedUnavailableSources = []unavailableSourcePolicy{
 		Version:    LocalAIVersion,
 		Family:     "kokoros",
 		Selector:   selectorDefault,
+		Target:     "cpu-kokoros",
 		SourceRef:  "quay.io/go-skynet/local-ai-backends:v4.8.2-cpu-kokoros",
 		ErrorClass: resolutionErrorNotFound,
 	},
@@ -22,6 +24,7 @@ var reviewedUnavailableSources = []unavailableSourcePolicy{
 		Version:    LocalAIVersion,
 		Family:     "turboquant",
 		Selector:   selectorAMD,
+		Target:     "rocm-turboquant",
 		SourceRef:  "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-rocm-hipblas-turboquant",
 		ErrorClass: resolutionErrorNotFound,
 	},
@@ -29,6 +32,7 @@ var reviewedUnavailableSources = []unavailableSourcePolicy{
 		Version:    LocalAIVersion,
 		Family:     familyVLLM,
 		Selector:   "intel",
+		Target:     "intel-vllm",
 		SourceRef:  "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-intel-vllm",
 		ErrorClass: resolutionErrorNotFound,
 	},
@@ -37,16 +41,16 @@ var reviewedUnavailableSources = []unavailableSourcePolicy{
 func validateUnavailableSourcePolicies(policies []unavailableSourcePolicy) error {
 	seen := make(map[string]struct{}, len(policies))
 	for _, policy := range policies {
-		if policy.Version == "" || policy.Family == "" || policy.Selector == "" || policy.SourceRef == "" {
+		if policy.Version == "" || policy.Family == "" || policy.Selector == "" || policy.Target == "" || policy.SourceRef == "" {
 			return fmt.Errorf("reviewed unavailable source policy is incomplete: %#v", policy)
 		}
 		if policy.ErrorClass != resolutionErrorNotFound {
 			return fmt.Errorf("reviewed unavailable source %s/%s/%s has unsupported error class %q", policy.Version, policy.Family, policy.Selector, policy.ErrorClass)
 		}
-		if hasSupportedOverlay(policy.Family, policy.Selector) {
-			return fmt.Errorf("reviewed unavailable source %s/%s/%s overlaps a supported policy tuple", policy.Version, policy.Family, policy.Selector)
+		if hasReviewedOverlayMapping(policy.Version, policy.Family, policy.Selector, policy.Target, policy.SourceRef) {
+			return fmt.Errorf("reviewed unavailable source %s/%s/%s overlaps a reviewed policy tuple", policy.Version, policy.Family, policy.Selector)
 		}
-		key := policy.Version + "\x00" + policy.Family + "\x00" + policy.Selector + "\x00" + policy.SourceRef
+		key := policy.Version + "\x00" + policy.Family + "\x00" + policy.Selector + "\x00" + policy.Target + "\x00" + policy.SourceRef
 		if _, exists := seen[key]; exists {
 			return fmt.Errorf("reviewed unavailable source policy %s/%s/%s is duplicated", policy.Version, policy.Family, policy.Selector)
 		}
@@ -56,9 +60,9 @@ func validateUnavailableSourcePolicies(policies []unavailableSourcePolicy) error
 	return nil
 }
 
-func reviewedUnavailableSource(version, family, selector, sourceRef string) (unavailableSourcePolicy, bool) {
+func reviewedUnavailableSource(version, family, selector, target, sourceRef string) (unavailableSourcePolicy, bool) {
 	for _, policy := range reviewedUnavailableSources {
-		if policy.Version == version && policy.Family == family && policy.Selector == selector && policy.SourceRef == sourceRef {
+		if policy.Version == version && policy.Family == family && policy.Selector == selector && policy.Target == target && policy.SourceRef == sourceRef {
 			return policy, true
 		}
 	}

@@ -80,7 +80,7 @@ func TestSnapshotResolverIsOfflineExactAndDetached(t *testing.T) {
 			SourceRef: fixtureReferenceV1,
 			Manifests: []ResolvedManifest{{
 				Digest:   fixtureDigestA,
-				Platform: Platform{OS: platformLinux, Architecture: "x86_64"},
+				Platform: Platform{OS: platformLinux, Architecture: architectureX8664},
 			}},
 		}},
 	})

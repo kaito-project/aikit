@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/pkg/errors"
 )
 
 type fallbackTarget struct {
@@ -25,6 +27,168 @@ type entryPolicy struct {
 	Fallbacks            []fallbackTarget
 }
 
+type policyInput struct {
+	ImportedVersion string
+	Family          string
+	Selector        string
+	Target          string
+	SourceRef       string
+	Platform        Platform
+}
+
+type reviewedPolicyKey struct {
+	Version  string
+	Family   string
+	Selector string
+	Platform Platform
+}
+
+type reviewedPolicyOverlay struct {
+	Key                  reviewedPolicyKey
+	Target               string
+	SourceRef            string
+	TargetProfile        string
+	Status               string
+	RuntimeBaseRef       string
+	RunnerRuntimeBaseRef string
+	InstallName          string
+	RunnerProfile        string
+	Fallbacks            []fallbackTarget
+}
+
+var reviewedPolicyOverlays = []reviewedPolicyOverlay{
+	{
+		Key:                  reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: runnerLlamaCpp, Selector: selectorDefault, Platform: linuxPlatform(architectureAMD64)},
+		Target:               "cpu-llama-cpp",
+		SourceRef:            reviewedSourceCPULLM,
+		TargetProfile:        runtimeCPU,
+		Status:               statusSupported,
+		RuntimeBaseRef:       chiseledRuntimeBase,
+		RunnerRuntimeBaseRef: ubuntu22RuntimeBase,
+		RunnerProfile:        runnerLlamaCpp,
+	},
+	{
+		Key:                  reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: runnerLlamaCpp, Selector: selectorDefault, Platform: linuxPlatform(architectureARM64)},
+		Target:               "cpu-llama-cpp",
+		SourceRef:            reviewedSourceCPULLM,
+		TargetProfile:        runtimeCPU,
+		Status:               statusSupported,
+		RuntimeBaseRef:       chiseledRuntimeBase,
+		RunnerRuntimeBaseRef: ubuntu22RuntimeBase,
+		RunnerProfile:        runnerLlamaCpp,
+	},
+	{
+		Key:                  reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: runnerLlamaCpp, Selector: selectorNVIDIA, Platform: linuxPlatform(architectureAMD64)},
+		Target:               backendTargetCUDALLM,
+		SourceRef:            "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-nvidia-cuda-12-llama-cpp",
+		TargetProfile:        targetCUDA12,
+		Status:               statusSupported,
+		RuntimeBaseRef:       chiseledRuntimeBase,
+		RunnerRuntimeBaseRef: ubuntu22RuntimeBase,
+		RunnerProfile:        runnerLlamaCpp,
+		Fallbacks:            []fallbackTarget{{Family: runnerLlamaCpp, Selector: selectorDefault}},
+	},
+	{
+		Key:            reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: runnerLlamaCpp, Selector: selectorAMD, Platform: linuxPlatform(architectureAMD64)},
+		Target:         "rocm-llama-cpp",
+		SourceRef:      "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-rocm-hipblas-llama-cpp",
+		TargetProfile:  targetROCm,
+		Status:         statusExperimental,
+		RuntimeBaseRef: rocmRuntimeBase,
+		InstallName:    "hipblas-llama-cpp",
+		RunnerProfile:  runnerLlamaCpp,
+		Fallbacks:      []fallbackTarget{{Family: runnerLlamaCpp, Selector: selectorDefault}},
+	},
+	{
+		Key:            reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: runnerLlamaCpp, Selector: selectorNVIDIAL4T, Platform: linuxPlatform(architectureARM64)},
+		Target:         backendTargetL4TLLM,
+		SourceRef:      reviewedSourceL4TLLM,
+		TargetProfile:  targetL4TCUDA12,
+		Status:         statusExperimental,
+		RuntimeBaseRef: l4tRuntimeBase,
+		RunnerProfile:  runnerLlamaCpp,
+		Fallbacks:      []fallbackTarget{{Family: runnerLlamaCpp, Selector: selectorDefault}},
+	},
+	{
+		Key:            reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: runnerLlamaCpp, Selector: selectorL4TCUDA12, Platform: linuxPlatform(architectureARM64)},
+		Target:         backendTargetL4TLLM,
+		SourceRef:      reviewedSourceL4TLLM,
+		TargetProfile:  targetL4TCUDA12,
+		Status:         statusExperimental,
+		RuntimeBaseRef: l4tRuntimeBase,
+		RunnerProfile:  runnerLlamaCpp,
+		Fallbacks:      []fallbackTarget{{Family: runnerLlamaCpp, Selector: selectorDefault}},
+	},
+	{
+		Key:            reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: runnerLlamaCpp, Selector: selectorL4TCUDA13, Platform: linuxPlatform(architectureARM64)},
+		Target:         "cuda13-nvidia-l4t-arm64-llama-cpp",
+		SourceRef:      "quay.io/go-skynet/local-ai-backends:v4.8.2-nvidia-l4t-cuda-13-arm64-llama-cpp",
+		TargetProfile:  targetL4TCUDA13,
+		Status:         statusExperimental,
+		RuntimeBaseRef: ubuntuRuntimeBase,
+		RunnerProfile:  runnerLlamaCpp,
+		Fallbacks:      []fallbackTarget{{Family: runnerLlamaCpp, Selector: selectorDefault}},
+	},
+	{
+		Key:            reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: runnerLlamaCpp, Selector: targetVulkan, Platform: linuxPlatform(architectureARM64)},
+		Target:         backendTargetVulkanLLM,
+		SourceRef:      reviewedSourceVulkanLLM,
+		TargetProfile:  targetVulkan,
+		Status:         statusExperimental,
+		RuntimeBaseRef: vulkanRuntimeBase,
+		InstallName:    backendInstallVulkanLLM,
+		RunnerProfile:  runnerUnsupported,
+	},
+	{
+		Key:            reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: familyDiffusers, Selector: selectorNVIDIA, Platform: linuxPlatform(architectureAMD64)},
+		Target:         "cuda12-diffusers",
+		SourceRef:      "quay.io/go-skynet/local-ai-backends:v3.12.1-gpu-nvidia-cuda-12-diffusers",
+		TargetProfile:  targetCUDA12,
+		Status:         statusSupported,
+		RuntimeBaseRef: ubuntu22RuntimeBase,
+		RunnerProfile:  runnerHFConfig,
+	},
+	{
+		Key:            reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: familyVLLM, Selector: selectorNVIDIA, Platform: linuxPlatform(architectureAMD64)},
+		Target:         backendTargetCUDAVLLM,
+		SourceRef:      "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-nvidia-cuda-12-vllm",
+		TargetProfile:  targetCUDA12,
+		Status:         statusSupported,
+		RuntimeBaseRef: ubuntu22RuntimeBase,
+		RunnerProfile:  runnerHFConfig,
+	},
+	{
+		Key:                  reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: familyVLLMCpp, Selector: selectorDefault, Platform: linuxPlatform(architectureAMD64)},
+		Target:               backendTargetCPUVLLM,
+		SourceRef:            reviewedSourceCPUVLLM,
+		TargetProfile:        runtimeCPU,
+		Status:               statusSupported,
+		RuntimeBaseRef:       chiseledRuntimeBase,
+		RunnerRuntimeBaseRef: ubuntu22RuntimeBase,
+		RunnerProfile:        familyVLLMCpp,
+	},
+	{
+		Key:                  reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: familyVLLMCpp, Selector: selectorDefault, Platform: linuxPlatform(architectureARM64)},
+		Target:               backendTargetCPUVLLM,
+		SourceRef:            reviewedSourceCPUVLLM,
+		TargetProfile:        runtimeCPU,
+		Status:               statusSupported,
+		RuntimeBaseRef:       chiseledRuntimeBase,
+		RunnerRuntimeBaseRef: ubuntu22RuntimeBase,
+		RunnerProfile:        familyVLLMCpp,
+	},
+	{
+		Key:                  reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: familyVLLMCpp, Selector: selectorNVIDIA, Platform: linuxPlatform(architectureAMD64)},
+		Target:               "cuda13-vllm-cpp",
+		SourceRef:            "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-nvidia-cuda-13-vllm-cpp",
+		TargetProfile:        targetCUDA13,
+		Status:               statusSupported,
+		RuntimeBaseRef:       chiseledRuntimeBase,
+		RunnerRuntimeBaseRef: ubuntu22RuntimeBase,
+		RunnerProfile:        familyVLLMCpp,
+	},
+}
+
 var reviewedSystemPackages = map[string][]string{
 	familyVLLM: {systemPackageGCC, systemPackageLibcDev},
 }
@@ -34,19 +198,22 @@ var rocmRuntimeSymlinks = []RuntimeSymlink{{
 	Path:   "/opt/rocm/lib/libhipblaslt.so.0",
 }}
 
-func hasSupportedOverlay(family, selector string) bool {
-	switch family + "/" + selector {
-	case runnerLlamaCpp + "/" + selectorDefault, runnerLlamaCpp + "/" + selectorNVIDIA,
-		familyDiffusers + "/" + selectorNVIDIA, familyVLLM + "/" + selectorNVIDIA,
-		familyVLLMCpp + "/" + selectorDefault, familyVLLMCpp + "/" + selectorNVIDIA:
-		return true
-	default:
-		return false
+func linuxPlatform(architecture string) Platform {
+	return Platform{OS: platformLinux, Architecture: architecture}
+}
+
+func hasReviewedOverlayMapping(version, family, selector, target, sourceRef string) bool {
+	for _, overlay := range reviewedPolicyOverlays {
+		if overlay.Key.Version == version && overlay.Key.Family == family && overlay.Key.Selector == selector && overlay.Target == target && overlay.SourceRef == sourceRef {
+			return true
+		}
 	}
+
+	return false
 }
 
 func artifactVersionFor(requestedVersion, family, selector string) string {
-	if requestedVersion != LocalAIVersion {
+	if requestedVersion != reviewedLocalAIVersion {
 		return requestedVersion
 	}
 
@@ -69,89 +236,140 @@ func coreReferenceTemplateForVersion(template, requestedVersion, entryVersion st
 	return strings.Replace(template, requestedVersion, entryVersion, 1), nil
 }
 
-func policyFor(family, selector, target, sourceRef string, platform Platform) (entryPolicy, error) {
-	targetProfile, err := inferTargetProfile(selector, target, sourceRef)
+func policyFor(input policyInput) (entryPolicy, error) {
+	targetProfile, err := inferTargetProfile(input.Selector, input.Target, input.SourceRef)
 	if err != nil {
 		return entryPolicy{}, err
 	}
 
 	policy := entryPolicy{
-		Runtime:        inferRuntime(targetProfile, platform),
+		Runtime:        inferRuntime(targetProfile, input.Platform),
 		TargetProfile:  targetProfile,
 		Status:         statusExperimental,
-		RuntimeBaseRef: runtimeBaseReference(targetProfile, platform),
-		SystemPackages: append([]string(nil), reviewedSystemPackages[family]...),
-		Environment:    runtimeEnvironment(targetProfile, target, platform),
+		RuntimeBaseRef: runtimeBaseReference(targetProfile, input.Platform),
+		SystemPackages: append([]string(nil), reviewedSystemPackages[input.Family]...),
+		Environment:    runtimeEnvironment(targetProfile, input.Target, input.Platform),
 		RunnerProfile:  runnerUnsupported,
 	}
 	if targetProfile == targetROCm {
 		policy.SystemPackages = append(policy.SystemPackages, "pciutils")
 		policy.RuntimeSymlinks = append([]RuntimeSymlink(nil), rocmRuntimeSymlinks...)
 	}
-	if family == familyVLLM && targetProfile == targetCUDA12 && platform.OS == platformLinux && platform.Architecture == architectureAMD64 {
+	if input.Family == familyVLLM && targetProfile == targetCUDA12 && input.Platform.OS == platformLinux && input.Platform.Architecture == architectureAMD64 {
 		policy.Environment = append(policy.Environment, vllmNativeSampler)
 	}
 	sort.Strings(policy.SystemPackages)
 	sort.Strings(policy.Environment)
 
-	key := family + "/" + selector + "/" + platform.OS + "/" + platform.Architecture
-	switch key {
-	case runnerLlamaCpp + "/" + selectorDefault + "/linux/amd64", runnerLlamaCpp + "/" + selectorDefault + "/linux/arm64":
-		policy.Status = statusSupported
-		policy.RuntimeBaseRef = chiseledRuntimeBase
-		policy.RunnerRuntimeBaseRef = ubuntu22RuntimeBase
-		policy.RunnerProfile = runnerLlamaCpp
-	case runnerLlamaCpp + "/" + selectorNVIDIA + "/linux/amd64":
-		policy.Status = statusSupported
-		policy.RuntimeBaseRef = chiseledRuntimeBase
-		policy.RunnerRuntimeBaseRef = ubuntu22RuntimeBase
-		policy.RunnerProfile = runnerLlamaCpp
-		policy.Fallbacks = []fallbackTarget{{Family: runnerLlamaCpp, Selector: selectorDefault}}
-	case runnerLlamaCpp + "/" + selectorAMD + "/linux/amd64":
-		policy.InstallName = "hipblas-llama-cpp"
-		policy.RunnerProfile = runnerLlamaCpp
-		policy.Fallbacks = []fallbackTarget{{Family: runnerLlamaCpp, Selector: selectorDefault}}
-	case runnerLlamaCpp + "/" + selectorNVIDIAL4T + "/linux/arm64",
-		runnerLlamaCpp + "/" + selectorL4TCUDA12 + "/linux/arm64",
-		runnerLlamaCpp + "/" + selectorL4TCUDA13 + "/linux/arm64":
-		policy.RunnerProfile = runnerLlamaCpp
-		policy.Fallbacks = []fallbackTarget{{Family: runnerLlamaCpp, Selector: selectorDefault}}
-	case runnerLlamaCpp + "/" + targetVulkan + "/linux/arm64":
-		policy.InstallName = "gpu-vulkan-llama-cpp"
-	case familyDiffusers + "/" + selectorNVIDIA + "/linux/amd64":
-		policy.Status = statusSupported
-		policy.RuntimeBaseRef = ubuntu22RuntimeBase
-		policy.RunnerProfile = runnerHFConfig
-	case familyVLLM + "/" + selectorNVIDIA + "/linux/amd64":
-		policy.Status = statusSupported
-		policy.RuntimeBaseRef = ubuntu22RuntimeBase
-		policy.RunnerProfile = runnerHFConfig
-	case familyVLLMCpp + "/" + selectorDefault + "/linux/amd64", familyVLLMCpp + "/" + selectorDefault + "/linux/arm64":
-		policy.Status = statusSupported
-		policy.RuntimeBaseRef = chiseledRuntimeBase
-		policy.RunnerRuntimeBaseRef = ubuntu22RuntimeBase
-		policy.RunnerProfile = familyVLLMCpp
-	case familyVLLMCpp + "/" + selectorNVIDIA + "/linux/amd64":
-		policy.Status = statusSupported
-		policy.RuntimeBaseRef = chiseledRuntimeBase
-		policy.RunnerRuntimeBaseRef = ubuntu22RuntimeBase
-		policy.RunnerProfile = familyVLLMCpp
+	overlay, found := reviewedPolicyOverlayFor(reviewedPolicyKey{
+		Version:  input.ImportedVersion,
+		Family:   input.Family,
+		Selector: input.Selector,
+		Platform: input.Platform,
+	})
+	if found {
+		if input.Target != overlay.Target {
+			return entryPolicy{}, fmt.Errorf(
+				"reviewed policy target drift for %s/%s/%s on %s: got %q, want %q",
+				input.ImportedVersion, input.Family, input.Selector, input.Platform.key(), input.Target, overlay.Target,
+			)
+		}
+		if input.SourceRef != overlay.SourceRef {
+			return entryPolicy{}, fmt.Errorf(
+				"reviewed policy source reference drift for %s/%s/%s on %s: got %q, want %q",
+				input.ImportedVersion, input.Family, input.Selector, input.Platform.key(), input.SourceRef, overlay.SourceRef,
+			)
+		}
+		if targetProfile != overlay.TargetProfile {
+			return entryPolicy{}, fmt.Errorf(
+				"reviewed policy target profile drift for %s/%s/%s on %s: got %q, want %q",
+				input.ImportedVersion, input.Family, input.Selector, input.Platform.key(), targetProfile, overlay.TargetProfile,
+			)
+		}
+		policy.Status = overlay.Status
+		policy.RuntimeBaseRef = overlay.RuntimeBaseRef
+		policy.RunnerRuntimeBaseRef = overlay.RunnerRuntimeBaseRef
+		policy.InstallName = overlay.InstallName
+		policy.RunnerProfile = overlay.RunnerProfile
+		policy.Fallbacks = append([]fallbackTarget(nil), overlay.Fallbacks...)
 	}
 
 	// Kokoro ignores baked model paths and downloads an unpinned model at
 	// runtime. Keep every tuple unavailable until the backend can consume the
 	// immutable model materialized by AIKit.
-	if family == familyKokoro {
+	if input.Family == familyKokoro {
 		policy.Status = statusQuarantined
 	}
 
 	// LocalAI v4.8.2's CUDA 12 SGLang bundle mixes PyTorch CUDA 13.0 with
 	// TorchAudio CUDA 12.8 and exits before its gRPC service becomes ready.
-	if family == familySGLang && policy.TargetProfile == targetCUDA12 && platform.OS == platformLinux && platform.Architecture == architectureAMD64 {
+	if input.Family == familySGLang && policy.TargetProfile == targetCUDA12 && input.Platform.OS == platformLinux && input.Platform.Architecture == architectureAMD64 {
 		policy.Status = statusQuarantined
 	}
 
 	return policy, nil
+}
+
+func reviewedPolicyOverlayFor(key reviewedPolicyKey) (reviewedPolicyOverlay, bool) {
+	for _, overlay := range reviewedPolicyOverlays {
+		if overlay.Key == key {
+			return overlay, true
+		}
+	}
+
+	return reviewedPolicyOverlay{}, false
+}
+
+func validateReviewedPolicyOverlays(overlays []reviewedPolicyOverlay) error {
+	if len(overlays) == 0 {
+		return fmt.Errorf("reviewed policy overlays are empty")
+	}
+
+	seen := make(map[reviewedPolicyKey]struct{}, len(overlays))
+	for _, overlay := range overlays {
+		if overlay.Key.Version == "" || overlay.Key.Family == "" || overlay.Key.Selector == "" || overlay.Key.Platform.OS == "" ||
+			overlay.Key.Platform.Architecture == "" || overlay.Target == "" || overlay.SourceRef == "" || overlay.TargetProfile == "" ||
+			overlay.Status == "" || overlay.RuntimeBaseRef == "" || overlay.RunnerProfile == "" {
+			return fmt.Errorf("reviewed policy overlay is incomplete: %#v", overlay)
+		}
+		if overlay.Status != statusSupported && overlay.Status != statusExperimental {
+			return fmt.Errorf("reviewed policy overlay %s/%s/%s on %s has unsupported status %q", overlay.Key.Version, overlay.Key.Family, overlay.Key.Selector, overlay.Key.Platform.key(), overlay.Status)
+		}
+		if normalizePlatform(overlay.Key.Platform) != overlay.Key.Platform {
+			return fmt.Errorf("reviewed policy overlay %s/%s/%s has noncanonical platform %q", overlay.Key.Version, overlay.Key.Family, overlay.Key.Selector, overlay.Key.Platform.key())
+		}
+		if overlay.RunnerProfile != runnerUnsupported && overlay.RunnerProfile != runnerLlamaCpp && overlay.RunnerProfile != familyVLLMCpp && overlay.RunnerProfile != runnerHFConfig {
+			return fmt.Errorf(
+				"reviewed policy overlay %s/%s/%s on %s has unsupported runner profile %q",
+				overlay.Key.Version, overlay.Key.Family, overlay.Key.Selector, overlay.Key.Platform.key(), overlay.RunnerProfile,
+			)
+		}
+		inferredTargetProfile, err := inferTargetProfile(overlay.Key.Selector, overlay.Target, overlay.SourceRef)
+		if err != nil {
+			return errors.Wrapf(
+				err,
+				"reviewed policy overlay %s/%s/%s on %s cannot infer target profile",
+				overlay.Key.Version, overlay.Key.Family, overlay.Key.Selector, overlay.Key.Platform.key(),
+			)
+		}
+		if inferredTargetProfile != overlay.TargetProfile {
+			return fmt.Errorf(
+				"reviewed policy overlay %s/%s/%s on %s has target profile %q, inferred %q",
+				overlay.Key.Version, overlay.Key.Family, overlay.Key.Selector, overlay.Key.Platform.key(), overlay.TargetProfile, inferredTargetProfile,
+			)
+		}
+		for _, fallback := range overlay.Fallbacks {
+			if fallback.Family == "" || fallback.Selector == "" {
+				return fmt.Errorf("reviewed policy overlay %s/%s/%s on %s has incomplete fallback: %#v", overlay.Key.Version, overlay.Key.Family, overlay.Key.Selector, overlay.Key.Platform.key(), fallback)
+			}
+		}
+		if _, exists := seen[overlay.Key]; exists {
+			return fmt.Errorf("reviewed policy overlay %s/%s/%s on %s is duplicated", overlay.Key.Version, overlay.Key.Family, overlay.Key.Selector, overlay.Key.Platform.key())
+		}
+		seen[overlay.Key] = struct{}{}
+	}
+
+	return nil
 }
 
 func runtimeBaseReference(targetProfile string, platform Platform) string {

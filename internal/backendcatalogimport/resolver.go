@@ -305,7 +305,7 @@ func normalizePlatform(platform Platform) Platform {
 	platform.Architecture = strings.ToLower(strings.TrimSpace(platform.Architecture))
 	platform.Variant = strings.ToLower(strings.TrimSpace(platform.Variant))
 	switch platform.Architecture {
-	case "x86_64", "x86-64":
+	case architectureX8664, "x86-64":
 		platform.Architecture = architectureAMD64
 	case "aarch64":
 		platform.Architecture = architectureARM64

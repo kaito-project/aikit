@@ -78,7 +78,7 @@ func TestGenerateDeterministicCatalog(t *testing.T) {
 		t.Fatalf("entry count = %d, want 6", len(first.Entries))
 	}
 	amd64CPU := findGeneratedEntry(t, first, runnerLlamaCpp, selectorDefault, Platform{OS: platformLinux, Architecture: architectureAMD64})
-	if amd64CPU.Backend.Ref != "registry.example/local-ai-backends@"+fixtureDigestA {
+	if amd64CPU.Backend.Ref != "quay.io/go-skynet/local-ai-backends@"+fixtureDigestA {
 		t.Errorf("CPU backend ref = %q", amd64CPU.Backend.Ref)
 	}
 	if amd64CPU.Core.Ref != "registry.example/core@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" {
@@ -100,7 +100,7 @@ func TestGenerateDeterministicCatalog(t *testing.T) {
 	if arm64CPU.Platform != (Platform{OS: platformLinux, Architecture: architectureARM64}) {
 		t.Fatalf("second entry platform = %#v, want normalized linux/arm64", arm64CPU.Platform)
 	}
-	if arm64CPU.Backend.Ref != "registry.example/local-ai-backends@"+fixtureDigestB {
+	if arm64CPU.Backend.Ref != "quay.io/go-skynet/local-ai-backends@"+fixtureDigestB {
 		t.Errorf("arm64 backend ref = %q", arm64CPU.Backend.Ref)
 	}
 	if arm64CPU.Core.Ref != "registry.example/core@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" {
@@ -129,8 +129,127 @@ func TestGenerateDeterministicCatalog(t *testing.T) {
 	if len(nvidia.Fallbacks) != 1 || nvidia.Fallbacks[0] != amd64CPU.Backend {
 		t.Fatalf("NVIDIA fallbacks = %#v, want %#v", nvidia.Fallbacks, amd64CPU.Backend)
 	}
+	vulkan := findGeneratedEntry(t, first, runnerLlamaCpp, targetVulkan, Platform{OS: platformLinux, Architecture: architectureARM64})
+	if vulkan.Version != legacyLocalAIVersion || vulkan.SourceRef != reviewedSourceVulkanLLM ||
+		vulkan.Backend.InstallName != backendInstallVulkanLLM || vulkan.Status != statusExperimental || vulkan.RunnerProfile != runnerUnsupported {
+		t.Fatalf("Vulkan legacy compatibility entry = %#v", vulkan)
+	}
 	if strings.Contains(string(firstJSON), "development") || strings.Contains(string(firstJSON), "latest-") {
 		t.Fatalf("generated catalog contains development or mutable latest data:\n%s", firstJSON)
+	}
+}
+
+func TestGenerateAppliesReviewedOverlayToLegacyDiffusersArtifact(t *testing.T) {
+	const (
+		diffusersRef = "quay.io/go-skynet/local-ai-backends:v3.12.1-gpu-nvidia-cuda-12-diffusers"
+		legacyCore   = "registry.example/core:v3.12.1-amd64"
+	)
+	source := sourceWithDefaultFixture(t, `- name: diffusers
+  capabilities:
+    nvidia: cuda12-diffusers
+- name: cuda12-diffusers
+  uri: quay.io/go-skynet/local-ai-backends:latest-gpu-nvidia-cuda-12-diffusers
+`)
+	resolver := scriptedResolver{
+		base: readSnapshot(t, "testdata/resolutions.json"),
+		manifests: staticResolver{
+			diffusersRef: {{Digest: fixtureDigestA, Platform: linuxPlatform(architectureAMD64)}},
+			legacyCore:   {{Digest: fixtureDigestB}},
+		},
+	}
+	catalog, err := Generate(context.Background(), source, GenerateOptions{
+		Source:          fixturePin(source),
+		Version:         LocalAIVersion,
+		CoreRefTemplate: fixtureCoreRefTemplate,
+		Resolver:        resolver,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	diffusers := findGeneratedEntry(t, catalog, familyDiffusers, selectorNVIDIA, linuxPlatform(architectureAMD64))
+	if diffusers.Version != legacyLocalAIVersion || diffusers.SourceRef != diffusersRef || diffusers.Status != statusSupported ||
+		diffusers.RunnerProfile != runnerHFConfig || diffusers.RuntimeBase.Ref != "docker.io/library/ubuntu@"+fixtureUbuntu22AMD64 {
+		t.Fatalf("Diffusers legacy compatibility entry = %#v", diffusers)
+	}
+}
+
+func TestGenerateRejectsReviewedPolicyMappingDrift(t *testing.T) {
+	tests := []struct {
+		name      string
+		source    string
+		sourceRef string
+		wantErr   string
+	}{
+		{
+			name: "target",
+			source: `- name: llama-cpp
+  capabilities:
+    default: cpu-renamed-llama-cpp
+- name: cpu-renamed-llama-cpp
+  uri: quay.io/go-skynet/local-ai-backends:latest-cpu-llama-cpp
+`,
+			sourceRef: reviewedSourceCPULLM,
+			wantErr:   "reviewed policy target drift",
+		},
+		{
+			name: "source reference",
+			source: `- name: llama-cpp
+  capabilities:
+    default: cpu-llama-cpp
+- name: cpu-llama-cpp
+  uri: quay.io/go-skynet/local-ai-backends:latest-cpu-repacked-llama-cpp
+`,
+			sourceRef: "quay.io/go-skynet/local-ai-backends:v4.8.2-cpu-repacked-llama-cpp",
+			wantErr:   "reviewed policy source reference drift",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := []byte(test.source)
+			_, err := Generate(context.Background(), source, GenerateOptions{
+				Source:          fixturePin(source),
+				Version:         LocalAIVersion,
+				CoreRefTemplate: fixtureCoreRefTemplate,
+				Resolver: staticResolver{
+					test.sourceRef: {{
+						Digest:   fixtureDigestA,
+						Platform: linuxPlatform(architectureAMD64),
+					}},
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Generate() error = %v, want containing %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestGenerateDoesNotPromoteFutureRelease(t *testing.T) {
+	source := readFixture(t, "testdata/index.yaml")
+	catalog, err := Generate(context.Background(), source, GenerateOptions{
+		Source:          fixturePin(source),
+		Version:         fixtureFutureVersion,
+		CoreRefTemplate: strings.Replace(fixtureCoreRefTemplate, LocalAIVersion, fixtureFutureVersion, 1),
+		Resolver: versionAliasResolver{
+			Base: readSnapshot(t, "testdata/resolutions.json"),
+			From: fixtureFutureVersion,
+			To:   LocalAIVersion,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	cpu := findGeneratedEntry(t, catalog, runnerLlamaCpp, selectorDefault, linuxPlatform(architectureAMD64))
+	if cpu.Version != fixtureFutureVersion || cpu.Status != statusExperimental || cpu.RunnerProfile != runnerUnsupported || cpu.RunnerRuntimeBase != nil ||
+		cpu.RuntimeBase.Ref != "docker.io/library/ubuntu@"+fixtureUbuntuAMD64 {
+		t.Fatalf("future CPU entry = %#v, want unreviewed future-release policy", cpu)
+	}
+	nvidia := findGeneratedEntry(t, catalog, runnerLlamaCpp, selectorNVIDIA, linuxPlatform(architectureAMD64))
+	if nvidia.Version != fixtureFutureVersion || nvidia.Status != statusExperimental || nvidia.RunnerProfile != runnerUnsupported || len(nvidia.Fallbacks) != 0 {
+		t.Fatalf("future NVIDIA entry = %#v, want unreviewed future-release policy", nvidia)
 	}
 }
 
@@ -426,7 +545,13 @@ func TestPolicyInferencePreservesAcceleratorSemantics(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			policy, err := policyFor(fixtureFamilyDemo, test.selector, test.target, "", test.platform)
+			policy, err := policyFor(policyInput{
+				ImportedVersion: LocalAIVersion,
+				Family:          fixtureFamilyDemo,
+				Selector:        test.selector,
+				Target:          test.target,
+				Platform:        test.platform,
+			})
 			if err != nil {
 				t.Fatalf("policyFor() error = %v", err)
 			}
@@ -602,16 +727,35 @@ func TestGenerateAppliesReviewedUnavailableSourcePolicyStrictly(t *testing.T) {
 	})
 }
 
-func TestUnavailableSourcePolicyCannotOverlapSupportedOverlay(t *testing.T) {
-	err := validateUnavailableSourcePolicies([]unavailableSourcePolicy{{
-		Version:    LocalAIVersion,
-		Family:     runnerLlamaCpp,
-		Selector:   selectorDefault,
-		SourceRef:  "registry.example/repo:v4.8.2-cpu-llama-cpp",
-		ErrorClass: resolutionErrorNotFound,
-	}})
-	if err == nil || !strings.Contains(err.Error(), "overlaps a supported policy tuple") {
-		t.Fatalf("validateUnavailableSourcePolicies() error = %v", err)
+func TestUnavailableSourcePolicyCannotOverlapReviewedOverlay(t *testing.T) {
+	tests := []reviewedPolicyOverlay{reviewedPolicyOverlays[0], reviewedPolicyOverlays[3]}
+	for _, overlay := range tests {
+		t.Run(overlay.Key.Family+"/"+overlay.Key.Selector, func(t *testing.T) {
+			err := validateUnavailableSourcePolicies([]unavailableSourcePolicy{{
+				Version:    overlay.Key.Version,
+				Family:     overlay.Key.Family,
+				Selector:   overlay.Key.Selector,
+				Target:     overlay.Target,
+				SourceRef:  overlay.SourceRef,
+				ErrorClass: resolutionErrorNotFound,
+			}})
+			if err == nil || !strings.Contains(err.Error(), "overlaps a reviewed policy tuple") {
+				t.Fatalf("validateUnavailableSourcePolicies() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestUnavailableSourcePolicyMatchingIsExact(t *testing.T) {
+	policy := reviewedUnavailableSources[0]
+	if _, found := reviewedUnavailableSource(policy.Version, policy.Family, policy.Selector, policy.Target, policy.SourceRef); !found {
+		t.Fatal("reviewedUnavailableSource() did not find exact policy")
+	}
+	if _, found := reviewedUnavailableSource(policy.Version, policy.Family, policy.Selector, "cpu-renamed-kokoros", policy.SourceRef); found {
+		t.Fatal("reviewedUnavailableSource() matched a different target")
+	}
+	if _, found := reviewedUnavailableSource(policy.Version, policy.Family, policy.Selector, policy.Target, policy.SourceRef+"-moved"); found {
+		t.Fatal("reviewedUnavailableSource() matched a different source reference")
 	}
 }
 
@@ -725,6 +869,26 @@ type failingResolver struct{}
 
 func (failingResolver) Resolve(_ context.Context, _ string) ([]ResolvedManifest, error) {
 	return nil, os.ErrInvalid
+}
+
+type versionAliasResolver struct {
+	Base Resolver
+	From string
+	To   string
+}
+
+func (resolver versionAliasResolver) Resolve(ctx context.Context, reference string) ([]ResolvedManifest, error) {
+	manifests, err := resolver.Base.Resolve(ctx, reference)
+	if err == nil || !strings.Contains(reference, resolver.From) {
+		return manifests, err
+	}
+
+	manifests, currentErr := resolver.Base.Resolve(ctx, strings.Replace(reference, resolver.From, resolver.To, 1))
+	if currentErr == nil {
+		return manifests, nil
+	}
+
+	return resolver.Base.Resolve(ctx, strings.Replace(reference, resolver.From, legacyLocalAIVersion, 1))
 }
 
 func readFixture(t *testing.T, path string) []byte {

@@ -35,6 +35,9 @@ func Generate(ctx context.Context, source []byte, options GenerateOptions) (Cata
 	if options.CoreRefTemplate == "" {
 		return Catalog{}, errors.New("LocalAI core reference template is required")
 	}
+	if err := validateReviewedPolicyOverlays(reviewedPolicyOverlays); err != nil {
+		return Catalog{}, errors.Wrap(err, "validate reviewed policy overlays")
+	}
 	if err := validateUnavailableSourcePolicies(reviewedUnavailableSources); err != nil {
 		return Catalog{}, errors.Wrap(err, "validate reviewed unavailable source policy")
 	}
@@ -81,7 +84,7 @@ func Generate(ctx context.Context, source []byte, options GenerateOptions) (Cata
 			if err != nil {
 				return Catalog{}, errors.Wrapf(err, "select LocalAI core for family %q selector %q", family, selector)
 			}
-			unavailablePolicy, reviewedUnavailable := reviewedUnavailableSource(options.Version, family, selector, sourceRef)
+			unavailablePolicy, reviewedUnavailable := reviewedUnavailableSource(options.Version, family, selector, targetName, sourceRef)
 			manifests, resolveErr := resolver.resolve(ctx, sourceRef)
 			if reviewedUnavailable {
 				if resolveErr == nil {
@@ -109,7 +112,14 @@ func Generate(ctx context.Context, source []byte, options GenerateOptions) (Cata
 				if manifest.Platform.OS == "" || manifest.Platform.Architecture == "" {
 					return Catalog{}, fmt.Errorf("backend reference %q manifest %s has no platform", sourceRef, manifest.Digest)
 				}
-				policy, err := policyFor(family, selector, targetName, sourceRef, manifest.Platform)
+				policy, err := policyFor(policyInput{
+					ImportedVersion: options.Version,
+					Family:          family,
+					Selector:        selector,
+					Target:          targetName,
+					SourceRef:       sourceRef,
+					Platform:        manifest.Platform,
+				})
 				if err != nil {
 					return Catalog{}, errors.Wrapf(err, "apply policy for family %q selector %q", family, selector)
 				}

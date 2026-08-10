@@ -18,7 +18,7 @@ func TestCompatibilityArtifactVersions(t *testing.T) {
 		{name: "Diffusers explicit CUDA 12", version: LocalAIVersion, family: familyDiffusers, selector: selectorNVIDIACUDA12, want: LocalAIVersion},
 		{name: "Apple Silicon Vulkan", version: LocalAIVersion, family: runnerLlamaCpp, selector: targetVulkan, want: legacyLocalAIVersion},
 		{name: "vLLM default CUDA", version: LocalAIVersion, family: familyVLLM, selector: selectorNVIDIA, want: LocalAIVersion},
-		{name: "different imported release", version: "v5.0.0", family: familyDiffusers, selector: selectorNVIDIA, want: "v5.0.0"},
+		{name: "different imported release", version: fixtureFutureVersion, family: familyDiffusers, selector: selectorNVIDIA, want: fixtureFutureVersion},
 	}
 
 	for _, test := range tests {
@@ -77,6 +77,7 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 		runner            string
 		installName       string
 		fallbacks         int
+		sourceRef         string
 	}{
 		{
 			name:              "llama CPU amd64",
@@ -88,6 +89,7 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			runtimeBase:       chiseledRuntimeBase,
 			runnerRuntimeBase: ubuntu22RuntimeBase,
 			runner:            runnerLlamaCpp,
+			sourceRef:         reviewedSourceCPULLM,
 		},
 		{
 			name:              "llama CPU arm64",
@@ -99,12 +101,13 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			runtimeBase:       chiseledRuntimeBase,
 			runnerRuntimeBase: ubuntu22RuntimeBase,
 			runner:            runnerLlamaCpp,
+			sourceRef:         reviewedSourceCPULLM,
 		},
 		{
 			name:              "llama CUDA",
 			family:            runnerLlamaCpp,
 			selector:          selectorNVIDIA,
-			target:            "cuda12-llama-cpp",
+			target:            backendTargetCUDALLM,
 			architecture:      architectureAMD64,
 			status:            statusSupported,
 			runtimeBase:       chiseledRuntimeBase,
@@ -112,6 +115,7 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			environment:       cuda12Environment,
 			runner:            runnerLlamaCpp,
 			fallbacks:         1,
+			sourceRef:         "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-nvidia-cuda-12-llama-cpp",
 		},
 		{
 			name:            "llama ROCm",
@@ -127,6 +131,7 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			runner:          runnerLlamaCpp,
 			installName:     "hipblas-llama-cpp",
 			fallbacks:       1,
+			sourceRef:       "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-rocm-hipblas-llama-cpp",
 		},
 		{
 			name:         "llama Vulkan",
@@ -148,7 +153,8 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			runtimeBase:  vulkanRuntimeBase,
 			environment:  []string{vulkanEnvironment},
 			runner:       runnerUnsupported,
-			installName:  "gpu-vulkan-llama-cpp",
+			installName:  backendInstallVulkanLLM,
+			sourceRef:    reviewedSourceVulkanLLM,
 		},
 		{
 			name:            "unreviewed ROCm uses runtime base",
@@ -178,13 +184,14 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			name:         "llama L4T CUDA 12 keeps runner compatibility",
 			family:       runnerLlamaCpp,
 			selector:     selectorNVIDIAL4T,
-			target:       "nvidia-l4t-arm64-llama-cpp",
+			target:       backendTargetL4TLLM,
 			architecture: architectureARM64,
 			status:       statusExperimental,
 			runtimeBase:  l4tRuntimeBase,
 			environment:  l4tEnvironment(minimumCUDA12),
 			runner:       runnerLlamaCpp,
 			fallbacks:    1,
+			sourceRef:    reviewedSourceL4TLLM,
 		},
 		{
 			name:         "unreviewed L4T CUDA 13 uses runtime base",
@@ -207,24 +214,26 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			runtimeBase:  ubuntu22RuntimeBase,
 			environment:  cuda12Environment,
 			runner:       runnerHFConfig,
+			sourceRef:    "quay.io/go-skynet/local-ai-backends:v3.12.1-gpu-nvidia-cuda-12-diffusers",
 		},
 		{
 			name:           "vllm CUDA",
 			family:         familyVLLM,
 			selector:       selectorNVIDIA,
-			target:         "cuda12-vllm",
+			target:         backendTargetCUDAVLLM,
 			architecture:   architectureAMD64,
 			status:         statusSupported,
 			runtimeBase:    ubuntu22RuntimeBase,
 			systemPackages: []string{systemPackageGCC, systemPackageLibcDev},
 			environment:    append(cuda12Environment, vllmNativeSampler),
 			runner:         runnerHFConfig,
+			sourceRef:      "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-nvidia-cuda-12-vllm",
 		},
 		{
 			name:           "vllm explicit CUDA 12 keeps native sampler",
 			family:         familyVLLM,
 			selector:       selectorNVIDIACUDA12,
-			target:         "cuda12-vllm",
+			target:         backendTargetCUDAVLLM,
 			architecture:   architectureAMD64,
 			status:         statusExperimental,
 			runtimeBase:    ubuntuRuntimeBase,
@@ -260,12 +269,13 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			name:              "vllm-cpp CPU",
 			family:            familyVLLMCpp,
 			selector:          selectorDefault,
-			target:            "cpu-vllm-cpp",
+			target:            backendTargetCPUVLLM,
 			architecture:      architectureAMD64,
 			status:            statusSupported,
 			runtimeBase:       chiseledRuntimeBase,
 			runnerRuntimeBase: ubuntu22RuntimeBase,
 			runner:            familyVLLMCpp,
+			sourceRef:         reviewedSourceCPUVLLM,
 		},
 		{
 			name:              "vllm-cpp CUDA",
@@ -278,6 +288,7 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			runnerRuntimeBase: ubuntu22RuntimeBase,
 			environment:       cuda13Environment,
 			runner:            familyVLLMCpp,
+			sourceRef:         "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-nvidia-cuda-13-vllm-cpp",
 		},
 		{
 			name:         "NVIDIA-routed Vulkan exposes graphics",
@@ -348,7 +359,14 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			policy, err := policyFor(test.family, test.selector, test.target, "", Platform{OS: platformLinux, Architecture: test.architecture})
+			policy, err := policyFor(policyInput{
+				ImportedVersion: LocalAIVersion,
+				Family:          test.family,
+				Selector:        test.selector,
+				Target:          test.target,
+				SourceRef:       test.sourceRef,
+				Platform:        Platform{OS: platformLinux, Architecture: test.architecture},
+			})
 			if err != nil {
 				t.Fatalf("policyFor() error = %v", err)
 			}
@@ -358,6 +376,190 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 				!slices.Equal(policy.Environment, test.environment) || policy.RunnerProfile != test.runner || policy.InstallName != test.installName ||
 				len(policy.Fallbacks) != test.fallbacks {
 				t.Fatalf("policyFor() = %#v", policy)
+			}
+		})
+	}
+}
+
+func TestReviewedPolicyOverlayMatrix(t *testing.T) {
+	if err := validateReviewedPolicyOverlays(reviewedPolicyOverlays); err != nil {
+		t.Fatalf("validateReviewedPolicyOverlays() error = %v", err)
+	}
+	if got, want := len(reviewedPolicyOverlays), 13; got != want {
+		t.Fatalf("reviewed overlay count = %d, want %d", got, want)
+	}
+
+	var supported, runnerEnabled, fallbacks int
+	for _, overlay := range reviewedPolicyOverlays {
+		name := overlay.Key.Family + "/" + overlay.Key.Selector + "/" + overlay.Key.Platform.key()
+		t.Run(name, func(t *testing.T) {
+			policy, err := policyFor(policyInput{
+				ImportedVersion: overlay.Key.Version,
+				Family:          overlay.Key.Family,
+				Selector:        overlay.Key.Selector,
+				Target:          overlay.Target,
+				SourceRef:       overlay.SourceRef,
+				Platform:        overlay.Key.Platform,
+			})
+			if err != nil {
+				t.Fatalf("policyFor() error = %v", err)
+			}
+			if policy.TargetProfile != overlay.TargetProfile || policy.Status != overlay.Status || policy.RuntimeBaseRef != overlay.RuntimeBaseRef ||
+				policy.RunnerRuntimeBaseRef != overlay.RunnerRuntimeBaseRef || policy.InstallName != overlay.InstallName ||
+				policy.RunnerProfile != overlay.RunnerProfile || !slices.Equal(policy.Fallbacks, overlay.Fallbacks) {
+				t.Fatalf("policyFor() = %#v, want overlay %#v", policy, overlay)
+			}
+		})
+		if overlay.Status == statusSupported {
+			supported++
+		}
+		if overlay.RunnerProfile != runnerUnsupported {
+			runnerEnabled++
+		}
+		fallbacks += len(overlay.Fallbacks)
+	}
+	if supported != 8 || runnerEnabled != 12 || fallbacks != 5 {
+		t.Fatalf("reviewed overlay totals = supported %d, runner-enabled %d, fallbacks %d; want 8, 12, 5", supported, runnerEnabled, fallbacks)
+	}
+}
+
+func TestReviewedPolicyOverlayDriftFailsClosed(t *testing.T) {
+	cpuOverlay := reviewedPolicyOverlays[0]
+
+	t.Run("target", func(t *testing.T) {
+		_, err := policyFor(policyInput{
+			ImportedVersion: cpuOverlay.Key.Version,
+			Family:          cpuOverlay.Key.Family,
+			Selector:        cpuOverlay.Key.Selector,
+			Target:          "cpu-renamed-llama-cpp",
+			SourceRef:       cpuOverlay.SourceRef,
+			Platform:        cpuOverlay.Key.Platform,
+		})
+		if err == nil || !strings.Contains(err.Error(), "reviewed policy target drift") {
+			t.Fatalf("policyFor() error = %v, want target drift", err)
+		}
+	})
+
+	t.Run("source reference", func(t *testing.T) {
+		_, err := policyFor(policyInput{
+			ImportedVersion: cpuOverlay.Key.Version,
+			Family:          cpuOverlay.Key.Family,
+			Selector:        cpuOverlay.Key.Selector,
+			Target:          cpuOverlay.Target,
+			SourceRef:       "quay.io/go-skynet/local-ai-backends:v4.8.2-cpu-repacked-llama-cpp",
+			Platform:        cpuOverlay.Key.Platform,
+		})
+		if err == nil || !strings.Contains(err.Error(), "reviewed policy source reference drift") {
+			t.Fatalf("policyFor() error = %v, want source reference drift", err)
+		}
+	})
+
+	t.Run("future release", func(t *testing.T) {
+		policy, err := policyFor(policyInput{
+			ImportedVersion: fixtureFutureVersion,
+			Family:          cpuOverlay.Key.Family,
+			Selector:        cpuOverlay.Key.Selector,
+			Target:          cpuOverlay.Target,
+			SourceRef:       "quay.io/go-skynet/local-ai-backends:" + fixtureFutureVersion + "-cpu-llama-cpp",
+			Platform:        cpuOverlay.Key.Platform,
+		})
+		if err != nil {
+			t.Fatalf("policyFor() error = %v", err)
+		}
+		if policy.Status != statusExperimental || policy.RunnerProfile != runnerUnsupported || policy.RuntimeBaseRef != ubuntuRuntimeBase ||
+			policy.RunnerRuntimeBaseRef != "" {
+			t.Fatalf("future release policy = %#v, want unreviewed defaults", policy)
+		}
+	})
+
+	t.Run("architecture", func(t *testing.T) {
+		nvidiaOverlay := reviewedPolicyOverlays[2]
+		policy, err := policyFor(policyInput{
+			ImportedVersion: nvidiaOverlay.Key.Version,
+			Family:          nvidiaOverlay.Key.Family,
+			Selector:        nvidiaOverlay.Key.Selector,
+			Target:          nvidiaOverlay.Target,
+			SourceRef:       nvidiaOverlay.SourceRef,
+			Platform:        linuxPlatform(architectureARM64),
+		})
+		if err != nil {
+			t.Fatalf("policyFor() error = %v", err)
+		}
+		if policy.Status != statusExperimental || policy.RunnerProfile != runnerUnsupported || policy.RuntimeBaseRef != ubuntuRuntimeBase {
+			t.Fatalf("architecture drift policy = %#v, want unreviewed defaults", policy)
+		}
+	})
+
+	t.Run("variant", func(t *testing.T) {
+		platform := cpuOverlay.Key.Platform
+		platform.Variant = "v3"
+		policy, err := policyFor(policyInput{
+			ImportedVersion: cpuOverlay.Key.Version,
+			Family:          cpuOverlay.Key.Family,
+			Selector:        cpuOverlay.Key.Selector,
+			Target:          cpuOverlay.Target,
+			SourceRef:       cpuOverlay.SourceRef,
+			Platform:        platform,
+		})
+		if err != nil {
+			t.Fatalf("policyFor() error = %v", err)
+		}
+		if policy.Status != statusExperimental || policy.RunnerProfile != runnerUnsupported || policy.RuntimeBaseRef != ubuntuRuntimeBase {
+			t.Fatalf("variant drift policy = %#v, want unreviewed defaults", policy)
+		}
+	})
+}
+
+func TestValidateReviewedPolicyOverlays(t *testing.T) {
+	valid := reviewedPolicyOverlays[0]
+	tests := []struct {
+		name     string
+		overlays []reviewedPolicyOverlay
+		wantErr  string
+	}{
+		{name: "valid", overlays: []reviewedPolicyOverlay{valid}},
+		{name: "empty", wantErr: "are empty"},
+		{
+			name: "incomplete",
+			overlays: []reviewedPolicyOverlay{func() reviewedPolicyOverlay {
+				incomplete := valid
+				incomplete.SourceRef = ""
+				return incomplete
+			}()},
+			wantErr: "is incomplete",
+		},
+		{name: "duplicate", overlays: []reviewedPolicyOverlay{valid, valid}, wantErr: "is duplicated"},
+		{
+			name: "target profile mismatch",
+			overlays: []reviewedPolicyOverlay{func() reviewedPolicyOverlay {
+				mismatch := valid
+				mismatch.TargetProfile = targetCUDA12
+				return mismatch
+			}()},
+			wantErr: "inferred",
+		},
+		{
+			name: "noncanonical platform",
+			overlays: []reviewedPolicyOverlay{func() reviewedPolicyOverlay {
+				noncanonical := valid
+				noncanonical.Key.Platform = Platform{OS: "LINUX", Architecture: architectureX8664}
+				return noncanonical
+			}()},
+			wantErr: "noncanonical platform",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateReviewedPolicyOverlays(test.overlays)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateReviewedPolicyOverlays() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("validateReviewedPolicyOverlays() error = %v, want containing %q", err, test.wantErr)
 			}
 		})
 	}
@@ -407,7 +609,13 @@ func TestVulkanAndMetalRuntimeClassification(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			policy, err := policyFor(fixtureFamilyDemo, test.selector, test.target, "", Platform{OS: platformLinux, Architecture: test.architecture})
+			policy, err := policyFor(policyInput{
+				ImportedVersion: LocalAIVersion,
+				Family:          fixtureFamilyDemo,
+				Selector:        test.selector,
+				Target:          test.target,
+				Platform:        Platform{OS: platformLinux, Architecture: test.architecture},
+			})
 			if err != nil {
 				t.Fatalf("policyFor() error = %v", err)
 			}
@@ -420,13 +628,14 @@ func TestVulkanAndMetalRuntimeClassification(t *testing.T) {
 }
 
 func TestGenericL4TProfileFollowsArtifactCUDA(t *testing.T) {
-	policy, err := policyFor(
-		familyVLLMCpp,
-		selectorNVIDIAL4T,
-		"nvidia-l4t-arm64-vllm-cpp",
-		"quay.io/go-skynet/local-ai-backends:v4.8.2-nvidia-l4t-cuda-13-arm64-vllm-cpp",
-		Platform{OS: platformLinux, Architecture: architectureARM64},
-	)
+	policy, err := policyFor(policyInput{
+		ImportedVersion: LocalAIVersion,
+		Family:          familyVLLMCpp,
+		Selector:        selectorNVIDIAL4T,
+		Target:          "nvidia-l4t-arm64-vllm-cpp",
+		SourceRef:       "quay.io/go-skynet/local-ai-backends:v4.8.2-nvidia-l4t-cuda-13-arm64-vllm-cpp",
+		Platform:        Platform{OS: platformLinux, Architecture: architectureARM64},
+	})
 	if err != nil {
 		t.Fatalf("policyFor() error = %v", err)
 	}

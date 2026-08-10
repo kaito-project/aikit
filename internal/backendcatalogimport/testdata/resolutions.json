@@ -2,7 +2,7 @@
   "schemaVersion": "v1alpha1",
   "references": [
     {
-      "sourceRef": "registry.example/local-ai-backends:v4.8.2-cpu-llama-cpp",
+      "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.8.2-cpu-llama-cpp",
       "manifests": [
         {
           "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -22,7 +22,7 @@
       ]
     },
     {
-      "sourceRef": "registry.example/local-ai-backends:v4.8.2-gpu-nvidia-cuda-12-llama-cpp",
+      "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-nvidia-cuda-12-llama-cpp",
       "manifests": [
         {
           "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
@@ -34,7 +34,7 @@
       ]
     },
     {
-      "sourceRef": "registry.example/local-ai-backends:v4.8.2-gpu-rocm-hipblas-llama-cpp",
+      "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-rocm-hipblas-llama-cpp",
       "manifests": [
         {
           "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
@@ -46,7 +46,7 @@
       ]
     },
     {
-      "sourceRef": "registry.example/local-ai-backends:v4.8.2-nvidia-l4t-arm64-llama-cpp",
+      "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.8.2-nvidia-l4t-arm64-llama-cpp",
       "manifests": [
         {
           "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
@@ -58,7 +58,7 @@
       ]
     },
     {
-      "sourceRef": "registry.example/local-ai-backends:v3.12.1-gpu-vulkan-llama-cpp",
+      "sourceRef": "quay.io/go-skynet/local-ai-backends:v3.12.1-gpu-vulkan-llama-cpp",
       "manifests": [
         {
           "digest": "sha256:abababababababababababababababababababababababababababababababab",
