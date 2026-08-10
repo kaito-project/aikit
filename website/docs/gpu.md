@@ -72,21 +72,20 @@ debug: true
 runtime: cuda
 backends:
   - vllm
-config: |
-  - name: Qwen2.5-0.5B-Instruct
-    backend: vllm
-    parameters:
-      model: Qwen/Qwen2.5-0.5B-Instruct
-    use_tokenizer_template: true
 ```
 
-Because this example explicitly sets `backends` and has no `models`, it requests runner mode. It succeeds only when the resolved tuple has the `hf-config` runner profile, and vLLM downloads the model from Hugging Face at container startup. You can instead embed models at build time using the `models` section with a `huggingface://` source.
+Because this example explicitly sets `backends` and has no `models`, it requests runner mode. It succeeds only when the resolved tuple has the `hf-config` runner profile. Pass the Hugging Face repository to the resulting image at container startup; the runner generates the LocalAI model configuration and vLLM downloads the model into its Hugging Face cache.
 
 After building, run with GPU support:
 
 ```bash
-docker run --rm --gpus all -p 8080:8080 my-model
+docker run --rm --gpus all -p 8080:8080 \
+  -v vllm-models:/models \
+  my-model \
+  Qwen/Qwen2.5-0.5B-Instruct
 ```
+
+A cold start requires outbound access to Hugging Face. The `/models` volume retains the cache across restarts, and `HF_TOKEN` can be supplied for gated repositories. A bare repository ID follows its upstream default revision and is not an immutable model pin. For air-gapped or reproducible deployments, embed the model in a standard image instead of relying on a cold runner download, and pin the frontend, model inputs, and resulting image by digest where supported.
 
 Test with:
 

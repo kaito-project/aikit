@@ -31,7 +31,7 @@ AIKit offers three main capabilities:
 - 📚 Supports multiple models with a single image
 - 🖥️ Supports [AMD64 and ARM64](https://kaito-project.github.io/aikit/docs/create-images#multi-platform-support) CPUs and [GPU-accelerated inferencing with NVIDIA CUDA and AMD ROCm support](https://kaito-project.github.io/aikit/docs/gpu)
 - 🔐 Ensure [supply chain security](https://kaito-project.github.io/aikit/docs/security) with SBOMs, Provenance attestations, and signed images
-- 🌈 Supports air-gapped environments with self-hosted, local, or any remote container registries to store model images for inference on the edge.
+- 🌈 Supports air-gapped inference with self-hosted or local registries when model content and dependencies are baked or mirrored ahead of time; runner images that download models at startup are not air-gapped by default.
 
 ## Quick Start
 

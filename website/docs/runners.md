@@ -44,6 +44,11 @@ docker run -p 8080:8080 ghcr.io/kaito-project/aikit/runners/llama-cpp-cpu:latest
 docker run --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/runners/llama-cpp-cuda:latest \
   https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf
 
+# Python vLLM with a persistent Hugging Face cache
+docker run --gpus all -p 8080:8080 -v vllm-models:/models \
+  ghcr.io/kaito-project/aikit/runners/vllm-cuda:latest \
+  Qwen/Qwen2.5-0.5B-Instruct
+
 # Native vllm.cpp with a safetensors repository pinned to an immutable revision
 docker run -p 8080:8080 ghcr.io/kaito-project/aikit/runners/vllm-cpp-cpu:latest \
   Qwen/Qwen3-0.6B@c1899de289a04d12100db370d81485cdf75e47ca
@@ -59,10 +64,19 @@ Then query the model:
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "gemma-3-1b-it-Q4_K_M", "messages": [{"role": "user", "content": "Hello!"}]}'
+
+# Python vLLM uses the repository's final path component as the model name
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "Qwen2.5-0.5B-Instruct", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
 :::note
-The model name in the API request is the GGUF filename without the `.gguf` extension. For a vllm.cpp safetensors repository, it is the repository name without the owner or pinned revision (for example, `Qwen3-0.6B`).
+The model name in the API request is the GGUF filename without the `.gguf` extension. Diffusers, Python vLLM, and vllm.cpp repository sources use the repository name without the owner or pinned revision (for example, `Qwen2.5-0.5B-Instruct` or `Qwen3-0.6B`).
+:::
+
+:::warning
+Runner mode downloads model content at container startup. A persistent cache reduces repeated transfers, but does not itself guarantee zero network access or verify the cached bytes as an immutable model artifact. A bare Hugging Face repository ID follows its upstream default revision; the Python vLLM runner's model argument does not provide an AIKit-validated immutable revision pin. Use a standard image with embedded model content for air-gapped or reproducible deployments.
 :::
 
 ## GPU Support
