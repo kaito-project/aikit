@@ -194,29 +194,132 @@ func Generate(ctx context.Context, source []byte, options GenerateOptions) (Cata
 		entries = append(entries, candidate.Entry)
 	}
 	sortEntries(entries)
+	defaults := generatedDefaults()
+	if err := validateGeneratedDefaultReachability(defaults, entries); err != nil {
+		return Catalog{}, errors.Wrap(err, "validate generated catalog defaults")
+	}
 
 	return Catalog{
 		SchemaVersion: SchemaVersion,
 		Source:        options.Source,
-		Defaults: Defaults{
-			Family: defaultFamily,
-			Selectors: []DefaultSelector{
-				{Runtime: runtimeApple, Selector: targetVulkan},
-				{Runtime: runtimeCPU, Selector: selectorDefault},
-				{Runtime: runtimeCUDA, Selector: selectorNVIDIA},
-				{
-					Runtime: runtimeCUDA,
-					Platform: &Platform{
-						OS:           platformLinux,
-						Architecture: architectureARM64,
-					},
-					Selector: selectorNVIDIAL4T,
-				},
-				{Runtime: runtimeROCm, Selector: selectorAMD},
-			},
-		},
-		Entries: entries,
+		Defaults:      defaults,
+		Entries:       entries,
 	}, nil
+}
+
+func generatedDefaults() Defaults {
+	return Defaults{
+		Family: defaultFamily,
+		Selectors: []DefaultSelector{
+			{Runtime: runtimeApple, Selector: targetVulkan},
+			{Runtime: runtimeCPU, Selector: selectorDefault},
+			{Runtime: runtimeCUDA, Selector: selectorNVIDIA},
+			{
+				Runtime: runtimeCUDA,
+				Platform: &Platform{
+					OS:           platformLinux,
+					Architecture: architectureARM64,
+				},
+				Selector: selectorNVIDIAL4T,
+			},
+			{Runtime: runtimeROCm, Selector: selectorAMD},
+		},
+	}
+}
+
+func validateGeneratedDefaultReachability(defaults Defaults, entries []Entry) error {
+	genericSelectors := make(map[string]string, len(defaults.Selectors))
+	platformSelectors := make(map[string]string, len(defaults.Selectors))
+	for _, selection := range defaults.Selectors {
+		if selection.Platform == nil {
+			genericSelectors[selection.Runtime] = selection.Selector
+			continue
+		}
+		platform := normalizePlatform(*selection.Platform)
+		platformSelectors[defaultRuntimePlatformKey(selection.Runtime, platform)] = selection.Selector
+	}
+
+	entriesByTuple := make(map[string]Entry, len(entries))
+	platformsByRuntime := make(map[string]map[string]Platform)
+	for _, entry := range entries {
+		platform := normalizePlatform(entry.Platform)
+		if entry.Family == defaults.Family {
+			entriesByTuple[entryTupleKey(entry.Family, entry.Selector, platform)] = entry
+		}
+		if platformsByRuntime[entry.Runtime] == nil {
+			platformsByRuntime[entry.Runtime] = make(map[string]Platform)
+		}
+		platformsByRuntime[entry.Runtime][platform.key()] = platform
+	}
+
+	runtimes := sortedMapKeys(genericSelectors)
+	for _, runtime := range runtimes {
+		platforms := platformsByRuntime[runtime]
+		if len(platforms) == 0 {
+			return fmt.Errorf("default family %q has no entries for runtime %q", defaults.Family, runtime)
+		}
+		platformKeys := sortedMapKeys(platforms)
+		for _, platformKey := range platformKeys {
+			platform := platforms[platformKey]
+			selector := genericSelectors[runtime]
+			if platformSelector, ok := platformSelectors[defaultRuntimePlatformKey(runtime, platform)]; ok {
+				selector = platformSelector
+			}
+			if err := validateGeneratedDefaultTarget(defaults.Family, runtime, selector, platform, entriesByTuple); err != nil {
+				return err
+			}
+		}
+	}
+
+	for _, selection := range defaults.Selectors {
+		if selection.Platform == nil {
+			continue
+		}
+		if err := validateGeneratedDefaultTarget(
+			defaults.Family,
+			selection.Runtime,
+			selection.Selector,
+			normalizePlatform(*selection.Platform),
+			entriesByTuple,
+		); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateGeneratedDefaultTarget(family, runtime, selector string, platform Platform, entriesByTuple map[string]Entry) error {
+	entry, ok := entriesByTuple[entryTupleKey(family, selector, platform)]
+	if !ok {
+		return fmt.Errorf("default family %q runtime %q selector %q has no entry for platform %s", family, runtime, selector, platform.key())
+	}
+	if entry.Runtime != runtime {
+		return fmt.Errorf(
+			"default family %q selector %q platform %s has runtime %q, want %q",
+			family,
+			selector,
+			platform.key(),
+			entry.Runtime,
+			runtime,
+		)
+	}
+	if entry.Status != statusSupported && entry.Status != statusExperimental {
+		return fmt.Errorf(
+			"default family %q runtime %q selector %q platform %s has unavailable status %q",
+			family,
+			runtime,
+			selector,
+			platform.key(),
+			entry.Status,
+		)
+	}
+
+	return nil
+}
+
+func defaultRuntimePlatformKey(runtime string, platform Platform) string {
+	return runtime + "/" + platform.key()
 }
 
 // Marshal returns canonical, indented JSON with a final newline.
@@ -376,7 +479,7 @@ func normalizeWorkloads(tags []string) []string {
 	return workloads
 }
 
-func sortedMapKeys(values map[string]string) []string {
+func sortedMapKeys[T any](values map[string]T) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)

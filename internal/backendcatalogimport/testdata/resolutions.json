@@ -34,6 +34,42 @@
       ]
     },
     {
+      "sourceRef": "registry.example/local-ai-backends:v4.8.2-gpu-rocm-hipblas-llama-cpp",
+      "manifests": [
+        {
+          "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "platform": {
+            "os": "linux",
+            "architecture": "amd64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "registry.example/local-ai-backends:v4.8.2-nvidia-l4t-arm64-llama-cpp",
+      "manifests": [
+        {
+          "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "platform": {
+            "os": "linux",
+            "architecture": "arm64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "registry.example/local-ai-backends:v3.12.1-gpu-vulkan-llama-cpp",
+      "manifests": [
+        {
+          "digest": "sha256:abababababababababababababababababababababababababababababababab",
+          "platform": {
+            "os": "linux",
+            "architecture": "arm64"
+          }
+        }
+      ]
+    },
+    {
       "sourceRef": "registry.example/core:v4.8.2-amd64",
       "manifests": [
         {
@@ -50,6 +86,18 @@
       "manifests": [
         {
           "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "platform": {
+            "os": "linux",
+            "architecture": "arm64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "registry.example/core:v3.12.1-arm64",
+      "manifests": [
+        {
+          "digest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
           "platform": {
             "os": "linux",
             "architecture": "arm64"

@@ -43,8 +43,28 @@ func TestAikit2LLBWithPlatformsSeparatesHelperAndTargetPlatforms(t *testing.T) {
 		t.Fatalf("marshal inference definition: %v", err)
 	}
 
-	helperSource := findInferenceSourceOp(t, definition, orasImage)
-	assertInferenceOpPlatform(t, helperSource, *buildPlatform)
+	helperSources := findInferenceSourceOps(t, definition, orasImage)
+	if len(helperSources) != 2 {
+		t.Fatalf("ORAS helper sources = %d, want build- and target-platform sources", len(helperSources))
+	}
+	var buildHelperFound, targetTrustFound bool
+	for _, helperSource := range helperSources {
+		if !strings.Contains(helperSource.op.GetSource().Identifier, "@sha256:") {
+			t.Fatalf("ORAS helper source = %q, want digest-qualified image", helperSource.op.GetSource().Identifier)
+		}
+		platform := inferenceOpPlatform(t, helperSource)
+		switch {
+		case reflect.DeepEqual(platform, *buildPlatform):
+			buildHelperFound = true
+		case reflect.DeepEqual(platform, *targetPlatform):
+			targetTrustFound = true
+		default:
+			t.Fatalf("ORAS helper platform = %#v, want %#v or %#v", platform, *buildPlatform, *targetPlatform)
+		}
+	}
+	if !buildHelperFound || !targetTrustFound {
+		t.Fatalf("ORAS helper platforms: build = %t, target = %t", buildHelperFound, targetTrustFound)
+	}
 
 	modelPull := findInferenceExecOp(t, definition, "example.com/models/test:latest")
 	assertInferenceOpPlatform(t, modelPull, *buildPlatform)
@@ -170,6 +190,25 @@ func TestAikit2LLBInstallsRuntimeTrustOnlyForStandardImages(t *testing.T) {
 				t.Errorf("standard runtime trust copy = %q -> %q, want %q -> %q", copyAction.Src, copyAction.Dest, standardRuntimeCABundlePath, standardRuntimeCABundlePath)
 			}
 		})
+	}
+}
+
+func TestInstallStandardRuntimeTrustUsesTargetPlatform(t *testing.T) {
+	targetPlatform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	state, _ := installStandardRuntimeTrust(llb.Scratch(), llb.Scratch(), targetPlatform)
+	definition, err := state.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal standard runtime trust definition: %v", err)
+	}
+
+	trustSource := findInferenceSourceOp(t, definition, orasImage)
+	assertInferenceOpPlatform(t, trustSource, targetPlatform)
+}
+
+func TestORASToolingImageIsDigestPinned(t *testing.T) {
+	const want = "ghcr.io/oras-project/oras@sha256:0087224dd0decc354b5b0689068fbbc40cd5dc3dbf65fcb3868dfbd363dc790b"
+	if orasImage != want {
+		t.Fatalf("orasImage = %q, want %q", orasImage, want)
 	}
 }
 
@@ -324,16 +363,21 @@ func findInferenceSourceOps(t *testing.T, definition *llb.Definition, identifier
 
 func assertInferenceOpPlatform(t *testing.T, graphOp inferenceDefinitionOp, want specs.Platform) {
 	t.Helper()
+	got := inferenceOpPlatform(t, graphOp)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("operation platform = %#v, want %#v", got, want)
+	}
+}
+
+func inferenceOpPlatform(t *testing.T, graphOp inferenceDefinitionOp) specs.Platform {
+	t.Helper()
 
 	if graphOp.op.Platform == nil {
-		t.Fatalf("operation platform is nil, want %#v", want)
+		t.Fatal("operation platform is nil")
 	}
-	got := specs.Platform{
+	return specs.Platform{
 		OS:           graphOp.op.Platform.OS,
 		Architecture: graphOp.op.Platform.Architecture,
 		Variant:      graphOp.op.Platform.Variant,
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("operation platform = %#v, want %#v", got, want)
 	}
 }

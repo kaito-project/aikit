@@ -21,14 +21,18 @@ import (
 )
 
 const (
-	orasImage             = "ghcr.io/oras-project/oras:v1.2.0"
+	orasImage             = "ghcr.io/oras-project/oras@sha256:0087224dd0decc354b5b0689068fbbc40cd5dc3dbf65fcb3868dfbd363dc790b"
 	ollamaRegistryURL     = "registry.ollama.ai"
 	localModelContextName = "context"
 )
 
+func orasToolingImage(platform specs.Platform) llb.State {
+	return llb.Image(orasImage, llb.Platform(platform))
+}
+
 // handleOCI handles OCI artifact downloading and processing.
 func handleOCI(source string, s llb.State, buildPlatform, targetPlatform specs.Platform) llb.State {
-	toolingImage := llb.Image(orasImage, llb.Platform(buildPlatform))
+	toolingImage := orasToolingImage(buildPlatform)
 
 	artifactURL := strings.TrimPrefix(source, "oci://")
 	var script string

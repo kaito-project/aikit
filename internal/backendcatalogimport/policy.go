@@ -26,7 +26,7 @@ type entryPolicy struct {
 }
 
 var reviewedSystemPackages = map[string][]string{
-	familyVLLM: {"gcc", "libc6-dev"},
+	familyVLLM: {systemPackageGCC, systemPackageLibcDev},
 }
 
 var rocmRuntimeSymlinks = []RuntimeSymlink{{
@@ -88,6 +88,9 @@ func policyFor(family, selector, target, sourceRef string, platform Platform) (e
 		policy.SystemPackages = append(policy.SystemPackages, "pciutils")
 		policy.RuntimeSymlinks = append([]RuntimeSymlink(nil), rocmRuntimeSymlinks...)
 	}
+	if family == familyVLLM && targetProfile == targetCUDA12 && platform.OS == platformLinux && platform.Architecture == architectureAMD64 {
+		policy.Environment = append(policy.Environment, vllmNativeSampler)
+	}
 	sort.Strings(policy.SystemPackages)
 	sort.Strings(policy.Environment)
 
@@ -123,8 +126,6 @@ func policyFor(family, selector, target, sourceRef string, platform Platform) (e
 		policy.Status = statusSupported
 		policy.RuntimeBaseRef = ubuntu22RuntimeBase
 		policy.RunnerProfile = runnerHFConfig
-		policy.Environment = append(policy.Environment, vllmNativeSampler)
-		sort.Strings(policy.Environment)
 	case familyVLLMCpp + "/" + selectorDefault + "/linux/amd64", familyVLLMCpp + "/" + selectorDefault + "/linux/arm64":
 		policy.Status = statusSupported
 		policy.RuntimeBaseRef = chiseledRuntimeBase

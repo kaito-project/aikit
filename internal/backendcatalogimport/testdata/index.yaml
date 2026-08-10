@@ -8,8 +8,11 @@
     - text-to-text
     - CPU
   capabilities:
+    amd: rocm-llama-cpp
     default: cpu-llama-cpp
     nvidia: cuda12-llama-cpp
+    nvidia-l4t: nvidia-l4t-arm64-llama-cpp
+    vulkan: vulkan-llama-cpp
 - !!merge <<: *llamacpp
   name: llama-cpp-development
   capabilities:
@@ -34,3 +37,12 @@
 - !!merge <<: *llamacpp
   name: cuda12-llama-cpp-development
   uri: registry.example/local-ai-backends:master-gpu-nvidia-cuda-12-llama-cpp
+- !!merge <<: *llamacpp
+  name: rocm-llama-cpp
+  uri: registry.example/local-ai-backends:latest-gpu-rocm-hipblas-llama-cpp
+- !!merge <<: *llamacpp
+  name: nvidia-l4t-arm64-llama-cpp
+  uri: registry.example/local-ai-backends:latest-nvidia-l4t-arm64-llama-cpp
+- !!merge <<: *llamacpp
+  name: vulkan-llama-cpp
+  uri: registry.example/local-ai-backends:latest-gpu-vulkan-llama-cpp

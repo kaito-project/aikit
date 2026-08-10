@@ -74,7 +74,7 @@ func aikit2LLBWithResolvedBackend(c *config.InferenceConfig, buildPlatform, targ
 			return state, nil, err
 		}
 		state = buildBase
-		state, merge = installStandardRuntimeTrust(state, merge, *buildPlatform)
+		state, merge = installStandardRuntimeTrust(state, merge, *targetPlatform)
 	}
 
 	state, merge, err = addLocalAI(backend, state, merge, *buildPlatform)
@@ -92,11 +92,11 @@ func aikit2LLBWithResolvedBackend(c *config.InferenceConfig, buildPlatform, targ
 	return merge, imageCfg, nil
 }
 
-// installStandardRuntimeTrust copies the CA bundle from the existing build helper
-// into standard images without assuming that the catalog runtime base has a package manager.
-func installStandardRuntimeTrust(s llb.State, merge llb.State, buildPlatform specs.Platform) (llb.State, llb.State) {
+// installStandardRuntimeTrust copies a target-platform CA bundle into standard
+// images without assuming that the catalog runtime base has a package manager.
+func installStandardRuntimeTrust(s llb.State, merge llb.State, targetPlatform specs.Platform) (llb.State, llb.State) {
 	savedState := s
-	trustSource := llb.Image(orasImage, llb.Platform(buildPlatform))
+	trustSource := orasToolingImage(targetPlatform)
 	s = s.File(
 		llb.Copy(
 			trustSource,
@@ -207,7 +207,7 @@ func addLocalAI(backend backendcatalog.Resolution, s llb.State, merge llb.State,
 	savedState := s
 
 	// Use the oras CLI image to pull the artifact containing the LocalAI binary
-	tooling := llb.Image(orasImage, llb.Platform(buildPlatform)).Run(
+	tooling := orasToolingImage(buildPlatform).Run(
 		utils.Shf("set -e\noras pull %[1]s\nchmod +x local-ai\nchmod 755 local-ai", backend.Core.Ref),
 		llb.WithCustomName("Pulling LocalAI from OCI artifact "+backend.Core.Ref),
 	).Root()

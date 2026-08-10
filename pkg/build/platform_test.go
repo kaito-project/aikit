@@ -93,15 +93,6 @@ func TestBuildInferenceUsesBuildPlatformForArtifactHelpers(t *testing.T) {
 
 	seenTargets := make(map[string]bool, len(definitions))
 	for _, definition := range definitions {
-		helperSource := findBuildSourceOp(t, definition, "ghcr.io/oras-project/oras")
-		assertBuildOpPlatform(t, helperSource, buildPlatform)
-
-		modelPull := findBuildExecOp(t, definition, "example.com/models/test:latest")
-		assertBuildOpPlatform(t, modelPull, buildPlatform)
-
-		localAIPull := findBuildExecOp(t, definition, "ghcr.io/kaito-project/aikit/localai@sha256:")
-		assertBuildOpPlatform(t, localAIPull, buildPlatform)
-
 		backendSource := findBuildSourceOp(t, definition, utils.BackendOCIRegistry)
 		if backendSource.Platform == nil {
 			t.Fatal("backend source platform is nil")
@@ -111,6 +102,13 @@ func TestBuildInferenceUsesBuildPlatformForArtifactHelpers(t *testing.T) {
 		seenTargets[targetArchitecture] = true
 
 		assertBuildOpPlatform(t, backendSource, targetPlatform)
+		assertBuildHelperPlatforms(t, findBuildSourceOps(t, definition, "ghcr.io/oras-project/oras"), buildPlatform, targetPlatform)
+
+		modelPull := findBuildExecOp(t, definition, "example.com/models/test:latest")
+		assertBuildOpPlatform(t, modelPull, buildPlatform)
+
+		localAIPull := findBuildExecOp(t, definition, "ghcr.io/kaito-project/aikit/localai@sha256:")
+		assertBuildOpPlatform(t, localAIPull, buildPlatform)
 
 		baseSource := findBuildSourceOp(t, definition, "ghcr.io/kaito-project/aikit/base@sha256:")
 		assertBuildOpPlatform(t, baseSource, targetPlatform)
@@ -206,6 +204,16 @@ type recordingBuildReference struct {
 func findBuildSourceOp(t *testing.T, definition *pb.Definition, identifierFragment string) *pb.Op {
 	t.Helper()
 
+	matches := findBuildSourceOps(t, definition, identifierFragment)
+	if len(matches) != 1 {
+		t.Fatalf("source ops containing %q = %d, want 1", identifierFragment, len(matches))
+	}
+	return matches[0]
+}
+
+func findBuildSourceOps(t *testing.T, definition *pb.Definition, identifierFragment string) []*pb.Op {
+	t.Helper()
+
 	var matches []*pb.Op
 	for _, data := range definition.Def {
 		op := new(pb.Op)
@@ -216,10 +224,8 @@ func findBuildSourceOp(t *testing.T, definition *pb.Definition, identifierFragme
 			matches = append(matches, op)
 		}
 	}
-	if len(matches) != 1 {
-		t.Fatalf("source ops containing %q = %d, want 1", identifierFragment, len(matches))
-	}
-	return matches[0]
+
+	return matches
 }
 
 func findBuildExecOp(t *testing.T, definition *pb.Definition, commandFragment string) *pb.Op {
@@ -254,5 +260,32 @@ func assertBuildOpPlatform(t *testing.T, op *pb.Op, want specs.Platform) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("operation platform = %#v, want %#v", got, want)
+	}
+}
+
+func assertBuildHelperPlatforms(t *testing.T, helpers []*pb.Op, buildPlatform, targetPlatform specs.Platform) {
+	t.Helper()
+	want := map[string]specs.Platform{
+		platforms.Format(buildPlatform):  buildPlatform,
+		platforms.Format(targetPlatform): targetPlatform,
+	}
+	if len(helpers) != len(want) {
+		t.Fatalf("ORAS helper sources = %d, want %d unique build/target platforms", len(helpers), len(want))
+	}
+	for _, helper := range helpers {
+		if helper.Platform == nil {
+			t.Fatal("ORAS helper platform is nil")
+		}
+		got := specs.Platform{OS: helper.Platform.OS, Architecture: helper.Platform.Architecture, Variant: helper.Platform.Variant}
+		key := platforms.Format(got)
+		expected, ok := want[key]
+		if !ok {
+			t.Fatalf("ORAS helper platform = %#v, want build %#v or target %#v", got, buildPlatform, targetPlatform)
+		}
+		assertBuildOpPlatform(t, helper, expected)
+		delete(want, key)
+	}
+	if len(want) != 0 {
+		t.Fatalf("ORAS helper platforms are missing %v", want)
 	}
 }

@@ -74,13 +74,10 @@ func TestGenerateDeterministicCatalog(t *testing.T) {
 		}
 	}
 
-	if len(first.Entries) != 3 {
-		t.Fatalf("entry count = %d, want 3", len(first.Entries))
+	if len(first.Entries) != 6 {
+		t.Fatalf("entry count = %d, want 6", len(first.Entries))
 	}
-	amd64CPU := first.Entries[0]
-	if amd64CPU.Family != runnerLlamaCpp || amd64CPU.Selector != selectorDefault || amd64CPU.Platform.Architecture != architectureAMD64 {
-		t.Fatalf("first entry tuple = %s/%s/%s, want llama-cpp/default/linux/amd64", amd64CPU.Family, amd64CPU.Selector, amd64CPU.Platform.key())
-	}
+	amd64CPU := findGeneratedEntry(t, first, runnerLlamaCpp, selectorDefault, Platform{OS: platformLinux, Architecture: architectureAMD64})
 	if amd64CPU.Backend.Ref != "registry.example/local-ai-backends@"+fixtureDigestA {
 		t.Errorf("CPU backend ref = %q", amd64CPU.Backend.Ref)
 	}
@@ -99,7 +96,7 @@ func TestGenerateDeterministicCatalog(t *testing.T) {
 	if got, want := strings.Join(amd64CPU.Workloads, ","), "cpu,llm,text-to-text"; got != want {
 		t.Errorf("workloads = %q, want %q", got, want)
 	}
-	arm64CPU := first.Entries[1]
+	arm64CPU := findGeneratedEntry(t, first, runnerLlamaCpp, selectorDefault, Platform{OS: platformLinux, Architecture: architectureARM64})
 	if arm64CPU.Platform != (Platform{OS: platformLinux, Architecture: architectureARM64}) {
 		t.Fatalf("second entry platform = %#v, want normalized linux/arm64", arm64CPU.Platform)
 	}
@@ -116,7 +113,7 @@ func TestGenerateDeterministicCatalog(t *testing.T) {
 		t.Errorf("arm64 runner runtime base = %#v", arm64CPU.RunnerRuntimeBase)
 	}
 
-	nvidia := first.Entries[2]
+	nvidia := findGeneratedEntry(t, first, runnerLlamaCpp, selectorNVIDIA, Platform{OS: platformLinux, Architecture: architectureAMD64})
 	if nvidia.Selector != selectorNVIDIA || nvidia.TargetProfile != targetCUDA12 {
 		t.Fatalf("NVIDIA policy = selector %q target %q", nvidia.Selector, nvidia.TargetProfile)
 	}
@@ -202,14 +199,127 @@ func TestRuntimeBaseResolutionFixtures(t *testing.T) {
 	}
 }
 
+func TestGeneratedDefaultsReachOnlyAvailableEntries(t *testing.T) {
+	source := readFixture(t, "testdata/index.yaml")
+	catalog, err := Generate(context.Background(), source, GenerateOptions{
+		Source:          fixturePin(source),
+		Version:         LocalAIVersion,
+		CoreRefTemplate: fixtureCoreRefTemplate,
+		Resolver:        readSnapshot(t, "testdata/resolutions.json"),
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func([]Entry) []Entry
+		wantErr string
+	}{
+		{
+			name: "generic defaults and platform override resolve",
+			mutate: func(entries []Entry) []Entry {
+				return entries
+			},
+		},
+		{
+			name: "missing platform override target",
+			mutate: func(entries []Entry) []Entry {
+				return deleteGeneratedEntry(entries, runnerLlamaCpp, selectorNVIDIAL4T, Platform{OS: platformLinux, Architecture: architectureARM64})
+			},
+			wantErr: "has no entry",
+		},
+		{
+			name: "generic default covers platform exposed by another family",
+			mutate: func(entries []Entry) []Entry {
+				platform := Platform{OS: platformLinux, Architecture: architectureARM64}
+				for _, entry := range entries {
+					if entry.Family == runnerLlamaCpp && entry.Selector == selectorDefault && entry.Platform == platform {
+						otherFamily := entry
+						otherFamily.Family = fixtureFamilyDemo
+						entries = append(entries, otherFamily)
+						break
+					}
+				}
+				return deleteGeneratedEntry(entries, runnerLlamaCpp, selectorDefault, platform)
+			},
+			wantErr: "has no entry",
+		},
+		{
+			name: "runtime mismatch",
+			mutate: func(entries []Entry) []Entry {
+				for index := range entries {
+					if entries[index].Family == runnerLlamaCpp && entries[index].Selector == selectorNVIDIAL4T {
+						entries[index].Runtime = runtimeCPU
+					}
+				}
+				return entries
+			},
+			wantErr: "has runtime",
+		},
+		{
+			name: "quarantined default",
+			mutate: func(entries []Entry) []Entry {
+				for index := range entries {
+					if entries[index].Family == runnerLlamaCpp && entries[index].Selector == selectorAMD {
+						entries[index].Status = statusQuarantined
+					}
+				}
+				return entries
+			},
+			wantErr: "unavailable status",
+		},
+		{
+			name: "missing runtime inventory",
+			mutate: func(entries []Entry) []Entry {
+				filtered := entries[:0]
+				for _, entry := range entries {
+					if entry.Runtime != runtimeROCm {
+						filtered = append(filtered, entry)
+					}
+				}
+				return filtered
+			},
+			wantErr: "has no entries for runtime",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			entries := append([]Entry(nil), catalog.Entries...)
+			err := validateGeneratedDefaultReachability(catalog.Defaults, test.mutate(entries))
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateGeneratedDefaultReachability() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("validateGeneratedDefaultReachability() error = %v, want containing %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func deleteGeneratedEntry(entries []Entry, family, selector string, platform Platform) []Entry {
+	filtered := entries[:0]
+	for _, entry := range entries {
+		if entry.Family != family || entry.Selector != selector || entry.Platform != platform {
+			filtered = append(filtered, entry)
+		}
+	}
+
+	return filtered
+}
+
 func TestParseSourceMergeKeysAndDuplicateRules(t *testing.T) {
 	source := readFixture(t, "testdata/index.yaml")
 	entries, err := parseSource(source, fixturePin(source))
 	if err != nil {
 		t.Fatalf("parseSource() error = %v", err)
 	}
-	if len(entries) != 6 {
-		t.Fatalf("parseSource() entry count = %d, want 6 after exact duplicate collapse", len(entries))
+	if len(entries) != 9 {
+		t.Fatalf("parseSource() entry count = %d, want 9 after exact duplicate collapse", len(entries))
 	}
 	var concrete sourceEntry
 	for _, entry := range entries {
@@ -384,19 +494,16 @@ func TestGenerateRejectsIncompleteStableMappings(t *testing.T) {
 }
 
 func TestGenerateAcceptsMissingWorkloadsAndPlatformlessSpecializedCore(t *testing.T) {
-	source := []byte("- name: demo\n  capabilities:\n    default: cpu-demo\n- name: cpu-demo\n  uri: registry.example/repo:latest-cpu-demo\n")
-	resolver := staticResolver{
-		"registry.example/repo:v4.8.2-cpu-demo": {{
-			Digest:   fixtureDigestA,
-			Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
-		}},
-		ubuntuRuntimeBase: {{
-			Digest:   fixtureUbuntuAMD64,
-			Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
-		}},
-		"registry.example/core:v4.8.2-amd64": {{
-			Digest: fixtureDigestB,
-		}},
+	source := sourceWithDefaultFixture(t, "- name: demo\n  capabilities:\n    default: cpu-demo\n- name: cpu-demo\n  uri: registry.example/repo:latest-cpu-demo\n")
+	resolver := scriptedResolver{
+		base: readSnapshot(t, "testdata/resolutions.json"),
+		manifests: staticResolver{
+			"registry.example/repo:v4.8.2-cpu-demo": {{
+				Digest:   fixtureDigestA,
+				Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
+			}},
+			"registry.example/core:v4.8.2-amd64": {{Digest: fixtureDigestB}},
+		},
 	}
 	catalog, err := Generate(context.Background(), source, GenerateOptions{
 		Source:          fixturePin(source),
@@ -407,8 +514,9 @@ func TestGenerateAcceptsMissingWorkloadsAndPlatformlessSpecializedCore(t *testin
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
-	if len(catalog.Entries) != 1 || len(catalog.Entries[0].Workloads) != 0 {
-		t.Fatalf("entries/workloads = %d/%v, want one entry with no workloads", len(catalog.Entries), catalog.Entries[0].Workloads)
+	demo := findGeneratedEntry(t, catalog, fixtureFamilyDemo, selectorDefault, Platform{OS: platformLinux, Architecture: architectureAMD64})
+	if len(demo.Workloads) != 0 {
+		t.Fatalf("demo workloads = %v, want empty", demo.Workloads)
 	}
 	data, err := Marshal(catalog)
 	if err != nil {
@@ -425,7 +533,7 @@ func TestGenerateAppliesReviewedUnavailableSourcePolicyStrictly(t *testing.T) {
 		missingRef   = "quay.io/go-skynet/local-ai-backends:v4.8.2-cpu-kokoros"
 		coreRef      = "registry.example/core:v4.8.2-amd64"
 	)
-	source := []byte(`- name: demo
+	source := sourceWithDefaultFixture(t, `- name: demo
   capabilities:
     default: cpu-demo
 - name: cpu-demo
@@ -455,6 +563,7 @@ func TestGenerateAppliesReviewedUnavailableSourcePolicyStrictly(t *testing.T) {
 
 	t.Run("expected missing", func(t *testing.T) {
 		options.Resolver = scriptedResolver{
+			base:      readSnapshot(t, "testdata/resolutions.json"),
 			manifests: staticResolver{availableRef: {manifest}, coreRef: {coreManifest}, ubuntuRuntimeBase: {runtimeBaseManifest}},
 			errors: map[string]error{
 				missingRef: &ResolutionError{Reference: missingRef, Class: resolutionErrorNotFound, Err: os.ErrNotExist},
@@ -464,13 +573,11 @@ func TestGenerateAppliesReviewedUnavailableSourcePolicyStrictly(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Generate() error = %v", err)
 		}
-		if len(catalog.Entries) != 1 || catalog.Entries[0].Family != fixtureFamilyDemo {
-			t.Fatalf("Generate() entries = %#v, want only available demo", catalog.Entries)
-		}
+		findGeneratedEntry(t, catalog, fixtureFamilyDemo, selectorDefault, Platform{OS: platformLinux, Architecture: architectureAMD64})
 	})
 
 	t.Run("stale policy resolved", func(t *testing.T) {
-		options.Resolver = scriptedResolver{manifests: staticResolver{
+		options.Resolver = scriptedResolver{base: readSnapshot(t, "testdata/resolutions.json"), manifests: staticResolver{
 			availableRef:      {manifest},
 			missingRef:        {manifest},
 			coreRef:           {coreManifest},
@@ -484,6 +591,7 @@ func TestGenerateAppliesReviewedUnavailableSourcePolicyStrictly(t *testing.T) {
 
 	t.Run("unexpected error class", func(t *testing.T) {
 		options.Resolver = scriptedResolver{
+			base:      readSnapshot(t, "testdata/resolutions.json"),
 			manifests: staticResolver{availableRef: {manifest}, coreRef: {coreManifest}, ubuntuRuntimeBase: {runtimeBaseManifest}},
 			errors:    map[string]error{missingRef: os.ErrPermission},
 		}
@@ -508,7 +616,7 @@ func TestUnavailableSourcePolicyCannotOverlapSupportedOverlay(t *testing.T) {
 }
 
 func TestGenerateExcludesNonLinuxManifests(t *testing.T) {
-	source := []byte(`- name: demo
+	source := sourceWithDefaultFixture(t, `- name: demo
   capabilities:
     default: cpu-demo
 - name: cpu-demo
@@ -519,22 +627,18 @@ func TestGenerateExcludesNonLinuxManifests(t *testing.T) {
 - name: metal-demo-target
   uri: registry.example/repo:latest-metal-darwin-arm64-demo
 `)
-	resolver := staticResolver{
-		"registry.example/repo:v4.8.2-cpu-demo": {{
-			Digest:   fixtureDigestA,
-			Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
-		}},
-		ubuntuRuntimeBase: {{
-			Digest:   fixtureUbuntuAMD64,
-			Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
-		}},
-		"registry.example/repo:v4.8.2-metal-darwin-arm64-demo": {{
-			Digest:   fixtureDigestB,
-			Platform: Platform{OS: "darwin", Architecture: architectureARM64},
-		}},
-		"registry.example/core:v4.8.2-amd64": {{
-			Digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-		}},
+	resolver := scriptedResolver{
+		base: readSnapshot(t, "testdata/resolutions.json"),
+		manifests: staticResolver{
+			"registry.example/repo:v4.8.2-cpu-demo": {{
+				Digest:   fixtureDigestA,
+				Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
+			}},
+			"registry.example/repo:v4.8.2-metal-darwin-arm64-demo": {{
+				Digest:   fixtureDigestB,
+				Platform: Platform{OS: "darwin", Architecture: architectureARM64},
+			}},
+		},
 	}
 	catalog, err := Generate(context.Background(), source, GenerateOptions{
 		Source:          fixturePin(source),
@@ -545,8 +649,11 @@ func TestGenerateExcludesNonLinuxManifests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
-	if len(catalog.Entries) != 1 || catalog.Entries[0].Platform.OS != platformLinux || catalog.Entries[0].Family != fixtureFamilyDemo {
-		t.Fatalf("Generate() entries = %#v, want only Linux demo", catalog.Entries)
+	findGeneratedEntry(t, catalog, fixtureFamilyDemo, selectorDefault, Platform{OS: platformLinux, Architecture: architectureAMD64})
+	for _, entry := range catalog.Entries {
+		if entry.Platform.OS != platformLinux {
+			t.Fatalf("Generate() included non-Linux entry %#v", entry)
+		}
 	}
 }
 
@@ -595,6 +702,7 @@ func (resolver staticResolver) Resolve(_ context.Context, reference string) ([]R
 }
 
 type scriptedResolver struct {
+	base      Resolver
 	manifests staticResolver
 	errors    map[string]error
 }
@@ -602,6 +710,12 @@ type scriptedResolver struct {
 func (resolver scriptedResolver) Resolve(ctx context.Context, reference string) ([]ResolvedManifest, error) {
 	if err, exists := resolver.errors[reference]; exists {
 		return nil, err
+	}
+	if manifests, exists := resolver.manifests[reference]; exists {
+		return append([]ResolvedManifest(nil), manifests...), nil
+	}
+	if resolver.base != nil {
+		return resolver.base.Resolve(ctx, reference)
 	}
 
 	return resolver.manifests.Resolve(ctx, reference)
@@ -631,6 +745,28 @@ func readSnapshot(t *testing.T, path string) Resolver {
 	}
 
 	return resolver
+}
+
+func sourceWithDefaultFixture(t *testing.T, extra string) []byte {
+	t.Helper()
+	source := append([]byte(nil), readFixture(t, "testdata/index.yaml")...)
+	if len(source) > 0 && source[len(source)-1] != '\n' {
+		source = append(source, '\n')
+	}
+
+	return append(source, []byte(extra)...)
+}
+
+func findGeneratedEntry(t *testing.T, catalog Catalog, family, selector string, platform Platform) Entry {
+	t.Helper()
+	for _, entry := range catalog.Entries {
+		if entry.Family == family && entry.Selector == selector && entry.Platform == platform {
+			return entry
+		}
+	}
+	t.Fatalf("entry %s/%s/%s is missing", family, selector, platform.key())
+
+	return Entry{}
 }
 
 func fixturePin(source []byte) SourcePin {

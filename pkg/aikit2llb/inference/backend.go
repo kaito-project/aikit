@@ -213,7 +213,7 @@ func installBackendModelAliases(backend backendcatalog.Resolution, modelPaths []
 		}
 	}
 
-	helper := llb.Image(orasImage, llb.Platform(buildPlatform))
+	helper := orasToolingImage(buildPlatform)
 	run := helper.Run(
 		utils.Sh(script.String()),
 		llb.WithCustomName("Linking baked model directories into backend working directories"),

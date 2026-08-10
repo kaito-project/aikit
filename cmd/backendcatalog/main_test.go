@@ -57,16 +57,20 @@ func TestRunWritesAndChecksCatalog(t *testing.T) {
 	if catalog.Defaults.Family != "llama-cpp" || len(catalog.Defaults.Selectors) != 5 {
 		t.Fatalf("defaults = %#v, want llama-cpp and five runtime/platform selectors", catalog.Defaults)
 	}
-	if len(catalog.Entries) != 3 {
-		t.Fatalf("entry count = %d, want 3", len(catalog.Entries))
+	if len(catalog.Entries) != 6 {
+		t.Fatalf("entry count = %d, want 6", len(catalog.Entries))
 	}
 	var foundNVIDIA bool
 	for _, entry := range catalog.Entries {
 		if !strings.Contains(entry.RuntimeBase.Ref, "@sha256:") {
 			t.Errorf("runtimeBase.ref = %q, want immutable digest reference", entry.RuntimeBase.Ref)
 		}
-		if len(entry.SystemPackages) != 0 {
-			t.Errorf("systemPackages for %s/%s = %v, want empty", entry.Family, entry.Selector, entry.SystemPackages)
+		wantPackages := []string(nil)
+		if entry.TargetProfile == backendcatalog.TargetProfileROCm {
+			wantPackages = []string{"pciutils"}
+		}
+		if strings.Join(entry.SystemPackages, ",") != strings.Join(wantPackages, ",") {
+			t.Errorf("systemPackages for %s/%s = %v, want %v", entry.Family, entry.Selector, entry.SystemPackages, wantPackages)
 		}
 		if entry.Selector == backendcatalog.SelectorNVIDIA {
 			foundNVIDIA = true

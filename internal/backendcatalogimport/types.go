@@ -38,6 +38,8 @@ const (
 	statusExperimental   = "experimental"
 	statusQuarantined    = "quarantined"
 	statusSupported      = "supported"
+	systemPackageGCC     = "gcc"
+	systemPackageLibcDev = "libc6-dev"
 	targetCUDA12         = "cuda12"
 	targetCUDA13         = "cuda13"
 	targetIntel          = "intel"

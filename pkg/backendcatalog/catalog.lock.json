@@ -18408,7 +18408,8 @@
         "BUILD_TYPE=cublas",
         "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=12.0",
-        "NVIDIA_VISIBLE_DEVICES=all"
+        "NVIDIA_VISIBLE_DEVICES=all",
+        "VLLM_USE_FLASHINFER_SAMPLER=0"
       ],
       "runnerProfile": "unsupported",
       "workloads": [
