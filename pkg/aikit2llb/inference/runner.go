@@ -12,16 +12,18 @@ import (
 )
 
 const (
-	runnerHuggingFaceHubVersion = "1.26.0"
-	runnerConfigDir             = "/models/aikit-runner"
-	runnerConfigFilename        = "model.yaml"
-	runnerConfigPath            = runnerConfigDir + "/" + runnerConfigFilename
-	runnerLegacyModelMarker     = "/models/.aikit-model-ref"
-	runnerLlamaCppModelDir      = "/models/llama-cpp-model"
-	runnerLlamaCppModelMarker   = "/models/.aikit-llama-cpp-model-ref"
-	runnerVLLMCppModelDir       = "/models/vllm-cpp-model"
-	runnerVLLMCppModelMarker    = "/models/.aikit-vllm-cpp-model-ref"
-	runnerDependenciesCommand   = "sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g; " +
+	runnerHuggingFaceHubVersion  = "1.26.0"
+	runnerConfigDir              = "/models/aikit-runner"
+	runnerConfigFilename         = "model.yaml"
+	runnerConfigPath             = runnerConfigDir + "/" + runnerConfigFilename
+	runnerLegacyModelMarker      = "/models/.aikit-model-ref"
+	runnerLlamaCppModelDir       = "/models/llama-cpp-model"
+	runnerLlamaCppModelMarker    = "/models/.aikit-llama-cpp-model-ref"
+	runnerParakeetCppModelDir    = "/models/parakeet-cpp-model"
+	runnerParakeetCppModelMarker = "/models/.aikit-parakeet-cpp-model-ref"
+	runnerVLLMCppModelDir        = "/models/vllm-cpp-model"
+	runnerVLLMCppModelMarker     = "/models/.aikit-vllm-cpp-model-ref"
+	runnerDependenciesCommand    = "sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g; " +
 		"s|http://security.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list && " +
 		"apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update && " +
 		"apt-get install --no-install-recommends -y curl ca-certificates python3 python3-pip && " +
@@ -38,7 +40,7 @@ func isRunnerMode(c *config.InferenceConfig) bool {
 
 // installRunnerDependencies installs packages needed for runtime model downloading.
 func installRunnerDependencies(c *config.InferenceConfig, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State) {
-	if !slices.Contains([]string{utils.BackendLlamaCpp, utils.BackendVLLMCpp}, runnerBackend(c)) {
+	if !slices.Contains([]string{utils.BackendLlamaCpp, utils.BackendParakeetCpp, utils.BackendVLLMCpp}, runnerBackend(c)) {
 		return s, merge
 	}
 
@@ -143,6 +145,10 @@ if [[ -z "$MODEL" ]]; then
     echo "  docker run -p 8080:8080 <image> org/safetensors-model@0123456789abcdef0123456789abcdef01234567"
     echo "  docker run -p 8080:8080 <image> https://example.com/model.gguf"
     echo "  docker run -p 8080:8080 <image> --model org/safetensors-model"
+  elif [[ "$BACKEND" == "parakeet-cpp" ]]; then
+    echo "  docker run -p 8080:8080 <image> huggingface://org/repo/model-q4_k.gguf"
+    echo "  docker run -p 8080:8080 <image> https://example.com/model.gguf"
+    echo "  docker run -p 8080:8080 <image> --model org/single-gguf-repo"
   else
     echo "  docker run -p 8080:8080 <image> org/model"
     echo "  docker run -p 8080:8080 <image> https://example.com/model.gguf"
@@ -161,6 +167,9 @@ RUNNER_CONFIG_DIR="` + runnerConfigDir + `"
 case "$BACKEND" in
   llama-cpp)
     RUNNER_CONFIG_DIR="` + runnerLlamaCppModelDir + `"
+    ;;
+  parakeet-cpp)
+    RUNNER_CONFIG_DIR="` + runnerParakeetCppModelDir + `"
     ;;
   vllm-cpp)
     RUNNER_CONFIG_DIR="` + runnerVLLMCppModelDir + `"
@@ -200,6 +209,8 @@ echo "AIKit Runner: backend=$BACKEND model=$MODEL_LOG_REF"
 	switch backend {
 	case utils.BackendLlamaCpp:
 		sb.WriteString(generateLlamaCppDownload())
+	case utils.BackendParakeetCpp:
+		sb.WriteString(generateParakeetCppDownload())
 	case utils.BackendVLLMCpp:
 		sb.WriteString(generateVLLMCppDownload())
 	case utils.BackendDiffusers, utils.BackendVLLM:
@@ -318,6 +329,219 @@ parameters:
   model: ${YAML_MODEL_PATH}
 CFGEOF
 mv "$CONFIG_TMP" "$RUNNER_CONFIG"
+`
+}
+
+// generateParakeetCppDownload generates download and configuration logic for
+// the parakeet.cpp backend, which accepts exactly one local GGUF model file.
+func generateParakeetCppDownload() string {
+	return `# parakeet.cpp requires one GGUF model to be materialized locally.
+MODEL_MARKER="` + runnerParakeetCppModelMarker + `"
+PARAKEET_CPP_MODEL_DIR="` + runnerParakeetCppModelDir + `"
+PARAKEET_CPP_PAYLOAD_DIR="$PARAKEET_CPP_MODEL_DIR/payload"
+SAFE_GGUF_FILENAME_REGEX='^[A-Za-z0-9][A-Za-z0-9._-]*\.gguf$'
+SAFE_GGUF_PATH_REGEX='^([A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\.gguf$'
+EXPECTED_GGUF_RELATIVE_PATH=""
+HF_REPOSITORY=""
+HF_REVISION=""
+HF_FILENAME=""
+
+# Locate the sole safe GGUF in the backend-owned payload. The null-delimited
+# traversal remains correct even if a mounted cache contains hostile filenames.
+locate_parakeet_cpp_model() {
+  PARAKEET_GGUF_COUNT=0
+  PARAKEET_GGUF_RELATIVE_PATH=""
+  PARAKEET_GGUF_PATHS_VALID="true"
+
+  local candidate relative_path
+  while IFS= read -r -d '' candidate; do
+    PARAKEET_GGUF_COUNT=$((PARAKEET_GGUF_COUNT + 1))
+    relative_path="${candidate#"$PARAKEET_CPP_PAYLOAD_DIR"/}"
+    if [[ "$relative_path" == "$candidate" ]] || [[ ! "$relative_path" =~ $SAFE_GGUF_PATH_REGEX ]]; then
+      PARAKEET_GGUF_PATHS_VALID="false"
+      continue
+    fi
+    PARAKEET_GGUF_RELATIVE_PATH="$relative_path"
+  done < <(find "$PARAKEET_CPP_PAYLOAD_DIR" -type f -name "*.gguf" -print0 2>/dev/null)
+
+  [[ "$PARAKEET_GGUF_COUNT" -eq 1 ]] && [[ "$PARAKEET_GGUF_PATHS_VALID" == "true" ]]
+}
+
+case "$MODEL_SCHEME" in
+  http|https)
+    # Strip query and fragment components before validating the local filename.
+    MODEL_URL_PATH="${MODEL%%\#*}"
+    MODEL_URL_PATH="${MODEL_URL_PATH%%\?*}"
+    GGUF_FILENAME="${MODEL_URL_PATH##*/}"
+    if [[ ! "$GGUF_FILENAME" =~ $SAFE_GGUF_FILENAME_REGEX ]]; then
+      echo "Error: parakeet-cpp direct URLs must point to a .gguf file with a safe filename" >&2
+      exit 1
+    fi
+    EXPECTED_GGUF_RELATIVE_PATH="$GGUF_FILENAME"
+    ;;
+  ?*)
+    echo "Error: parakeet-cpp supports only huggingface:// repository references or HTTP(S) .gguf URLs" >&2
+    exit 1
+    ;;
+  "")
+    # Parse org/repo[@commit][/path/to/model.gguf]. An explicit path downloads
+    # exactly that file; a bare repository is listed before selecting its only
+    # GGUF so repositories containing multiple quantizations are not downloaded.
+    if [[ "$MODEL" != */* ]]; then
+      echo "Error: invalid Hugging Face repository reference for parakeet-cpp: $MODEL" >&2
+      exit 1
+    fi
+    HF_OWNER="${MODEL%%/*}"
+    HF_REMAINDER="${MODEL#*/}"
+    HF_REPOSITORY_COMPONENT="${HF_REMAINDER%%/*}"
+    HF_REPOSITORY_NAME="${HF_REPOSITORY_COMPONENT%%@*}"
+    if [[ "$HF_REPOSITORY_COMPONENT" == *@* ]]; then
+      HF_REVISION="${HF_REPOSITORY_COMPONENT#*@}"
+      if [[ ! "$HF_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "Error: Hugging Face revisions for parakeet-cpp must be 40-character lowercase commit SHAs" >&2
+        exit 1
+      fi
+    fi
+    if [[ ! "$HF_OWNER" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
+      [[ ! "$HF_REPOSITORY_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+      echo "Error: invalid Hugging Face repository reference for parakeet-cpp: $MODEL" >&2
+      exit 1
+    fi
+    HF_REPOSITORY="$HF_OWNER/$HF_REPOSITORY_NAME"
+    if [[ "$HF_REMAINDER" == */* ]]; then
+      HF_FILENAME="${HF_REMAINDER#*/}"
+      if [[ ! "$HF_FILENAME" =~ $SAFE_GGUF_PATH_REGEX ]]; then
+        echo "Error: parakeet-cpp Hugging Face file references must point to a safe .gguf path" >&2
+        exit 1
+      fi
+      EXPECTED_GGUF_RELATIVE_PATH="$HF_FILENAME"
+    fi
+    ;;
+esac
+
+# Reuse the payload only when its source marker matches and it still contains
+# exactly the expected model. This makes mounted /models volumes model-aware.
+CACHE_HIT="false"
+if [[ -f "$MODEL_MARKER" ]] && [[ "$(cat "$MODEL_MARKER")" == "$MODEL_CACHE_KEY" ]] &&
+  locate_parakeet_cpp_model; then
+  if [[ -z "$EXPECTED_GGUF_RELATIVE_PATH" ]] ||
+    [[ "$PARAKEET_GGUF_RELATIVE_PATH" == "$EXPECTED_GGUF_RELATIVE_PATH" ]]; then
+    CACHE_HIT="true"
+  fi
+fi
+
+if [[ "$CACHE_HIT" == "true" ]]; then
+  echo "Found cached parakeet-cpp model matching $MODEL_LOG_REF in $PARAKEET_CPP_MODEL_DIR, skipping download"
+else
+  if [[ -f "$MODEL_MARKER" ]]; then
+    echo "Cached model does not match requested parakeet-cpp model ($MODEL_LOG_REF), re-downloading"
+  fi
+
+  # Replace only the fixed backend-owned directory. Never derive a deletion
+  # target from the user-controlled model reference.
+  rm -rf ` + runnerParakeetCppModelDir + `
+  rm -f "$MODEL_MARKER" "$RUNNER_CONFIG"
+  mkdir -p "$PARAKEET_CPP_PAYLOAD_DIR"
+
+  if [[ "$MODEL_SCHEME" == "http" ]] || [[ "$MODEL_SCHEME" == "https" ]]; then
+    echo "Downloading parakeet-cpp GGUF model from URL: $MODEL_LOG_REF"
+    LOCAL_MODEL_PATH="$PARAKEET_CPP_PAYLOAD_DIR/$EXPECTED_GGUF_RELATIVE_PATH"
+    PARTIAL_PATH="${LOCAL_MODEL_PATH}.part"
+    curl -fL --progress-bar --output "$PARTIAL_PATH" "$MODEL"
+    mv "$PARTIAL_PATH" "$LOCAL_MODEL_PATH"
+  else
+    if [[ -z "$HF_FILENAME" ]]; then
+      echo "Inspecting Hugging Face repository for parakeet-cpp: $MODEL_LOG_REF"
+      if ! HF_GGUF_LIST="$(python3 - "$HF_REPOSITORY" "$HF_REVISION" <<'PYEOF'
+import os
+import sys
+
+from huggingface_hub import HfApi
+
+repository, revision = sys.argv[1:]
+for filename in sorted(
+    HfApi(token=os.environ.get("HF_TOKEN") or None).list_repo_files(
+        repo_id=repository,
+        revision=revision or None,
+    )
+):
+    if filename.endswith(".gguf"):
+        print(filename)
+PYEOF
+)"; then
+        echo "Error: unable to list Hugging Face repository for parakeet-cpp: $MODEL_LOG_REF" >&2
+        exit 1
+      fi
+
+      HF_GGUF_COUNT=0
+      while IFS= read -r candidate; do
+        [[ -n "$candidate" ]] || continue
+        if [[ ! "$candidate" =~ $SAFE_GGUF_PATH_REGEX ]]; then
+          echo "Error: Hugging Face repository contains an unsafe GGUF path: $candidate" >&2
+          exit 1
+        fi
+        HF_GGUF_COUNT=$((HF_GGUF_COUNT + 1))
+        HF_FILENAME="$candidate"
+      done <<< "$HF_GGUF_LIST"
+
+      if [[ "$HF_GGUF_COUNT" -eq 0 ]]; then
+        echo "Error: Hugging Face repository contains no GGUF files for parakeet-cpp: $MODEL_LOG_REF" >&2
+        exit 1
+      fi
+      if [[ "$HF_GGUF_COUNT" -ne 1 ]]; then
+        echo "Error: Hugging Face repository contains multiple GGUF files; select one with huggingface://org/repo/path/to/model.gguf" >&2
+        exit 1
+      fi
+      EXPECTED_GGUF_RELATIVE_PATH="$HF_FILENAME"
+    fi
+
+    echo "Downloading parakeet-cpp GGUF from Hugging Face: $MODEL_LOG_REF ($HF_FILENAME)"
+    HF_ARGS=("$HF_REPOSITORY" "$HF_FILENAME" "--local-dir" "$PARAKEET_CPP_PAYLOAD_DIR")
+    if [[ -n "$HF_REVISION" ]]; then
+      HF_ARGS+=("--revision" "$HF_REVISION")
+    fi
+    if [[ -n "${HF_TOKEN:-}" ]]; then
+      HF_ARGS+=("--token" "$HF_TOKEN")
+    fi
+    hf download "${HF_ARGS[@]}"
+  fi
+
+  if ! locate_parakeet_cpp_model; then
+    if [[ "$PARAKEET_GGUF_PATHS_VALID" != "true" ]]; then
+      echo "Error: downloaded parakeet-cpp payload contains an unsafe GGUF path" >&2
+    elif [[ "$PARAKEET_GGUF_COUNT" -eq 0 ]]; then
+      echo "Error: no valid GGUF file was downloaded for parakeet-cpp model $MODEL_LOG_REF" >&2
+    else
+      echo "Error: parakeet-cpp requires exactly one GGUF file, but the download produced $PARAKEET_GGUF_COUNT" >&2
+    fi
+    exit 1
+  fi
+  if [[ "$PARAKEET_GGUF_RELATIVE_PATH" != "$EXPECTED_GGUF_RELATIVE_PATH" ]]; then
+    echo "Error: downloaded parakeet-cpp GGUF does not match requested file $EXPECTED_GGUF_RELATIVE_PATH" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "$MODEL_CACHE_KEY" > "$MODEL_MARKER"
+  echo "Download complete"
+fi
+
+# Generate the LocalAI v4.8.2 model configuration with a path relative to the
+# backend-owned --models-path directory.
+GGUF_BASENAME="${PARAKEET_GGUF_RELATIVE_PATH##*/}"
+MODEL_NAME="${GGUF_BASENAME%.gguf}"
+CONFIG_MODEL_PATH="payload/$PARAKEET_GGUF_RELATIVE_PATH"
+mkdir -p "$RUNNER_CONFIG_DIR"
+CONFIG_TMP=$(mktemp "$RUNNER_CONFIG_DIR/.model.yaml.XXXXXX")
+cat > "$CONFIG_TMP" <<MODELEOF
+name: '${MODEL_NAME}'
+backend: parakeet-cpp
+known_usecases:
+  - transcript
+parameters:
+  model: '${CONFIG_MODEL_PATH}'
+MODELEOF
+mv "$CONFIG_TMP" "$RUNNER_CONFIG"
+echo "Config generated at $RUNNER_CONFIG"
 `
 }
 

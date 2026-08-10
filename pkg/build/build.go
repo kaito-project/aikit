@@ -851,7 +851,7 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 		}
 	}
 
-	backends := []string{utils.BackendLlamaCpp, utils.BackendDiffusers, utils.BackendVLLM, utils.BackendVLLMCpp}
+	backends := []string{utils.BackendLlamaCpp, utils.BackendDiffusers, utils.BackendParakeetCpp, utils.BackendVLLM, utils.BackendVLLMCpp}
 	for _, b := range c.Backends {
 		if !slices.Contains(backends, b) {
 			return errors.Errorf("backend %s is not supported", b)
@@ -868,10 +868,15 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 
 // validateBackendPlatformCompatibility validates that backends are compatible with target platforms.
 func validateBackendPlatformCompatibility(c *config.InferenceConfig, targetPlatforms []*specs.Platform) error {
-	if slices.Contains(c.Backends, utils.BackendVLLMCpp) {
+	nativePortableBackends := []string{utils.BackendParakeetCpp, utils.BackendVLLMCpp}
+	for _, backend := range nativePortableBackends {
+		if !slices.Contains(c.Backends, backend) {
+			continue
+		}
+
 		for _, tp := range targetPlatforms {
 			if tp != nil && tp.OS != utils.PlatformLinux {
-				return errors.Errorf("vllm-cpp backend is not supported on %s. only linux is supported", tp.OS)
+				return errors.Errorf("%s backend is not supported on %s. only linux is supported", backend, tp.OS)
 			}
 		}
 
@@ -879,17 +884,17 @@ func validateBackendPlatformCompatibility(c *config.InferenceConfig, targetPlatf
 		case "":
 			for _, tp := range targetPlatforms {
 				if tp != nil && tp.Architecture != utils.PlatformAMD64 && tp.Architecture != utils.PlatformARM64 {
-					return errors.Errorf("vllm-cpp backend with CPU runtime is not supported on %s architecture", tp.Architecture)
+					return errors.Errorf("%s backend with CPU runtime is not supported on %s architecture", backend, tp.Architecture)
 				}
 			}
 		case utils.RuntimeNVIDIA:
 			for _, tp := range targetPlatforms {
 				if tp != nil && tp.Architecture != utils.PlatformAMD64 {
-					return errors.Errorf("vllm-cpp backend with cuda runtime is not supported on %s architecture. only amd64 is supported", tp.Architecture)
+					return errors.Errorf("%s backend with cuda runtime is not supported on %s architecture. only amd64 is supported", backend, tp.Architecture)
 				}
 			}
 		default:
-			return errors.Errorf("vllm-cpp backend does not support %s runtime", c.Runtime)
+			return errors.Errorf("%s backend does not support %s runtime", backend, c.Runtime)
 		}
 	}
 
@@ -913,10 +918,10 @@ func validateBackendPlatformCompatibility(c *config.InferenceConfig, targetPlatf
 			if backend == utils.BackendLlamaCpp {
 				continue
 			}
-			if backend == utils.BackendVLLMCpp && c.Runtime == "" {
+			if (backend == utils.BackendParakeetCpp || backend == utils.BackendVLLMCpp) && c.Runtime == "" {
 				continue
 			}
-			return errors.Errorf("backend %s with runtime %q is not supported on arm64 platform. only llama-cpp and CPU vllm-cpp support arm64", backend, c.Runtime)
+			return errors.Errorf("backend %s with runtime %q is not supported on arm64 platform. only llama-cpp, CPU parakeet-cpp, and CPU vllm-cpp support arm64", backend, c.Runtime)
 		}
 	}
 

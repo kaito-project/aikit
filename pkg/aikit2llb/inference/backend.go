@@ -10,17 +10,19 @@ import (
 )
 
 const (
-	defaultBackendName    = "llama-cpp"
-	cpuLlamaCppBackend    = "cpu-llama-cpp"
-	cpuVLLMCppBackend     = "cpu-vllm-cpp"
-	cuda12LlamaCppBackend = "cuda12-llama-cpp"
-	cuda13VLLMCppBackend  = "cuda13-vllm-cpp"
-	vulkanLlamaCppBackend = "gpu-vulkan-llama-cpp"
+	defaultBackendName       = "llama-cpp"
+	cpuLlamaCppBackend       = "cpu-llama-cpp"
+	cpuParakeetCppBackend    = "cpu-parakeet-cpp"
+	cpuVLLMCppBackend        = "cpu-vllm-cpp"
+	cuda12LlamaCppBackend    = "cuda12-llama-cpp"
+	cuda12ParakeetCppBackend = "cuda12-parakeet-cpp"
+	cuda13VLLMCppBackend     = "cuda13-vllm-cpp"
+	vulkanLlamaCppBackend    = "gpu-vulkan-llama-cpp"
 )
 
 func normalizeBackend(backend string) string {
 	switch backend {
-	case utils.BackendDiffusers, utils.BackendLlamaCpp, utils.BackendVLLM, utils.BackendVLLMCpp:
+	case utils.BackendDiffusers, utils.BackendLlamaCpp, utils.BackendParakeetCpp, utils.BackendVLLM, utils.BackendVLLMCpp:
 		return backend
 	default:
 		return defaultBackendName
@@ -39,7 +41,7 @@ func getEffectiveBackend(backend, runtime string, platform specs.Platform) strin
 	if runtime == utils.RuntimeNVIDIA && platform.Architecture == utils.PlatformAMD64 {
 		return normalizedBackend
 	}
-	if runtime == "" && normalizedBackend == utils.BackendVLLMCpp &&
+	if runtime == "" && (normalizedBackend == utils.BackendParakeetCpp || normalizedBackend == utils.BackendVLLMCpp) &&
 		(platform.Architecture == utils.PlatformAMD64 || platform.Architecture == utils.PlatformARM64) {
 		return normalizedBackend
 	}
@@ -58,7 +60,7 @@ func getBackendVersion(backend, runtime string, platform specs.Platform) string 
 	switch getEffectiveBackend(backend, runtime, platform) {
 	case utils.BackendDiffusers:
 		return localAILegacyBackendVersion
-	case utils.BackendVLLM, utils.BackendVLLMCpp:
+	case utils.BackendParakeetCpp, utils.BackendVLLM, utils.BackendVLLMCpp:
 		return localAIBinaryVersion
 	default:
 		return localAILlamaCppBackendVersion
@@ -100,6 +102,8 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-diffusers", baseTag)
 		case "vllm":
 			return fmt.Sprintf("%s-gpu-nvidia-cuda-12-vllm", baseTag)
+		case utils.BackendParakeetCpp:
+			return fmt.Sprintf("%s-gpu-nvidia-%s", baseTag, cuda12ParakeetCppBackend)
 		case utils.BackendVLLMCpp:
 			return fmt.Sprintf("%s-gpu-nvidia-cuda-13-vllm-cpp", baseTag)
 		case defaultBackendName:
@@ -116,6 +120,9 @@ func getBackendTag(backend, runtime string, platform specs.Platform) string {
 	}
 
 	// Handle CPU runtime (default).
+	if backendName == utils.BackendParakeetCpp {
+		return fmt.Sprintf("%s-%s", baseTag, cpuParakeetCppBackend)
+	}
 	if backendName == utils.BackendVLLMCpp {
 		return fmt.Sprintf("%s-cpu-vllm-cpp", baseTag)
 	}
@@ -141,6 +148,8 @@ func getBackendName(backend, runtime string, platform specs.Platform) string {
 			return "cuda12-diffusers"
 		case utils.BackendVLLM:
 			return "cuda12-vllm"
+		case utils.BackendParakeetCpp:
+			return cuda12ParakeetCppBackend
 		case utils.BackendVLLMCpp:
 			return cuda13VLLMCppBackend
 		case defaultBackendName:
@@ -158,6 +167,9 @@ func getBackendName(backend, runtime string, platform specs.Platform) string {
 	}
 
 	// Handle CPU runtime (default)
+	if getEffectiveBackend(backend, runtime, platform) == utils.BackendParakeetCpp {
+		return cpuParakeetCppBackend
+	}
 	if getEffectiveBackend(backend, runtime, platform) == utils.BackendVLLMCpp {
 		return cpuVLLMCppBackend
 	}
@@ -168,7 +180,10 @@ func getBackendName(backend, runtime string, platform specs.Platform) string {
 func installBackend(backend string, c *config.InferenceConfig, platform specs.Platform, s llb.State, merge llb.State) llb.State {
 	tag := getBackendTag(backend, c.Runtime, platform)
 
-	// Install dependencies for Python-based backends
+	// Install backend-specific runtime dependencies.
+	if backend == utils.BackendParakeetCpp {
+		merge = installParakeetCppDependencies(s, merge)
+	}
 	if backend == utils.BackendDiffusers {
 		merge = installDiffusersDependencies(s, merge)
 	}

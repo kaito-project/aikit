@@ -46,6 +46,14 @@ jobs:
             file: runners/vllm-cpp-cuda.yaml
             platforms: linux/amd64
             max-compressed-mib: 1800
+          - runner: parakeet-cpp-cpu
+            file: runners/parakeet-cpp-cpu.yaml
+            platforms: linux/amd64,linux/arm64
+            max-compressed-mib: 250
+          - runner: parakeet-cpp-cuda
+            file: runners/parakeet-cpp-cuda.yaml
+            platforms: linux/amd64
+            max-compressed-mib: 1800
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0

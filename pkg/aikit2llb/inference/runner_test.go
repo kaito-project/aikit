@@ -27,6 +27,10 @@ const (
 	runnerPredownloadMessage  = "Pre-downloading model"
 	runnerTestInferenceModel  = "test"
 	runnerTestInferenceSource = "http://example.com/model.gguf"
+	runnerTestFreshGGUFURL    = "https://example.com/fresh.gguf"
+	runnerDirectGGUFError     = "direct URLs must point to a .gguf file"
+	runnerVLLMCppBackendYAML  = "backend: vllm-cpp"
+	runnerUnresolvedModelYAML = `model: ${MODEL}`
 )
 
 func TestIsRunnerMode(t *testing.T) {
@@ -87,6 +91,13 @@ func TestIsRunnerMode(t *testing.T) {
 			},
 			expected: true,
 		},
+		{
+			name: "runner mode - parakeet-cpp backend with no models",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendParakeetCpp},
+			},
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -122,6 +133,11 @@ func TestInstallRunnerDependencies(t *testing.T) {
 		{
 			name:             "vllm-cpp installs downloader dependencies",
 			backend:          utils.BackendVLLMCpp,
+			wantDependencies: true,
+		},
+		{
+			name:             "parakeet-cpp installs downloader dependencies",
+			backend:          utils.BackendParakeetCpp,
 			wantDependencies: true,
 		},
 	}
@@ -251,13 +267,35 @@ func TestGenerateRunnerScript(t *testing.T) {
 				runnerVLLMCppModelMarker,
 				runnerHFCLIInvocation,
 				runnerCurlInvocation,
-				"backend: vllm-cpp",
+				runnerVLLMCppBackendYAML,
 				"use_tokenizer_template: true",
 				runnerLocalAIExec,
 			},
 			expectMissing: []string{
 				runnerLegacyHFCLICommand,
-				`model: ${MODEL}`,
+				runnerUnresolvedModelYAML,
+			},
+		},
+		{
+			name: "parakeet-cpp backend script",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendParakeetCpp},
+			},
+			expectContains: []string{
+				`BACKEND="parakeet-cpp"`,
+				runnerParakeetCppModelDir,
+				runnerParakeetCppModelMarker,
+				runnerHFCLIInvocation,
+				runnerCurlInvocation,
+				"backend: parakeet-cpp",
+				"known_usecases:",
+				"  - transcript",
+				runnerLocalAIExec,
+			},
+			expectMissing: []string{
+				runnerLegacyHFCLICommand,
+				runnerUnresolvedModelYAML,
+				runnerVLLMCppBackendYAML,
 			},
 		},
 		{
@@ -375,6 +413,12 @@ func TestGenerateRunnerScriptUsageMessage(t *testing.T) {
 			wantExample:   "--model org/safetensors-model",
 			rejectExample: "--model org/model\n",
 		},
+		{
+			name:          "parakeet-cpp",
+			backend:       utils.BackendParakeetCpp,
+			wantExample:   "huggingface://org/repo/model-q4_k.gguf",
+			rejectExample: "--model org/model\n",
+		},
 	}
 
 	for _, tt := range tests {
@@ -490,7 +534,7 @@ printf 'fresh' > "$output"
 	script := generateRunnerScript(&config.InferenceConfig{Backends: []string{utils.BackendLlamaCpp}})
 	script = strings.ReplaceAll(script, "/models", modelsDir)
 	script = strings.Replace(script, "exec /usr/bin/local-ai", "printf 'LOCAL_AI_ARG=%s\\n'", 1)
-	model := "https://example.com/fresh.gguf"
+	model := runnerTestFreshGGUFURL
 	output, err := executeRunnerScript(t, script, binDir, model)
 	if err != nil {
 		t.Fatalf("run llama-cpp legacy cache migration: %v: %s", err, output)
@@ -568,7 +612,7 @@ printf 'fresh' > "$output"
 	script := generateRunnerScript(&config.InferenceConfig{Backends: []string{utils.BackendLlamaCpp}})
 	script = strings.ReplaceAll(script, "/models", modelsDir)
 	script = strings.Replace(script, "exec /usr/bin/local-ai", "exec true", 1)
-	model := "https://example.com/fresh.gguf"
+	model := runnerTestFreshGGUFURL
 	output, err := executeRunnerScript(t, script, binDir, model)
 	if err != nil {
 		t.Fatalf("replace llama-cpp cache: %v: %s", err, output)
@@ -644,6 +688,49 @@ printf 'GGUF' > "$local_dir/quantized/q3/nested.gguf"
 	}
 }
 
+func TestGenerateParakeetCppDownload(t *testing.T) {
+	script := generateParakeetCppDownload()
+
+	for _, expected := range []string{
+		runnerParakeetCppModelMarker,
+		`PARAKEET_CPP_MODEL_DIR="` + runnerParakeetCppModelDir + `"`,
+		`PARAKEET_CPP_PAYLOAD_DIR="$PARAKEET_CPP_MODEL_DIR/payload"`,
+		`hf download`,
+		`HfApi(token=os.environ.get("HF_TOKEN") or None).list_repo_files`,
+		`HF_ARGS=("$HF_REPOSITORY" "$HF_FILENAME"`,
+		runnerCurlInvocation,
+		`--output "$PARTIAL_PATH"`,
+		`-print0`,
+		`backend: parakeet-cpp`,
+		`known_usecases:`,
+		`  - transcript`,
+		`name: '${MODEL_NAME}'`,
+		`model: '${CONFIG_MODEL_PATH}'`,
+		`MODEL_CACHE_KEY`,
+		`requires exactly one GGUF file`,
+	} {
+		if !strings.Contains(script, expected) {
+			t.Errorf("parakeet-cpp download script does not contain %q", expected)
+		}
+	}
+
+	for _, unexpected := range []string{
+		`"--include" "*.gguf"`,
+		runnerUnresolvedModelYAML,
+		runnerLegacyHFCLICommand,
+	} {
+		if strings.Contains(script, unexpected) {
+			t.Errorf("parakeet-cpp download script should not contain %q", unexpected)
+		}
+	}
+
+	cmd := exec.Command("bash", "-n")
+	cmd.Stdin = strings.NewReader(generateRunnerScript(&config.InferenceConfig{Backends: []string{utils.BackendParakeetCpp}}))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("parakeet-cpp runner script has invalid shell syntax: %v: %s", err, output)
+	}
+}
+
 func TestGenerateVLLMCppDownload(t *testing.T) {
 	script := generateVLLMCppDownload()
 
@@ -662,7 +749,7 @@ func TestGenerateVLLMCppDownload(t *testing.T) {
 		`"--exclude" "*.gguf"`,
 		runnerCurlInvocation,
 		`\.gguf$`,
-		`backend: vllm-cpp`,
+		runnerVLLMCppBackendYAML,
 		`name: '${MODEL_NAME}'`,
 		`model: '${CONFIG_MODEL_PATH}'`,
 		`use_tokenizer_template: true`,
@@ -675,7 +762,7 @@ func TestGenerateVLLMCppDownload(t *testing.T) {
 	}
 
 	for _, unexpected := range []string{
-		`model: ${MODEL}`,
+		runnerUnresolvedModelYAML,
 		runnerLegacyHFCLICommand,
 	} {
 		if strings.Contains(script, unexpected) {
@@ -691,11 +778,17 @@ func TestGenerateVLLMCppDownload(t *testing.T) {
 }
 
 func TestRunnerBackendsUseSeparateModelMarkers(t *testing.T) {
-	if runnerLlamaCppModelMarker == runnerVLLMCppModelMarker {
-		t.Fatal("llama-cpp and vllm-cpp must not share a model cache marker")
+	markers := []string{runnerLlamaCppModelMarker, runnerParakeetCppModelMarker, runnerVLLMCppModelMarker}
+	for markerIndex, marker := range markers {
+		for otherIndex := markerIndex + 1; otherIndex < len(markers); otherIndex++ {
+			if marker == markers[otherIndex] {
+				t.Fatalf("native runner backends must not share model cache marker %q", marker)
+			}
+		}
 	}
 
 	llamaScript := generateLlamaCppDownload()
+	parakeetScript := generateParakeetCppDownload()
 	vllmCppScript := generateVLLMCppDownload()
 	if !strings.Contains(llamaScript, runnerLlamaCppModelMarker) || strings.Contains(llamaScript, runnerVLLMCppModelMarker) {
 		t.Fatal("llama-cpp download script does not use only its backend-scoped marker")
@@ -703,8 +796,455 @@ func TestRunnerBackendsUseSeparateModelMarkers(t *testing.T) {
 	if !strings.Contains(vllmCppScript, runnerVLLMCppModelMarker) || strings.Contains(vllmCppScript, runnerLlamaCppModelMarker) {
 		t.Fatal("vllm-cpp download script does not use only its backend-scoped marker")
 	}
+	if !strings.Contains(parakeetScript, runnerParakeetCppModelMarker) ||
+		strings.Contains(parakeetScript, runnerLlamaCppModelMarker) ||
+		strings.Contains(parakeetScript, runnerVLLMCppModelMarker) {
+		t.Fatal("parakeet-cpp download script does not use only its backend-scoped marker")
+	}
 	if !strings.Contains(llamaScript, `find "$LLAMA_CPP_PAYLOAD_DIR"`) || strings.Contains(llamaScript, "| head") {
 		t.Fatal("llama-cpp lookup must recursively search only its owned cache and avoid pipelines")
+	}
+}
+
+func TestParakeetCppRunnerDownloadsDirectGGUFLocally(t *testing.T) {
+	script, modelsDir, binDir := prepareParakeetCppRunnerScript(t)
+	writeRunnerStub(t, binDir, "curl", `#!/bin/bash
+set -euo pipefail
+output=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--output" ]]; then
+    output="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[[ -n "$output" ]]
+printf 'PARAKEET' > "$output"
+`)
+
+	model := "https://example.com/tdt_ctc-110m-q4_k.gguf?download=1#weights"
+	output, err := executeRunnerScript(t, script, binDir, model)
+	if err != nil {
+		t.Fatalf("run parakeet-cpp direct GGUF flow: %v: %s", err, output)
+	}
+
+	modelDir := runnerPathInTestModels(modelsDir, runnerParakeetCppModelDir)
+	modelPath := filepath.Join(modelDir, "payload", "tdt_ctc-110m-q4_k.gguf")
+	wantConfig := "name: 'tdt_ctc-110m-q4_k'\n" +
+		"backend: parakeet-cpp\n" +
+		"known_usecases:\n" +
+		"  - transcript\n" +
+		"parameters:\n" +
+		"  model: 'payload/tdt_ctc-110m-q4_k.gguf'\n"
+	assertRunnerFileContent(t, filepath.Join(modelDir, runnerConfigFilename), wantConfig)
+	assertRunnerFileContent(t, modelPath, "PARAKEET")
+	assertRunnerFileContent(t, filepath.Join(modelsDir, filepath.Base(runnerParakeetCppModelMarker)), runnerModelCacheKey(model)+"\n")
+
+	writeRunnerStub(t, binDir, "curl", "#!/bin/bash\nexit 91\n")
+	output, err = executeRunnerScript(t, script, binDir, model)
+	if err != nil {
+		t.Fatalf("reuse cached parakeet-cpp GGUF: %v: %s", err, output)
+	}
+	if !strings.Contains(string(output), "Found cached parakeet-cpp model matching") {
+		t.Fatalf("parakeet-cpp cache hit was not detected: %s", output)
+	}
+}
+
+func TestParakeetCppRunnerDownloadsPinnedHuggingFaceFile(t *testing.T) {
+	script, modelsDir, binDir := prepareParakeetCppRunnerScript(t)
+	hfArgsLog := filepath.Join(t.TempDir(), "hf-args")
+	writeRunnerStub(t, binDir, "hf", `#!/bin/bash
+set -euo pipefail
+printf '%s\n' "$@" > "$HF_ARGS_LOG"
+repository="$2"
+filename="$3"
+shift 3
+local_dir=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--local-dir" ]]; then
+    local_dir="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[[ "$repository" == "org/parakeet" ]]
+[[ -n "$filename" ]]
+[[ -n "$local_dir" ]]
+mkdir -p "$local_dir/$(dirname "$filename")"
+printf 'PARAKEET' > "$local_dir/$filename"
+`)
+
+	const revision = "0123456789abcdef0123456789abcdef01234567"
+	model := "huggingface://org/parakeet@" + revision + "/weights/tdt_ctc-110m-f16.gguf"
+	output, err := executeRunnerScript(t, script, binDir, model, "HF_ARGS_LOG="+hfArgsLog, "HF_TOKEN=test-token")
+	if err != nil {
+		t.Fatalf("run pinned parakeet-cpp Hugging Face file flow: %v: %s", err, output)
+	}
+
+	modelDir := runnerPathInTestModels(modelsDir, runnerParakeetCppModelDir)
+	wantConfig := "name: 'tdt_ctc-110m-f16'\n" +
+		"backend: parakeet-cpp\n" +
+		"known_usecases:\n" +
+		"  - transcript\n" +
+		"parameters:\n" +
+		"  model: 'payload/weights/tdt_ctc-110m-f16.gguf'\n"
+	assertRunnerFileContent(t, filepath.Join(modelDir, runnerConfigFilename), wantConfig)
+	assertRunnerFileContent(t, filepath.Join(modelDir, "payload", "weights", "tdt_ctc-110m-f16.gguf"), "PARAKEET")
+
+	hfArgs, err := os.ReadFile(hfArgsLog)
+	if err != nil {
+		t.Fatalf("read hf arguments: %v", err)
+	}
+	for _, argument := range []string{
+		"org/parakeet\n",
+		"weights/tdt_ctc-110m-f16.gguf\n",
+		"--revision\n" + revision + "\n",
+		"--token\ntest-token\n",
+	} {
+		if !strings.Contains(string(hfArgs), argument) {
+			t.Errorf("hf arguments do not contain %q: %s", argument, hfArgs)
+		}
+	}
+	if strings.Contains(string(hfArgs), "--include") {
+		t.Errorf("exact Hugging Face file download should not use a broad include: %s", hfArgs)
+	}
+}
+
+func TestParakeetCppRunnerSelectsOnlyGGUFInRepository(t *testing.T) {
+	script, modelsDir, binDir := prepareParakeetCppRunnerScript(t)
+	hfArgsLog := filepath.Join(t.TempDir(), "hf-args")
+	pythonArgsLog := filepath.Join(t.TempDir(), "python-args")
+	writeRunnerStub(t, binDir, "python3", `#!/bin/bash
+set -euo pipefail
+printf '%s\n' "$@" > "$PYTHON_ARGS_LOG"
+printf 'nested/only-q4_k.gguf\n'
+`)
+	writeRunnerStub(t, binDir, "hf", `#!/bin/bash
+set -euo pipefail
+printf '%s\n' "$@" > "$HF_ARGS_LOG"
+filename="$3"
+local_dir=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--local-dir" ]]; then
+    local_dir="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[[ -n "$local_dir" ]]
+mkdir -p "$local_dir/$(dirname "$filename")"
+printf 'PARAKEET' > "$local_dir/$filename"
+`)
+
+	model := "huggingface://org/single-gguf"
+	output, err := executeRunnerScript(
+		t,
+		script,
+		binDir,
+		model,
+		"HF_ARGS_LOG="+hfArgsLog,
+		"PYTHON_ARGS_LOG="+pythonArgsLog,
+		"HF_TOKEN=test-token",
+	)
+	if err != nil {
+		t.Fatalf("run unique parakeet-cpp Hugging Face repository flow: %v: %s", err, output)
+	}
+
+	hfArgs, err := os.ReadFile(hfArgsLog)
+	if err != nil {
+		t.Fatalf("read hf arguments: %v", err)
+	}
+	if !strings.HasPrefix(string(hfArgs), "download\norg/single-gguf\nnested/only-q4_k.gguf\n") {
+		t.Errorf("hf downloader did not receive the selected file as a positional argument: %s", hfArgs)
+	}
+	for _, broadDownload := range []string{"--include", "*.gguf"} {
+		if strings.Contains(string(hfArgs), broadDownload) {
+			t.Errorf("single-GGUF repository download unexpectedly contains %q: %s", broadDownload, hfArgs)
+		}
+	}
+	pythonArgs, err := os.ReadFile(pythonArgsLog)
+	if err != nil {
+		t.Fatalf("read Python listing arguments: %v", err)
+	}
+	if !strings.Contains(string(pythonArgs), "-\norg/single-gguf\n") {
+		t.Errorf("repository preflight did not receive the expected repository: %s", pythonArgs)
+	}
+
+	modelDir := runnerPathInTestModels(modelsDir, runnerParakeetCppModelDir)
+	wantConfig := "name: 'only-q4_k'\n" +
+		"backend: parakeet-cpp\n" +
+		"known_usecases:\n" +
+		"  - transcript\n" +
+		"parameters:\n" +
+		"  model: 'payload/nested/only-q4_k.gguf'\n"
+	assertRunnerFileContent(t, filepath.Join(modelDir, runnerConfigFilename), wantConfig)
+	assertRunnerFileContent(t, filepath.Join(modelDir, "payload", "nested", "only-q4_k.gguf"), "PARAKEET")
+
+	writeRunnerStub(t, binDir, "python3", "#!/bin/bash\nexit 91\n")
+	writeRunnerStub(t, binDir, "hf", "#!/bin/bash\nexit 92\n")
+	output, err = executeRunnerScript(t, script, binDir, model)
+	if err != nil {
+		t.Fatalf("reuse cached bare-repository parakeet-cpp GGUF: %v: %s", err, output)
+	}
+	if !strings.Contains(string(output), "Found cached parakeet-cpp model matching org/single-gguf") {
+		t.Fatalf("bare-repository parakeet-cpp cache hit was not detected: %s", output)
+	}
+}
+
+func TestParakeetCppRunnerRejectsAmbiguousOrInvalidRepositoriesBeforeDownload(t *testing.T) {
+	tests := []struct {
+		name          string
+		listing       string
+		wantError     string
+		pythonFailure bool
+	}{
+		{
+			name:      "missing GGUF",
+			wantError: "contains no GGUF files",
+		},
+		{
+			name:      "multiple quantizations",
+			listing:   "model-f16.gguf\nmodel-q4_k.gguf\n",
+			wantError: "contains multiple GGUF files",
+		},
+		{
+			name:      "unsafe path",
+			listing:   "../escape.gguf\n",
+			wantError: "contains an unsafe GGUF path",
+		},
+		{
+			name:          "listing failure",
+			wantError:     "unable to list Hugging Face repository",
+			pythonFailure: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			script, _, binDir := prepareParakeetCppRunnerScript(t)
+			hfCalled := filepath.Join(t.TempDir(), "hf-called")
+			pythonScript := "#!/bin/bash\nset -euo pipefail\nprintf '%s' '" + tt.listing + "'\n"
+			if tt.pythonFailure {
+				pythonScript = "#!/bin/bash\nexit 92\n"
+			}
+			writeRunnerStub(t, binDir, "python3", pythonScript)
+			writeRunnerStub(t, binDir, "hf", "#!/bin/bash\nprintf 'called\\n' > \"$HF_CALLED\"\n")
+
+			output, err := executeRunnerScript(t, script, binDir, "huggingface://org/repo", "HF_CALLED="+hfCalled)
+			if err == nil {
+				t.Fatalf("invalid Hugging Face repository unexpectedly succeeded: %s", output)
+			}
+			if !strings.Contains(string(output), tt.wantError) {
+				t.Errorf("error output does not contain %q: %s", tt.wantError, output)
+			}
+			if _, err := os.Stat(hfCalled); !os.IsNotExist(err) {
+				t.Errorf("hf downloader ran before repository validation; stat error = %v", err)
+			}
+		})
+	}
+}
+
+func TestParakeetCppRunnerValidatesDownloadedPayload(t *testing.T) {
+	tests := []struct {
+		name      string
+		mode      string
+		wantError string
+	}{
+		{
+			name:      "missing requested file",
+			mode:      "missing",
+			wantError: "no valid GGUF file was downloaded",
+		},
+		{
+			name:      "multiple GGUF files",
+			mode:      "multiple",
+			wantError: "requires exactly one GGUF file",
+		},
+		{
+			name:      "wrong GGUF file",
+			mode:      "wrong",
+			wantError: "does not match requested file",
+		},
+		{
+			name:      "unsafe GGUF filename",
+			mode:      "unsafe",
+			wantError: "payload contains an unsafe GGUF path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			script, _, binDir := prepareParakeetCppRunnerScript(t)
+			writeRunnerStub(t, binDir, "hf", `#!/bin/bash
+set -euo pipefail
+requested="$3"
+local_dir=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--local-dir" ]]; then
+    local_dir="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[[ -n "$local_dir" ]]
+case "$HF_STUB_MODE" in
+  missing)
+    ;;
+  multiple)
+    printf 'one' > "$local_dir/one.gguf"
+    printf 'two' > "$local_dir/two.gguf"
+    ;;
+  wrong)
+    printf 'wrong' > "$local_dir/wrong.gguf"
+    ;;
+  unsafe)
+    printf 'unsafe' > "$local_dir/bad name.gguf"
+    ;;
+esac
+`)
+
+			output, err := executeRunnerScript(
+				t,
+				script,
+				binDir,
+				"huggingface://org/repo/requested.gguf",
+				"HF_STUB_MODE="+tt.mode,
+			)
+			if err == nil {
+				t.Fatalf("invalid parakeet-cpp payload unexpectedly succeeded: %s", output)
+			}
+			if !strings.Contains(string(output), tt.wantError) {
+				t.Errorf("error output does not contain %q: %s", tt.wantError, output)
+			}
+		})
+	}
+}
+
+func TestParakeetCppRunnerRepairsOnlyOwnedCache(t *testing.T) {
+	script, modelsDir, binDir := prepareParakeetCppRunnerScript(t)
+	model := runnerTestFreshGGUFURL
+	modelDir := runnerPathInTestModels(modelsDir, runnerParakeetCppModelDir)
+	payloadDir := filepath.Join(modelDir, "payload")
+	if err := os.MkdirAll(payloadDir, 0o755); err != nil {
+		t.Fatalf("create parakeet-cpp payload directory: %v", err)
+	}
+
+	seedFiles := map[string]string{
+		filepath.Join(payloadDir, "stale-one.gguf"):                           "stale one",
+		filepath.Join(payloadDir, "stale-two.gguf"):                           "stale two",
+		filepath.Join(modelsDir, "user.gguf"):                                 "user model",
+		filepath.Join(modelsDir, "user.yaml"):                                 "name: user-owned\n",
+		filepath.Join(modelsDir, filepath.Base(runnerParakeetCppModelMarker)): runnerModelCacheKey(model) + "\n",
+	}
+	for path, content := range seedFiles {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("seed runner file %q: %v", path, err)
+		}
+	}
+
+	writeRunnerStub(t, binDir, "curl", `#!/bin/bash
+set -euo pipefail
+output=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--output" ]]; then
+    output="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[[ -n "$output" ]]
+printf 'fresh' > "$output"
+`)
+
+	output, err := executeRunnerScript(t, script, binDir, model)
+	if err != nil {
+		t.Fatalf("repair ambiguous parakeet-cpp cache: %v: %s", err, output)
+	}
+	if !strings.Contains(string(output), "does not match requested parakeet-cpp model") {
+		t.Errorf("cache repair output missing mismatch message: %s", output)
+	}
+	for _, stale := range []string{filepath.Join(payloadDir, "stale-one.gguf"), filepath.Join(payloadDir, "stale-two.gguf")} {
+		if _, err := os.Stat(stale); !os.IsNotExist(err) {
+			t.Errorf("stale runner-owned GGUF remains after repair; stat error = %v", err)
+		}
+	}
+	for _, preserved := range []string{filepath.Join(modelsDir, "user.gguf"), filepath.Join(modelsDir, "user.yaml")} {
+		if _, err := os.Stat(preserved); err != nil {
+			t.Errorf("runner should preserve unrelated file %q: %v", preserved, err)
+		}
+	}
+	assertRunnerFileContent(t, filepath.Join(payloadDir, "fresh.gguf"), "fresh")
+}
+
+func TestParakeetCppRunnerRejectsUnsupportedModelReferences(t *testing.T) {
+	tests := []struct {
+		name      string
+		model     string
+		wantError string
+	}{
+		{
+			name:      "non-GGUF direct URL",
+			model:     "https://example.com/model.bin",
+			wantError: runnerDirectGGUFError,
+		},
+		{
+			name:      "unsafe direct URL filename",
+			model:     "https://example.com/model name.gguf",
+			wantError: runnerDirectGGUFError,
+		},
+		{
+			name:      "unsupported scheme",
+			model:     "s3://bucket/model.gguf",
+			wantError: "supports only huggingface:// repository references or HTTP(S) .gguf URLs",
+		},
+		{
+			name:      "missing repository owner",
+			model:     "repository",
+			wantError: "invalid Hugging Face repository reference",
+		},
+		{
+			name:      "unsafe repository owner",
+			model:     "../repository/model.gguf",
+			wantError: "invalid Hugging Face repository reference",
+		},
+		{
+			name:      "mutable named revision",
+			model:     "org/repo@main/model.gguf",
+			wantError: "revisions for parakeet-cpp must be 40-character lowercase commit SHAs",
+		},
+		{
+			name:      "uppercase commit revision",
+			model:     "org/repo@0123456789ABCDEF0123456789abcdef01234567/model.gguf",
+			wantError: "revisions for parakeet-cpp must be 40-character lowercase commit SHAs",
+		},
+		{
+			name:      "non-GGUF repository path",
+			model:     "org/repo/model.bin",
+			wantError: "file references must point to a safe .gguf path",
+		},
+		{
+			name:      "traversing repository path",
+			model:     "org/repo/../model.gguf",
+			wantError: "file references must point to a safe .gguf path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			script, _, binDir := prepareParakeetCppRunnerScript(t)
+			output, err := executeRunnerScript(t, script, binDir, tt.model)
+			if err == nil {
+				t.Fatalf("model reference %q unexpectedly succeeded: %s", tt.model, output)
+			}
+			if !strings.Contains(string(output), tt.wantError) {
+				t.Errorf("error output does not contain %q: %s", tt.wantError, output)
+			}
+		})
 	}
 }
 
@@ -1033,7 +1573,7 @@ done
 printf 'GGUF' > "$output"
 `)
 
-	output, err := executeRunnerScript(t, script, binDir, "https://example.com/fresh.gguf")
+	output, err := executeRunnerScript(t, script, binDir, runnerTestFreshGGUFURL)
 	if err != nil {
 		t.Fatalf("run vllm-cpp with stale llama artifacts: %v: %s", err, output)
 	}
@@ -1150,12 +1690,12 @@ func TestVLLMCppRunnerRejectsUnsupportedModelReferences(t *testing.T) {
 		{
 			name:      "non-GGUF direct URL",
 			model:     "https://example.com/model.safetensors",
-			wantError: "direct URLs must point to a .gguf file",
+			wantError: runnerDirectGGUFError,
 		},
 		{
 			name:      "unsafe GGUF filename",
 			model:     "https://example.com/model name.gguf",
-			wantError: "direct URLs must point to a .gguf file",
+			wantError: runnerDirectGGUFError,
 		},
 		{
 			name:      "unsupported URL scheme",
@@ -1289,6 +1829,25 @@ func TestRunnerModelNameScript(t *testing.T) {
 			}
 		})
 	}
+}
+
+func prepareParakeetCppRunnerScript(t *testing.T) (string, string, string) {
+	t.Helper()
+
+	testRoot := t.TempDir()
+	modelsDir := filepath.Join(testRoot, "models")
+	binDir := filepath.Join(testRoot, "bin")
+	for _, dir := range []string{modelsDir, binDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create runner test directory %q: %v", dir, err)
+		}
+	}
+
+	script := generateRunnerScript(&config.InferenceConfig{Backends: []string{utils.BackendParakeetCpp}})
+	script = strings.ReplaceAll(script, "/models", modelsDir)
+	script = strings.Replace(script, "exec /usr/bin/local-ai", "exec true", 1)
+
+	return script, modelsDir, binDir
 }
 
 func prepareVLLMCppRunnerScript(t *testing.T) (string, string, string) {
