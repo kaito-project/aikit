@@ -102,6 +102,7 @@ If it doesn't include a specific model, you can always [create your own images](
 | ⌨️ Codestral 0.1 | Code         | 22B        | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/codestral:22b` | `codestral-22b`          | [MNLP](https://mistral.ai/licenses/MNPL-0.1.md)                                    |
 | 🤖 GPT-OSS       |              | 20B        | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/gpt-oss:20b`   | `gpt-oss-20b`            | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/)                      |
 | 🤖 GPT-OSS       |              | 120B       | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/gpt-oss:120b`  | `gpt-oss-120b`           | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/)                      |
+| ✨ Muse Glimmer   | Vision + DFlash | 30B     | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/muse-glimmer:30b` | `muse-glimmer-30b`    | [Apache 2.0](https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF/blob/main/LICENSE) |
 
 
 ### NVIDIA CUDA
