@@ -3,24 +3,17 @@ package inference
 import (
 	"fmt"
 	"net/url"
-	"slices"
+	"reflect"
 	"strings"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-const (
-	distrolessBase                = "ghcr.io/kaito-project/aikit/base:latest"
-	localAIBinaryVersion          = "v4.8.2"
-	localAILlamaCppBackendVersion = localAIBinaryVersion
-	localAILegacyBackendVersion   = "v3.12.1"
-	localAIROCmBackendVersion     = "rocm7"
-	localAIRepo                   = "ghcr.io/kaito-project/aikit/localai:"
-	rocmVersion                   = "7.2"
-)
+const standardRuntimeCABundlePath = "/etc/ssl/certs/ca-certificates.crt"
 
 // Aikit2LLB converts an InferenceConfig to an LLB state.
 func Aikit2LLB(c *config.InferenceConfig, targetPlatform *specs.Platform) (llb.State, *specs.Image, error) {
@@ -29,29 +22,51 @@ func Aikit2LLB(c *config.InferenceConfig, targetPlatform *specs.Platform) (llb.S
 
 // Aikit2LLBWithPlatforms converts an InferenceConfig using separate build and target platforms.
 func Aikit2LLBWithPlatforms(c *config.InferenceConfig, buildPlatform, targetPlatform *specs.Platform) (llb.State, *specs.Image, error) {
+	if targetPlatform == nil {
+		return llb.State{}, nil, fmt.Errorf("target platform is required")
+	}
+
+	backend, err := ResolveBackend(c, *targetPlatform)
+	if err != nil {
+		return llb.State{}, nil, err
+	}
+
+	return aikit2LLBWithResolvedBackend(c, buildPlatform, targetPlatform, backend)
+}
+
+// Aikit2LLBWithBackend converts an InferenceConfig using a pre-resolved immutable backend plan.
+func Aikit2LLBWithBackend(c *config.InferenceConfig, buildPlatform, targetPlatform *specs.Platform, backend backendcatalog.Resolution) (llb.State, *specs.Image, error) {
+	if targetPlatform == nil {
+		return llb.State{}, nil, fmt.Errorf("target platform is required")
+	}
+	expected, err := ResolveBackend(c, *targetPlatform)
+	if err != nil {
+		return llb.State{}, nil, err
+	}
+	if !reflect.DeepEqual(backend, expected) {
+		return llb.State{}, nil, fmt.Errorf("pre-resolved backend plan does not match the embedded catalog")
+	}
+
+	return aikit2LLBWithResolvedBackend(c, buildPlatform, targetPlatform, backend)
+}
+
+func aikit2LLBWithResolvedBackend(c *config.InferenceConfig, buildPlatform, targetPlatform *specs.Platform, backend backendcatalog.Resolution) (llb.State, *specs.Image, error) {
 	if buildPlatform == nil {
 		buildPlatform = targetPlatform
 	}
 
-	var merge, state llb.State
-	switch c.Runtime {
-	case utils.RuntimeAppleSilicon:
-		state = llb.Image(utils.AppleSiliconBase, llb.Platform(*targetPlatform))
-	case utils.RuntimeROCm:
-		// Use Ubuntu 24.04 for ROCm to match noble repository.
-		state = llb.Image(utils.Ubuntu24Base, llb.Platform(*targetPlatform))
-	default:
-		state = llb.Image(utils.UbuntuBase, llb.Platform(*targetPlatform))
-	}
+	var merge llb.State
+	runtimeBase := runtimeBaseForConfig(c, backend)
+	state := llb.Image(runtimeBase.Ref, llb.Platform(*targetPlatform))
 	buildBase := state
-	base := getBaseImage(c, targetPlatform)
+	base := state
 
 	var err error
 	if isRunnerMode(c) {
 		// Runner mode skips model downloads and keeps dependencies and the entrypoint sequential.
 		_, merge = writeConfig(c, base, buildBase, *targetPlatform)
-		state, merge = installRunnerDependencies(c, buildBase, merge, *targetPlatform)
-		state, merge = installRunnerEntrypoint(c, state, merge)
+		state, merge = installRunnerDependenciesWithBackend(backend, buildBase, merge, *targetPlatform)
+		state, merge = installRunnerEntrypoint(c, backend, state, merge)
 	} else {
 		// Standard mode materializes models and config on an isolated branch.
 		state, merge, err = copyModels(c, base, buildBase, *buildPlatform, *targetPlatform)
@@ -59,49 +74,49 @@ func Aikit2LLBWithPlatforms(c *config.InferenceConfig, buildPlatform, targetPlat
 			return state, nil, err
 		}
 		state = buildBase
+		state, merge = installStandardRuntimeTrust(state, merge, *targetPlatform)
 	}
 
-	state, merge, err = addLocalAI(c, state, merge, *buildPlatform, *targetPlatform)
+	state, merge, err = addLocalAI(backend, state, merge, *buildPlatform)
 	if err != nil {
 		return state, nil, err
 	}
 
-	// install rocm if runtime is rocm and architecture is amd64
-	if c.Runtime == utils.RuntimeROCm && targetPlatform.Architecture == utils.PlatformAMD64 {
-		state, merge = installRocm(c, state, merge)
+	// Install the exact backend artifacts selected during catalog preflight.
+	merge = installBackends(backend, requestedRuntime(c.Runtime), *targetPlatform, state, merge)
+	if len(c.Models) > 0 {
+		merge = installBackendModelAliases(backend, localAIModelDirectories(c.Config, c.Models), *buildPlatform, merge)
 	}
 
-	// install backend dependencies
-	merge = installBackends(c, *targetPlatform, state, merge)
-
-	imageCfg := NewImageConfig(c, targetPlatform)
+	imageCfg := NewImageConfigWithBackend(c, backend, targetPlatform)
 	return merge, imageCfg, nil
 }
 
-// getBaseImage returns the base image given the InferenceConfig and platform.
-func getBaseImage(c *config.InferenceConfig, platform *specs.Platform) llb.State {
-	if c.Runtime == utils.RuntimeAppleSilicon {
-		return llb.Image(utils.AppleSiliconBase, llb.Platform(*platform))
-	}
-	if c.Runtime == utils.RuntimeROCm {
-		// Use Ubuntu 24.04 for ROCm to match noble repository.
-		return llb.Image(utils.Ubuntu24Base, llb.Platform(*platform))
-	}
-	// Runner images need a package-capable base for their runtime downloader.
-	if isRunnerMode(c) {
-		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
+// installStandardRuntimeTrust copies a target-platform CA bundle into standard
+// images without assuming that the catalog runtime base has a package manager.
+func installStandardRuntimeTrust(s llb.State, merge llb.State, targetPlatform specs.Platform) (llb.State, llb.State) {
+	savedState := s
+	trustSource := orasToolingImage(targetPlatform)
+	s = s.File(
+		llb.Copy(
+			trustSource,
+			standardRuntimeCABundlePath,
+			standardRuntimeCABundlePath,
+			&llb.CopyInfo{CreateDestPath: true},
+		),
+		llb.WithCustomName("Installing standard runtime CA roots"),
+	)
+
+	diff := llb.Diff(savedState, s)
+	return s, llb.Merge([]llb.State{merge, diff})
+}
+
+func runtimeBaseForConfig(c *config.InferenceConfig, backend backendcatalog.Resolution) backendcatalog.Artifact {
+	if isRunnerMode(c) && backend.RunnerRuntimeBase != nil {
+		return *backend.RunnerRuntimeBase
 	}
 
-	// LocalAI, llama-cpp, and vllm-cpp are self-contained. Keep the full Ubuntu
-	// base only for Python backends whose portable environments still rely on
-	// additional system runtime libraries.
-	selfContainedBackend := len(c.Backends) == 0 ||
-		(len(c.Backends) == 1 && slices.Contains([]string{utils.BackendLlamaCpp, utils.BackendVLLMCpp}, c.Backends[0]))
-	if !selfContainedBackend {
-		return llb.Image(utils.UbuntuBase, llb.Platform(*platform))
-	}
-
-	return llb.Image(distrolessBase, llb.Platform(*platform))
+	return backend.RuntimeBase
 }
 
 // writeConfig writes the /config.yaml file to the image when c.Config is set.
@@ -187,60 +202,14 @@ func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, buildPla
 	return s, merge, nil
 }
 
-func installRocm(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.State, llb.State) {
-	savedState := s
-
-	// Set up ROCm repository
-	s = s.Run(utils.Sh("apt-get update && apt-get install --no-install-recommends -y ca-certificates curl gnupg && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*"), llb.IgnoreCache).Root()
-
-	// Add ROCm GPG key and repository
-	s = s.Run(utils.Sh("curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/rocm.gpg")).Root()
-	s = s.Run(utils.Shf("echo 'deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/rocm.gpg] https://repo.radeon.com/rocm/apt/%s/ noble main' >> /etc/apt/sources.list.d/rocm.list", rocmVersion)).Root()
-	s = s.Run(utils.Shf("echo 'deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/rocm.gpg] https://repo.radeon.com/graphics/%s/ubuntu noble main' >> /etc/apt/sources.list.d/rocm.list", rocmVersion)).Root()
-	rocmPinning := `
-Package: *
-Pin: release o=repo.radeon.com
-Pin-Priority: 600
-`
-	s = s.Run(utils.Shf("echo '%s' > /etc/apt/preferences.d/repo-radeon-pin-600", rocmPinning)).Root()
-	s = s.Run(utils.Sh("apt-get update"), llb.IgnoreCache).Root()
-
-	// install rocm libraries and pciutils for gpu detection when using the default
-	// llama-cpp backend or when it is configured explicitly
-	if len(c.Backends) == 0 || slices.Contains(c.Backends, utils.BackendLlamaCpp) {
-		s = s.Run(utils.Sh("apt-get install -y --no-install-recommends pciutils rocm && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*")).Root()
-	}
-
-	// hipblaslt soname compatibility: backend may be linked against .so.0 while ROCm 7.2 ships .so.1
-	s = s.Run(utils.Sh("set -e; cd /opt/rocm/lib; [ -e libhipblaslt.so.0 ] || ln -sf libhipblaslt.so.1 libhipblaslt.so.0")).Root()
-
-	diff := llb.Diff(savedState, s)
-	return s, llb.Merge([]llb.State{merge, diff})
-}
-
 // addLocalAI adds the LocalAI binary to the image.
-func addLocalAI(c *config.InferenceConfig, s llb.State, merge llb.State, buildPlatform, targetPlatform specs.Platform) (llb.State, llb.State, error) {
-	artifactVersion := getLocalAIArtifactVersion(c, targetPlatform)
-
-	// Map architectures to OCI artifact references & internal artifact filenames
-	artifactRefs := map[string]struct {
-		Ref string
-	}{
-		utils.PlatformAMD64: {Ref: localAIRepo + artifactVersion + "-amd64"},
-		utils.PlatformARM64: {Ref: localAIRepo + artifactVersion + "-arm64"},
-	}
-
-	art, ok := artifactRefs[targetPlatform.Architecture]
-	if !ok {
-		return s, merge, fmt.Errorf("unsupported architecture %s", targetPlatform.Architecture)
-	}
-
+func addLocalAI(backend backendcatalog.Resolution, s llb.State, merge llb.State, buildPlatform specs.Platform) (llb.State, llb.State, error) {
 	savedState := s
 
 	// Use the oras CLI image to pull the artifact containing the LocalAI binary
-	tooling := llb.Image(orasImage, llb.Platform(buildPlatform)).Run(
-		utils.Shf("set -e\noras pull %[1]s\nchmod +x local-ai\nchmod 755 local-ai", art.Ref),
-		llb.WithCustomName("Pulling LocalAI from OCI artifact "+art.Ref),
+	tooling := orasToolingImage(buildPlatform).Run(
+		utils.Shf("set -e\noras pull %[1]s\nchmod +x local-ai\nchmod 755 local-ai", backend.Core.Ref),
+		llb.WithCustomName("Pulling LocalAI from OCI artifact "+backend.Core.Ref),
 	).Root()
 
 	// Copy the prepared binary into /usr/bin/local-ai

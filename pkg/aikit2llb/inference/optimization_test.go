@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/solver/pb"
@@ -16,11 +17,15 @@ import (
 )
 
 const (
-	testExactModelName      = "exact"
-	testLocalModelDirectory = "models/weights"
-	testLocalModelPath      = "models/model.gguf"
-	testLocalModelGlob      = "models/*.safetensors"
-	testLocalModelZ         = "models/z.gguf"
+	testConfigURL              = "https://example.com/config.json"
+	testExactModelName         = "exact"
+	testFasterWhisperModelPath = "Systran/faster-whisper-tiny.en"
+	testLocalModelDirectory    = "models/weights"
+	testLocalModelPath         = "models/model.gguf"
+	testLocalModelGlob         = "models/*.safetensors"
+	testLocalModelZ            = "models/z.gguf"
+	testRerankerModelPath      = "reranker"
+	testSafetensorsURL         = "https://example.com/model.safetensors"
 )
 
 type inferenceDefinitionOp struct {
@@ -30,12 +35,12 @@ type inferenceDefinitionOp struct {
 
 func TestInstallBackendMetadataIsDeterministic(t *testing.T) {
 	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformARM64}
-	cfg := &config.InferenceConfig{Backends: []string{utils.BackendLlamaCpp}}
-	base := llb.Image(utils.UbuntuBase, llb.Platform(platform))
+	backend := testArbitraryBackendPlan(platform)
+	base := llb.Image(backend.RuntimeBase.Ref, llb.Platform(platform))
 
 	var wantHead digest.Digest
 	for i := 0; i < 25; i++ {
-		state := installBackend(utils.BackendLlamaCpp, cfg, platform, base, base)
+		state := installBackends(backend, backendcatalog.RuntimeCPU, platform, base, base)
 		definition, err := state.Marshal(context.Background())
 		if err != nil {
 			t.Fatalf("marshal backend definition: %v", err)
@@ -47,19 +52,22 @@ func TestInstallBackendMetadataIsDeterministic(t *testing.T) {
 		}
 		if i == 0 {
 			wantHead = head
-			metadata := findInferenceMkfile(t, definition, "/backends/cpu-llama-cpp/metadata.json")
+			metadata := findInferenceMkfile(t, definition, "/backends/"+backend.Backend.InstallName+"/metadata.json")
 
 			var got map[string]string
 			if err := json.Unmarshal(metadata.Data, &got); err != nil {
 				t.Fatalf("unmarshal backend metadata: %v", err)
 			}
 			want := map[string]string{
-				"alias":       utils.BackendLlamaCpp,
-				"name":        cpuLlamaCppBackend,
-				"gallery_url": "github:mudler/LocalAI/backend/index.yaml@master",
+				"alias":          backend.Family,
+				"name":           backend.Backend.InstallName,
+				"catalog_digest": backend.CatalogDigest,
+				"artifact":       backend.Backend.Ref,
 			}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("backend metadata = %#v, want %#v", got, want)
+			for key, value := range want {
+				if got[key] != value {
+					t.Fatalf("backend metadata %q = %q, want %q", key, got[key], value)
+				}
 			}
 			if _, ok := got["installed_at"]; ok {
 				t.Fatal("backend metadata unexpectedly contains installed_at")
@@ -154,9 +162,10 @@ func TestCopyModelsMaterializesConfigurationWithSingleFileOp(t *testing.T) {
 
 func TestModelChangesDoNotInvalidateRuntimeBranches(t *testing.T) {
 	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	backend := testArbitraryBackendPlan(*platform)
+	backend.Fallbacks = nil
 	baseConfig := &config.InferenceConfig{
-		Runtime:  utils.RuntimeNVIDIA,
-		Backends: []string{utils.BackendDiffusers},
+		Backends: []string{backend.Family},
 		Models: []config.Model{
 			{Name: "model", Source: "https://example.com/alpha.safetensors"},
 		},
@@ -168,31 +177,20 @@ func TestModelChangesDoNotInvalidateRuntimeBranches(t *testing.T) {
 	}
 	changedConfig.Config = "model: beta\n"
 
-	baseDefinition := marshalInferenceConfig(t, baseConfig, platform)
-	changedDefinition := marshalInferenceConfig(t, &changedConfig, platform)
+	baseDefinition := marshalInferenceConfigWithBackend(t, baseConfig, backend, platform)
+	changedDefinition := marshalInferenceConfigWithBackend(t, &changedConfig, backend, platform)
 
 	for _, customNamePrefix := range []string{
 		"Copying local-ai from OCI artifact to /usr/bin",
-		"Installing backend diffusers from ",
-		"Creating metadata.json for backend cuda12-diffusers",
+		"Installing catalog system packages: gcc, libc6-dev",
+		"Installing backend " + backend.Family + " from ",
+		"Creating metadata.json for backend " + backend.Backend.InstallName,
 	} {
 		baseOp := findInferenceOpByCustomNamePrefix(t, baseDefinition, customNamePrefix)
 		changedOp := findInferenceOpByCustomNamePrefix(t, changedDefinition, customNamePrefix)
 		if baseOp.digest != changedOp.digest {
 			t.Fatalf("%q digest changed after a model/config-only change: got %s, want %s", customNamePrefix, changedOp.digest, baseOp.digest)
 		}
-	}
-
-	for _, definition := range []*llb.Definition{baseDefinition, changedDefinition} {
-		assertInferenceExecCommandsExclude(t, definition,
-			"grpcio-tools",
-			"pip install uv",
-			"python3-venv",
-			"cuda-keyring",
-			"libcublas",
-			"cuda-cudart",
-			"pciutils",
-		)
 	}
 
 	configName := "Creating config for platform linux/amd64"
@@ -205,76 +203,82 @@ func TestModelChangesDoNotInvalidateRuntimeBranches(t *testing.T) {
 
 func TestRunnerDependenciesAndEntrypointRemainSequential(t *testing.T) {
 	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
-	cfg := &config.InferenceConfig{
-		Backends: []string{utils.BackendLlamaCpp},
-		Config:   "model: runtime\n",
-	}
-	definition := marshalInferenceConfig(t, cfg, platform)
-
-	dependencies := findInferenceExecOp(t, definition, "huggingface-hub=="+runnerHuggingFaceHubVersion)
-	dependencyCommand := strings.Join(dependencies.op.GetExec().Meta.Args, "\x00")
-	for _, fragment := range []string{
-		"--no-cache-dir",
-		"--no-compile",
-		"rm -rf /var/lib/apt/lists/*",
-		"/root/.cache/pip",
-	} {
-		if !strings.Contains(dependencyCommand, fragment) {
-			t.Fatalf("runner dependency command = %q, want %q", dependencyCommand, fragment)
-		}
-	}
-
-	entrypoint := findInferenceOpByCustomNamePrefix(t, definition, "Creating runner entrypoint script")
-	modelsDirectory := findInferenceOpByCustomNamePrefix(t, definition, "Creating /models directory with correct ownership")
-
-	assertInferenceOpInput(t, entrypoint, dependencies.digest)
-	assertInferenceOpInput(t, modelsDirectory, entrypoint.digest)
-}
-
-func TestSelfContainedPythonBackendsAvoidDuplicateRuntimeLayers(t *testing.T) {
-	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
 	tests := []struct {
-		name              string
-		backend           string
-		wantCompilerLayer bool
+		name               string
+		config             *config.InferenceConfig
+		dependencyFragment string
+		commandFragments   []string
+		unexpectedFragment string
 	}{
-		{name: "Diffusers", backend: utils.BackendDiffusers},
-		{name: "vLLM", backend: utils.BackendVLLM, wantCompilerLayer: true},
+		{
+			name: "native downloader runner",
+			config: &config.InferenceConfig{
+				Backends: []string{utils.BackendLlamaCpp},
+				Config:   "model: runtime\n",
+			},
+			dependencyFragment: "huggingface-hub==" + runnerHuggingFaceHubVersion,
+			commandFragments:   []string{"--no-cache-dir", "--no-compile", "/root/.cache/pip"},
+		},
+		{
+			name: "HF config runner",
+			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
+				Backends: []string{utils.BackendVLLM},
+				Config:   "model: runtime\n",
+			},
+			dependencyFragment: "apt-get install --no-install-recommends -y " + runnerTrustStorePackage,
+			unexpectedFragment: "huggingface-hub==",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			definition := marshalInferenceConfig(t, &config.InferenceConfig{
-				Runtime:  utils.RuntimeNVIDIA,
-				Backends: []string{tt.backend},
-			}, platform)
-
-			assertInferenceExecCommandsExclude(t, definition,
-				"huggingface-hub",
-				"python3-pip",
-				"python3-venv",
-				"pip install uv",
-				"grpcio-tools",
-				"cuda-keyring",
-				"libcublas",
-				"cuda-cudart",
-				"pciutils",
-			)
-
-			compilerLayers := 0
-			for _, graphOp := range decodeInferenceDefinition(t, definition) {
-				if exec := graphOp.op.GetExec(); exec != nil && strings.Contains(strings.Join(exec.Meta.Args, "\x00"), "gcc libc6-dev") {
-					compilerLayers++
+			definition := marshalInferenceConfig(t, tt.config, platform)
+			dependencies := findInferenceExecOp(t, definition, tt.dependencyFragment)
+			dependencyCommand := strings.Join(dependencies.op.GetExec().Meta.Args, "\x00")
+			for _, fragment := range append(tt.commandFragments, "rm -rf /var/lib/apt/lists/*") {
+				if !strings.Contains(dependencyCommand, fragment) {
+					t.Fatalf("runner dependency command = %q, want %q", dependencyCommand, fragment)
 				}
 			}
-			wantCompilerLayers := 0
-			if tt.wantCompilerLayer {
-				wantCompilerLayers = 1
+			if tt.unexpectedFragment != "" && strings.Contains(dependencyCommand, tt.unexpectedFragment) {
+				t.Fatalf("runner dependency command = %q, do not want %q", dependencyCommand, tt.unexpectedFragment)
 			}
-			if compilerLayers != wantCompilerLayers {
-				t.Fatalf("compiler layer count = %d, want %d", compilerLayers, wantCompilerLayers)
-			}
+
+			entrypoint := findInferenceOpByCustomNamePrefix(t, definition, "Creating runner entrypoint script")
+			modelsDirectory := findInferenceOpByCustomNamePrefix(t, definition, "Creating /models directory with correct ownership")
+
+			assertInferenceOpInput(t, entrypoint, dependencies.digest)
+			assertInferenceOpInput(t, modelsDirectory, entrypoint.digest)
 		})
+	}
+}
+
+func TestArbitraryBackendInstallsOnlyCatalogSystemPackages(t *testing.T) {
+	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	backend := testArbitraryBackendPlan(*platform)
+	cfg := &config.InferenceConfig{
+		Backends: []string{backend.Family},
+		Models:   []config.Model{{Name: testInferenceModelName, Source: testInferenceModelSource}},
+	}
+	definition := marshalInferenceConfigWithBackend(t, cfg, backend, platform)
+
+	packageLayers := 0
+	for _, graphOp := range decodeInferenceDefinition(t, definition) {
+		exec := graphOp.op.GetExec()
+		if exec == nil {
+			continue
+		}
+		command := strings.Join(exec.Meta.Args, "\x00")
+		if strings.Contains(command, "apt-get install") {
+			packageLayers++
+			if !strings.Contains(command, "apt-get install --no-install-recommends -y gcc libc6-dev") {
+				t.Fatalf("system package command = %q, want only catalog packages", command)
+			}
+		}
+	}
+	if packageLayers != 1 {
+		t.Fatalf("system package layer count = %d, want 1", packageLayers)
 	}
 }
 
@@ -335,6 +339,187 @@ func TestLocalModelFollowPaths(t *testing.T) {
 				t.Fatalf("local model follow paths = %#v, want nil for unrestricted source %q", got, source)
 			}
 		})
+	}
+}
+
+func TestLocalAIModelPaths(t *testing.T) {
+	tests := []struct {
+		name      string
+		rawConfig string
+		want      []string
+	}{
+		{
+			name:      "faster whisper repository",
+			rawConfig: "- name: faster-whisper-tiny-en\n  backend: faster-whisper\n  parameters:\n    model: " + testFasterWhisperModelPath + "\n",
+			want:      []string{testFasterWhisperModelPath},
+		},
+		{
+			name:      "reranker directory",
+			rawConfig: "- name: mini-reranker\n  backend: rerankers\n  parameters:\n    model: " + testRerankerModelPath + "\n",
+			want:      []string{testRerankerModelPath},
+		},
+		{
+			name:      "legacy llama file",
+			rawConfig: "- parameters:\n    model: Llama-3.2-1B-Instruct.Q4_K_M.gguf\n",
+			want:      []string{"Llama-3.2-1B-Instruct.Q4_K_M.gguf"},
+		},
+		{
+			name:      "vLLM repository",
+			rawConfig: "- parameters:\n    model: Qwen/Qwen2.5-0.5B-Instruct\n",
+			want:      []string{"Qwen/Qwen2.5-0.5B-Instruct"},
+		},
+		{
+			name:      "Diffusers nested file",
+			rawConfig: "- parameters:\n    model: dreamshaper_assets/DreamShaper_8_pruned.safetensors\n",
+			want:      []string{"dreamshaper_assets/DreamShaper_8_pruned.safetensors"},
+		},
+		{
+			name:      "single mapping",
+			rawConfig: "name: single\nparameters:\n  model: model.gguf\n",
+			want:      []string{"model.gguf"},
+		},
+		{
+			name: "sorted and deduplicated",
+			rawConfig: "- parameters:\n    model: z/model.bin\n" +
+				"- parameters:\n    model: a/model.bin\n" +
+				"- parameters:\n    model: a/model.bin\n",
+			want: []string{"a/model.bin", "z/model.bin"},
+		},
+		{
+			name: "ancestor alias covers descendants",
+			rawConfig: "- parameters:\n    model: repository\n" +
+				"- parameters:\n    model: repository/model.bin\n",
+			want: []string{"repository"},
+		},
+		{
+			name:      "normalizes relative path",
+			rawConfig: "- parameters:\n    model: org//repo/./model\n",
+			want:      []string{"org/repo/model"},
+		},
+		{
+			name: "unsafe and remote references are ignored",
+			rawConfig: "- parameters:\n    model: ../outside/model\n" +
+				"- parameters:\n    model: /models/absolute\n" +
+				"- parameters:\n    model: https://example.com/model\n" +
+				"- parameters:\n    model: models\\windows\n" +
+				"- parameters:\n    model: ''\n",
+			want: nil,
+		},
+		{
+			name:      "invalid YAML",
+			rawConfig: "- parameters: [",
+			want:      nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := localAIModelPaths(tt.rawConfig); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("LocalAI model paths = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLocalAIModelDirectoriesRequireMaterializedDirectories(t *testing.T) {
+	tests := []struct {
+		name      string
+		rawConfig string
+		models    []config.Model
+		want      []string
+	}{
+		{
+			name:      "full Hugging Face repository",
+			rawConfig: "- parameters:\n    model: " + testFasterWhisperModelPath + "\n",
+			models: []config.Model{{
+				Name:   testFasterWhisperModelPath,
+				Source: "huggingface://Systran/faster-whisper-tiny.en@0d3d19a32d3338f10357c0889762bd8d64bbdeba",
+			}},
+			want: []string{testFasterWhisperModelPath},
+		},
+		{
+			name:      "HTTP files sharing a directory",
+			rawConfig: "- parameters:\n    model: " + testRerankerModelPath + "\n",
+			models: []config.Model{
+				{Name: testRerankerModelPath + "/config.json", Source: testConfigURL},
+				{Name: testRerankerModelPath + "/model.safetensors", Source: testSafetensorsURL},
+			},
+			want: []string{testRerankerModelPath},
+		},
+		{
+			name:      "logical file does not become a dangling alias",
+			rawConfig: "- parameters:\n    model: repo/model.bin\n",
+			models: []config.Model{{
+				Name:   "repo/model.bin",
+				Source: "https://example.com/weights.bin",
+			}},
+			want: nil,
+		},
+		{
+			name:      "legacy file model is unchanged",
+			rawConfig: "- parameters:\n    model: model.gguf\n",
+			models: []config.Model{{
+				Name:   "model.gguf",
+				Source: "https://example.com/model.gguf",
+			}},
+			want: nil,
+		},
+		{
+			name: "materialized ancestor covers nested directory",
+			rawConfig: "- parameters:\n    model: unmaterialized\n" +
+				"- parameters:\n    model: unmaterialized/materialized\n",
+			models: []config.Model{{
+				Name:   "unmaterialized/materialized/config.json",
+				Source: testConfigURL,
+			}},
+			want: []string{"unmaterialized"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := localAIModelDirectories(tt.rawConfig, tt.models); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("LocalAI model directories = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBakedModelAliasesPreserveLocalAIConfig(t *testing.T) {
+	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	backend := testArbitraryBackendPlan(*platform)
+	backend.Fallbacks = nil
+	backend.SystemPackages = nil
+	configBody := "- name: mini-reranker\n  backend: rerankers\n  parameters:\n    model: " + testRerankerModelPath + "\n"
+	cfg := &config.InferenceConfig{
+		Backends: []string{backend.Family},
+		Models: []config.Model{
+			{Name: testRerankerModelPath + "/config.json", Source: testConfigURL},
+			{Name: testRerankerModelPath + "/model.safetensors", Source: testSafetensorsURL},
+		},
+		Config: configBody,
+	}
+
+	definition := marshalInferenceConfigWithBackend(t, cfg, backend, platform)
+	configFile := findInferenceMkfile(t, definition, "/config.yaml")
+	if got := string(configFile.Data); got != configBody {
+		t.Fatalf("LocalAI config = %q, want unchanged %q", got, configBody)
+	}
+
+	aliases := findInferenceOpByCustomNamePrefix(t, definition, "Linking baked model directories into backend working directories")
+	exec := aliases.op.GetExec()
+	if exec == nil {
+		t.Fatal("backend model alias operation is not an exec operation")
+	}
+	command := strings.Join(exec.Meta.Args, "\x00")
+	for _, expected := range []string{
+		"/aikit-root/backends/" + backend.Backend.InstallName + "/" + testRerankerModelPath,
+		"/aikit-root/models/" + testRerankerModelPath,
+		"/models/" + testRerankerModelPath,
+	} {
+		if !strings.Contains(command, expected) {
+			t.Errorf("backend model alias command does not contain %q", expected)
+		}
 	}
 }
 
@@ -527,6 +712,20 @@ func marshalInferenceConfig(t *testing.T, cfg *config.InferenceConfig, platform 
 	return definition
 }
 
+func marshalInferenceConfigWithBackend(t *testing.T, cfg *config.InferenceConfig, backend backendcatalog.Resolution, platform *specs.Platform) *llb.Definition {
+	t.Helper()
+
+	state, _, err := aikit2LLBWithResolvedBackend(cfg, platform, platform, backend)
+	if err != nil {
+		t.Fatalf("convert inference config with backend: %v", err)
+	}
+	definition, err := state.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal inference definition: %v", err)
+	}
+	return definition
+}
+
 func marshalCopiedModels(t *testing.T, cfg *config.InferenceConfig, platform specs.Platform) *llb.Definition {
 	t.Helper()
 
@@ -582,23 +781,6 @@ func findInferenceLocalContextOps(t *testing.T, definition *llb.Definition) []in
 		}
 	}
 	return matches
-}
-
-func assertInferenceExecCommandsExclude(t *testing.T, definition *llb.Definition, fragments ...string) {
-	t.Helper()
-
-	for _, graphOp := range decodeInferenceDefinition(t, definition) {
-		exec := graphOp.op.GetExec()
-		if exec == nil {
-			continue
-		}
-		command := strings.Join(exec.Meta.Args, "\x00")
-		for _, fragment := range fragments {
-			if strings.Contains(command, fragment) {
-				t.Fatalf("exec command %q unexpectedly contains %q", command, fragment)
-			}
-		}
-	}
 }
 
 func assertInferenceOpInput(t *testing.T, graphOp inferenceDefinitionOp, want digest.Digest) {

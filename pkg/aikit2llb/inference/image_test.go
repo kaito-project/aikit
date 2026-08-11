@@ -1,11 +1,13 @@
 package inference
 
 import (
+	stderrors "errors"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/util/system"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
@@ -38,16 +40,6 @@ func TestNewImageConfigEntrypoint(t *testing.T) {
 			wantEntrypoint: []string{localAIEntrypointCommand},
 		},
 		{
-			name: "cuda arm64 standard mode uses local-ai directly",
-			config: &config.InferenceConfig{
-				Runtime: utils.RuntimeNVIDIA,
-				Config:  imageTestInferenceModel,
-				Models:  []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
-			},
-			platform:       &specs.Platform{Architecture: utils.PlatformARM64, OS: utils.PlatformLinux},
-			wantEntrypoint: []string{localAIEntrypointCommand},
-		},
-		{
 			name: "cpu standard mode uses local-ai directly",
 			config: &config.InferenceConfig{
 				Config: imageTestInferenceModel,
@@ -65,20 +57,14 @@ func TestNewImageConfigEntrypoint(t *testing.T) {
 			platform:       &specs.Platform{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux},
 			wantEntrypoint: []string{runnerEntrypointPath},
 		},
-		{
-			name: "cuda arm64 runner mode uses aikit-runner directly",
-			config: &config.InferenceConfig{
-				Runtime:  utils.RuntimeNVIDIA,
-				Backends: []string{utils.BackendLlamaCpp},
-			},
-			platform:       &specs.Platform{Architecture: utils.PlatformARM64, OS: utils.PlatformLinux},
-			wantEntrypoint: []string{runnerEntrypointPath},
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			img := NewImageConfig(tt.config, tt.platform)
+			img, err := NewImageConfig(tt.config, tt.platform)
+			if err != nil {
+				t.Fatalf("NewImageConfig() error = %v", err)
+			}
 
 			if !reflect.DeepEqual(img.Config.Entrypoint, tt.wantEntrypoint) {
 				t.Errorf("entrypoint = %v, want %v", img.Config.Entrypoint, tt.wantEntrypoint)
@@ -93,98 +79,122 @@ func TestNewImageConfigEntrypoint(t *testing.T) {
 	}
 }
 
-func TestNewImageConfigEnvironment(t *testing.T) {
+func TestNewImageConfigEnvironmentUsesCatalogPlan(t *testing.T) {
 	platform := &specs.Platform{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux}
 	defaultEnv := []string{
 		"PATH=" + system.DefaultPathEnv(utils.PlatformLinux),
 		"CONFIG_FILE=/config.yaml",
 	}
-	nvidiaEnv := []string{
-		"NVIDIA_REQUIRE_CUDA=cuda>=12.0",
-		"NVIDIA_DRIVER_CAPABILITIES=compute,utility",
-		"NVIDIA_VISIBLE_DEVICES=all",
-		"BUILD_TYPE=cublas",
+	standardOfflineEnv := []string{
+		localAIModelGalleriesEnv,
+		localAIBackendGalleriesEnv,
+		localAIDisableModelGalleryAutoloadEnv,
+		localAIDisableBackendGalleryAutoloadEnv,
+		localAIDisableGalleryWarmupEnv,
 	}
-	vllmCppNVIDIAEnv := []string{
-		"NVIDIA_REQUIRE_CUDA=cuda>=13.0",
-		"NVIDIA_DRIVER_CAPABILITIES=compute,utility",
-		"NVIDIA_VISIBLE_DEVICES=all",
-		"BUILD_TYPE=cublas",
-	}
+	catalogEnv := []string{"ARBITRARY_ACCELERATOR=enabled", "ARBITRARY_CACHE=/var/cache/arbitrary"}
 
 	tests := []struct {
-		name    string
-		config  *config.InferenceConfig
-		wantEnv []string
+		name        string
+		config      *config.InferenceConfig
+		environment []string
+		wantEnv     []string
 	}{
 		{
-			name: "standard NVIDIA image uses only runtime interface variables",
-			config: &config.InferenceConfig{
-				Runtime: utils.RuntimeNVIDIA,
-				Models:  []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
-			},
-			wantEnv: append(append([]string{}, defaultEnv...), nvidiaEnv...),
-		},
-		{
-			name: "runner adds Hugging Face cache on models volume",
-			config: &config.InferenceConfig{
-				Runtime:  utils.RuntimeNVIDIA,
-				Backends: []string{utils.BackendVLLM},
-			},
-			wantEnv: append(append(append([]string{}, defaultEnv...), nvidiaEnv...), runnerHFHomeEnv),
-		},
-		{
-			name: "vllm-cpp NVIDIA image requires CUDA 13",
-			config: &config.InferenceConfig{
-				Runtime:  utils.RuntimeNVIDIA,
-				Backends: []string{utils.BackendVLLMCpp},
-				Models:   []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
-			},
-			wantEnv: append(append([]string{}, defaultEnv...), vllmCppNVIDIAEnv...),
-		},
-		{
-			name: "standard CPU image does not add runner cache",
+			name: "standard image uses catalog environment",
 			config: &config.InferenceConfig{
 				Models: []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
 			},
-			wantEnv: append([]string{}, defaultEnv...),
+			environment: catalogEnv,
+			wantEnv: append(
+				append(append([]string{}, defaultEnv...), catalogEnv...),
+				standardOfflineEnv...,
+			),
 		},
 		{
-			name: "standard image loads configured models at startup",
+			name: "runner appends Hugging Face cache after catalog environment",
+			config: &config.InferenceConfig{
+				Backends: []string{testArbitraryFamily},
+			},
+			environment: catalogEnv,
+			wantEnv:     append(append(append([]string{}, defaultEnv...), catalogEnv...), runnerHFHomeEnv),
+		},
+		{
+			name: "standard image with empty plan environment",
+			config: &config.InferenceConfig{
+				Models: []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
+			},
+			wantEnv: append(append([]string{}, defaultEnv...), standardOfflineEnv...),
+		},
+		{
+			name: "load-to-memory precedes catalog environment",
 			config: &config.InferenceConfig{
 				Models:       []config.Model{{Name: imageTestInferenceModel, Source: imageTestInferenceSource}},
 				LoadToMemory: []string{"chat", "embeddings"},
 			},
-			wantEnv: append(append([]string{}, defaultEnv...), localAILoadToMemoryEnv+"chat,embeddings"),
+			environment: catalogEnv,
+			wantEnv: append(
+				append(
+					append(append([]string{}, defaultEnv...), localAILoadToMemoryEnv+"chat,embeddings"),
+					catalogEnv...,
+				),
+				standardOfflineEnv...,
+			),
 		},
 		{
-			name: "CPU runner adds Hugging Face cache on models volume",
+			name: "runner retains load-to-memory and catalog environment",
 			config: &config.InferenceConfig{
-				Backends: []string{utils.BackendLlamaCpp},
-			},
-			wantEnv: append(append([]string{}, defaultEnv...), runnerHFHomeEnv),
-		},
-		{
-			name: "runner loads configured model at startup",
-			config: &config.InferenceConfig{
-				Backends:     []string{utils.BackendLlamaCpp},
+				Backends:     []string{testArbitraryFamily},
 				LoadToMemory: []string{imageTestLoadToMemoryModel},
 			},
-			wantEnv: append(append(append([]string{}, defaultEnv...), localAILoadToMemoryEnv+imageTestLoadToMemoryModel), runnerHFHomeEnv),
+			environment: catalogEnv,
+			wantEnv: append(
+				append(
+					append(append([]string{}, defaultEnv...), localAILoadToMemoryEnv+imageTestLoadToMemoryModel),
+					catalogEnv...,
+				),
+				runnerHFHomeEnv,
+			),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			img := NewImageConfig(tt.config, platform)
+			backend := testArbitraryBackendPlan(*platform)
+			backend.Environment = tt.environment
+			img := NewImageConfigWithBackend(tt.config, backend, platform)
 			if !reflect.DeepEqual(img.Config.Env, tt.wantEnv) {
 				t.Errorf("environment = %v, want %v", img.Config.Env, tt.wantEnv)
 			}
+		})
+	}
+}
 
-			for _, env := range img.Config.Env {
-				if strings.Contains(env, "/usr/local/cuda") || strings.HasPrefix(env, "CUDA_HOME=") {
-					t.Errorf("environment should not assume a system CUDA installation: %q", env)
-				}
+func TestNewImageConfigUsesOnlyPublicRuntimeLabel(t *testing.T) {
+	platform := &specs.Platform{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux}
+	backend := testArbitraryBackendPlan(*platform)
+	tests := []struct {
+		name        string
+		configValue string
+		wantRuntime backendcatalog.Runtime
+	}{
+		{name: "omitted runtime is CPU", wantRuntime: backendcatalog.RuntimeCPU},
+		{name: "explicit CPU", configValue: string(backendcatalog.RuntimeCPU), wantRuntime: backendcatalog.RuntimeCPU},
+		{name: "CUDA alias remains CUDA", configValue: string(backendcatalog.RuntimeCUDA), wantRuntime: backendcatalog.RuntimeCUDA},
+		{name: "exact CUDA 12", configValue: string(backendcatalog.RuntimeCUDA12), wantRuntime: backendcatalog.RuntimeCUDA12},
+		{name: "exact CUDA 13", configValue: string(backendcatalog.RuntimeCUDA13), wantRuntime: backendcatalog.RuntimeCUDA13},
+		{name: "ROCm", configValue: string(backendcatalog.RuntimeROCm), wantRuntime: backendcatalog.RuntimeROCm},
+		{name: "Apple Silicon", configValue: string(backendcatalog.RuntimeAppleSilicon), wantRuntime: backendcatalog.RuntimeAppleSilicon},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			img := NewImageConfigWithBackend(&config.InferenceConfig{Runtime: test.configValue}, backend, platform)
+			if got := img.Config.Labels["ai.kaito.aikit.runtime"]; got != string(test.wantRuntime) {
+				t.Errorf("runtime label = %q, want %q", got, test.wantRuntime)
+			}
+			if _, ok := img.Config.Labels["ai.kaito.aikit.backend.selector"]; ok {
+				t.Error("image labels unexpectedly expose the internal catalog selector")
 			}
 		})
 	}
@@ -220,10 +230,46 @@ func TestNewImageConfigCommandWithLoadToMemory(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			img := NewImageConfig(tt.config, platform)
+			img, err := NewImageConfig(tt.config, platform)
+			if err != nil {
+				t.Fatalf("NewImageConfig() error = %v", err)
+			}
 			if !reflect.DeepEqual(img.Config.Cmd, tt.wantCmd) {
 				t.Errorf("command = %v, want %v", img.Config.Cmd, tt.wantCmd)
 			}
 		})
+	}
+}
+
+func TestNewImageConfigReturnsResolutionError(t *testing.T) {
+	platform := &specs.Platform{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux}
+	image, err := NewImageConfig(&config.InferenceConfig{
+		Runtime:  utils.RuntimeCUDA12,
+		Backends: []string{utils.BackendVLLMCpp},
+	}, platform)
+	if err == nil {
+		t.Fatal("NewImageConfig() succeeded, want error")
+	}
+	if image != nil {
+		t.Fatalf("NewImageConfig() image = %#v, want nil", image)
+	}
+	if !stderrors.Is(err, backendcatalog.ErrNotFound) {
+		t.Fatalf("NewImageConfig() error = %v, want exact resolution failure", err)
+	}
+	if !strings.Contains(err.Error(), "resolving backend for image config") {
+		t.Fatalf("NewImageConfig() error = %q, want image config context", err)
+	}
+}
+
+func TestNewImageConfigRequiresPlatform(t *testing.T) {
+	image, err := NewImageConfig(&config.InferenceConfig{}, nil)
+	if err == nil {
+		t.Fatal("NewImageConfig() succeeded, want error")
+	}
+	if image != nil {
+		t.Fatalf("NewImageConfig() image = %#v, want nil", image)
+	}
+	if err.Error() != "platform is required" {
+		t.Fatalf("NewImageConfig() error = %q, want platform requirement", err)
 	}
 }

@@ -2,10 +2,10 @@ package inference
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
@@ -21,13 +21,16 @@ const (
 	runnerLlamaCppModelMarker   = "/models/.aikit-llama-cpp-model-ref"
 	runnerVLLMCppModelDir       = "/models/vllm-cpp-model"
 	runnerVLLMCppModelMarker    = "/models/.aikit-vllm-cpp-model-ref"
-	runnerDependenciesCommand   = "sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g; " +
-		"s|http://security.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list && " +
-		"apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update && " +
-		"apt-get install --no-install-recommends -y curl ca-certificates python3 python3-pip && " +
-		"(pip install --no-cache-dir --no-compile --break-system-packages huggingface-hub==" + runnerHuggingFaceHubVersion + " 2>/dev/null || " +
-		"pip install --no-cache-dir --no-compile huggingface-hub==" + runnerHuggingFaceHubVersion + ") && " +
-		"apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /root/.cache/pip"
+	runnerAPTSetupCommand       = "if [ -f /etc/apt/sources.list ]; then sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g; " +
+		"s|http://security.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list; fi && " +
+		"if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g; " +
+		"s|http://security.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources; fi && " +
+		"apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update && "
+	runnerDependenciesCleanup = "apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /root/.cache/pip"
+	runnerDownloaderPackages  = "curl ca-certificates python3 python3-pip"
+	runnerTrustStorePackage   = "ca-certificates"
+	runnerHFCLIInstallCommand = "(pip install --no-cache-dir --no-compile --break-system-packages huggingface-hub==" + runnerHuggingFaceHubVersion + " 2>/dev/null || " +
+		"pip install --no-cache-dir --no-compile huggingface-hub==" + runnerHuggingFaceHubVersion + ")"
 )
 
 // isRunnerMode returns true when the config defines backends but no models,
@@ -36,18 +39,18 @@ func isRunnerMode(c *config.InferenceConfig) bool {
 	return len(c.Backends) > 0 && len(c.Models) == 0
 }
 
-// installRunnerDependencies installs packages needed for runtime model downloading.
-func installRunnerDependencies(c *config.InferenceConfig, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State) {
-	if !slices.Contains([]string{utils.BackendLlamaCpp, utils.BackendVLLMCpp}, runnerBackend(c)) {
+func installRunnerDependenciesWithBackend(backend backendcatalog.Resolution, s llb.State, merge llb.State, platform specs.Platform) (llb.State, llb.State) {
+	command := runnerDependenciesCommand(backend.RunnerProfile)
+	if command == "" {
 		return s, merge
 	}
 
 	savedState := s
 
-	// Install curl for HTTP/HTTPS downloads and the hf CLI for repository downloads.
+	// Install a trust store for every runtime downloader and add the hf CLI only for native model payloads.
 	// Note: Runner mode is not supported for Apple Silicon (validated in build).
 	s = s.Run(
-		utils.Sh(runnerDependenciesCommand),
+		utils.Sh(command),
 		llb.WithCustomNamef("Installing runner dependencies for platform %s/%s", platform.OS, platform.Architecture),
 		llb.IgnoreCache,
 	).Root()
@@ -56,19 +59,33 @@ func installRunnerDependencies(c *config.InferenceConfig, s llb.State, merge llb
 	return s, llb.Merge([]llb.State{merge, diff})
 }
 
-func runnerBackend(c *config.InferenceConfig) string {
-	if len(c.Backends) > 0 {
-		return c.Backends[0]
+func runnerDependenciesCommand(profile backendcatalog.RunnerProfile) string {
+	packages := runnerTrustStorePackage
+	installHFCLI := false
+
+	switch profile {
+	case backendcatalog.RunnerProfileHFConfig:
+	case backendcatalog.RunnerProfileLlamaCpp, backendcatalog.RunnerProfileVLLMCpp:
+		packages = runnerDownloaderPackages
+		installHFCLI = true
+	default:
+		return ""
 	}
-	return utils.BackendLlamaCpp
+
+	command := runnerAPTSetupCommand + "apt-get install --no-install-recommends -y " + packages + " && "
+	if installHFCLI {
+		command += runnerHFCLIInstallCommand + " && "
+	}
+
+	return command + runnerDependenciesCleanup
 }
 
 // installRunnerEntrypoint writes the entrypoint script and creates the /models/
 // directory with correct ownership for non-root compatibility.
-func installRunnerEntrypoint(c *config.InferenceConfig, s llb.State, merge llb.State) (llb.State, llb.State) {
+func installRunnerEntrypoint(c *config.InferenceConfig, backend backendcatalog.Resolution, s llb.State, merge llb.State) (llb.State, llb.State) {
 	savedState := s
 
-	script := generateRunnerScript(c)
+	script := generateRunnerScriptWithBackend(c, backend)
 
 	// Write the entrypoint script
 	s = s.File(
@@ -89,13 +106,34 @@ func installRunnerEntrypoint(c *config.InferenceConfig, s llb.State, merge llb.S
 // generateRunnerScript produces the bash entrypoint script that downloads a model
 // at container startup and then exec's into local-ai.
 func generateRunnerScript(c *config.InferenceConfig) string {
-	backend := runnerBackend(c)
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	if c.Runtime == utils.RuntimeAppleSilicon {
+		platform.Architecture = utils.PlatformARM64
+	}
+	backend, err := ResolveBackend(c, platform)
+	if err != nil {
+		panic("resolving backend for runner script: " + err.Error())
+	}
+
+	return generateRunnerScriptWithBackend(c, backend)
+}
+
+func generateRunnerScriptWithBackend(c *config.InferenceConfig, backend backendcatalog.Resolution) string {
+	backendName := backend.Family
+	configDirectory := runnerConfigDir
+	switch backend.RunnerProfile {
+	case backendcatalog.RunnerProfileLlamaCpp:
+		configDirectory = runnerLlamaCppModelDir
+	case backendcatalog.RunnerProfileVLLMCpp:
+		configDirectory = runnerVLLMCppModelDir
+	}
 
 	var sb strings.Builder
 	sb.WriteString(`#!/bin/bash
 set -euo pipefail
 
-BACKEND="` + backend + `"
+BACKEND="` + backendName + `"
+RUNNER_PROFILE="` + string(backend.RunnerProfile) + `"
 
 # Parse arguments: accept model as positional arg or --model flag
 MODEL=""
@@ -139,7 +177,7 @@ if [[ -z "$MODEL" ]]; then
   echo "Usage: docker run <image> <model-ref>"
   echo ""
   echo "Examples:"
-  if [[ "$BACKEND" == "vllm-cpp" ]]; then
+  if [[ "$RUNNER_PROFILE" == "vllm-cpp" ]]; then
     echo "  docker run -p 8080:8080 <image> org/safetensors-model@0123456789abcdef0123456789abcdef01234567"
     echo "  docker run -p 8080:8080 <image> https://example.com/model.gguf"
     echo "  docker run -p 8080:8080 <image> --model org/safetensors-model"
@@ -157,15 +195,7 @@ fi
 # Keep generated configs and payloads inside backend-owned directories. Native
 # backends scan their cache directory because LocalAI requires model paths to be
 # relative to --models-path; other backends use the config-only directory.
-RUNNER_CONFIG_DIR="` + runnerConfigDir + `"
-case "$BACKEND" in
-  llama-cpp)
-    RUNNER_CONFIG_DIR="` + runnerLlamaCppModelDir + `"
-    ;;
-  vllm-cpp)
-    RUNNER_CONFIG_DIR="` + runnerVLLMCppModelDir + `"
-    ;;
-esac
+RUNNER_CONFIG_DIR="` + configDirectory + `"
 RUNNER_CONFIG="$RUNNER_CONFIG_DIR/` + runnerConfigFilename + `"
 
 # Strip URI scheme prefixes (e.g. huggingface://org/repo -> org/repo)
@@ -197,13 +227,15 @@ echo "AIKit Runner: backend=$BACKEND model=$MODEL_LOG_REF"
 `)
 
 	// Backend-specific download logic
-	switch backend {
-	case utils.BackendLlamaCpp:
+	switch backend.RunnerProfile {
+	case backendcatalog.RunnerProfileLlamaCpp:
 		sb.WriteString(generateLlamaCppDownload())
-	case utils.BackendVLLMCpp:
+	case backendcatalog.RunnerProfileVLLMCpp:
 		sb.WriteString(generateVLLMCppDownload())
-	case utils.BackendDiffusers, utils.BackendVLLM:
-		sb.WriteString(generateHFModelConfig(backend))
+	case backendcatalog.RunnerProfileHFConfig:
+		sb.WriteString(generateHFModelConfig(backendName))
+	default:
+		panic(fmt.Sprintf("unsupported validated runner profile %q", backend.RunnerProfile))
 	}
 
 	// Start LocalAI

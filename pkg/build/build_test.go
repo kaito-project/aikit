@@ -1,12 +1,14 @@
 package build
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -66,7 +68,7 @@ func Test_validateConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "invalid backend",
+			name: "catalog backend is deferred to platform resolution",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Backends:   []string{"foo"},
@@ -77,10 +79,10 @@ func Test_validateConfig(t *testing.T) {
 					},
 				},
 			}},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
-			name: "diffusers backend requires cuda runtime",
+			name: "backend runtime compatibility is deferred to catalog resolution",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Backends:   []string{"diffusers"},
@@ -91,7 +93,7 @@ func Test_validateConfig(t *testing.T) {
 					},
 				},
 			}},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "valid vllm backend with cuda runtime",
@@ -109,7 +111,7 @@ func Test_validateConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "vllm backend requires cuda runtime",
+			name: "vllm runtime compatibility is deferred to catalog resolution",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Backends:   []string{"vllm"},
@@ -120,7 +122,7 @@ func Test_validateConfig(t *testing.T) {
 					},
 				},
 			}},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "valid vllm-cpp backend with CPU runtime",
@@ -152,25 +154,25 @@ func Test_validateConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "vllm-cpp backend rejects rocm runtime",
+			name: "vllm-cpp rocm compatibility is deferred to catalog resolution",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Runtime:    utils.RuntimeROCm,
 				Backends:   []string{utils.BackendVLLMCpp},
 			}},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
-			name: "vllm-cpp backend rejects apple silicon runtime",
+			name: "vllm-cpp apple compatibility is deferred to catalog resolution",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Runtime:    utils.RuntimeAppleSilicon,
 				Backends:   []string{utils.BackendVLLMCpp},
 			}},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
-			name: "invalid backend name",
+			name: "multiple backends",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Runtime:    "cuda",
@@ -181,6 +183,46 @@ func Test_validateConfig(t *testing.T) {
 						Source: "foo",
 					},
 				},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "empty backend name",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{""},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "whitespace backend name",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{" \t"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "unsafe backend name",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{"../llama-cpp"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "noncanonical backend name",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{"Llama-Cpp"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "overlong backend name",
+			args: args{c: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{strings.Repeat("a", 129)},
 			}},
 			wantErr: true,
 		},
@@ -221,13 +263,13 @@ func Test_validateConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "runner mode not supported on apple silicon",
+			name: "runner profile compatibility is deferred to catalog resolution",
 			args: args{c: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Runtime:    "applesilicon",
 				Backends:   []string{"llama-cpp"},
 			}},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "loadToMemory rejects an empty model name",
@@ -287,7 +329,69 @@ func Test_validateConfig(t *testing.T) {
 	}
 }
 
-func Test_validateBackendPlatformCompatibility(t *testing.T) {
+func TestValidateInferenceConfigRuntime(t *testing.T) {
+	tests := []struct {
+		name    string
+		runtime string
+		wantErr bool
+	}{
+		{name: "runtime omitted"},
+		{name: "CPU runtime", runtime: string(backendcatalog.RuntimeCPU)},
+		{name: "CUDA alias", runtime: string(backendcatalog.RuntimeCUDA)},
+		{name: "CUDA 12 runtime", runtime: string(backendcatalog.RuntimeCUDA12)},
+		{name: "CUDA 13 runtime", runtime: string(backendcatalog.RuntimeCUDA13)},
+		{name: "ROCm runtime", runtime: string(backendcatalog.RuntimeROCm)},
+		{name: "Apple Silicon runtime", runtime: string(backendcatalog.RuntimeAppleSilicon)},
+		{
+			name:    "Vulkan runtime is not public",
+			runtime: "vulkan",
+			wantErr: true,
+		},
+		{
+			name:    "Intel runtime is not public",
+			runtime: "intel",
+			wantErr: true,
+		},
+		{
+			name:    "catalog selector is not a runtime",
+			runtime: "nvidia-cuda-12",
+			wantErr: true,
+		},
+		{
+			name:    "unknown runtime",
+			runtime: "foo",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inferenceConfig := &config.InferenceConfig{
+				APIVersion: utils.APIv1alpha1,
+				Runtime:    tt.runtime,
+			}
+			err := validateInferenceConfig(inferenceConfig)
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("validateInferenceConfig() error = %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("validateInferenceConfig() error = nil, want an unsupported runtime error")
+			}
+			wantErr := fmt.Sprintf(
+				`runtime %q is not supported; supported runtimes are "cpu", "cuda", "cuda-12", "cuda-13", "rocm", and "applesilicon"`,
+				tt.runtime,
+			)
+			if err.Error() != wantErr {
+				t.Errorf("validateInferenceConfig() error = %q, want %q", err, wantErr)
+			}
+		})
+	}
+}
+
+func TestResolveBackendPlans(t *testing.T) {
 	tests := []struct {
 		name            string
 		config          *config.InferenceConfig
@@ -306,7 +410,7 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "diffusers backend with arm64 platform - should fail",
+			name: "diffusers backend without its required CUDA selector fails",
 			config: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Backends:   []string{"diffusers"},
@@ -340,7 +444,7 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "vllm backend with arm64 platform - should fail",
+			name: "vllm backend without a CPU catalog tuple fails",
 			config: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Backends:   []string{"vllm"},
@@ -362,6 +466,17 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "llama-cpp CPU backend with amd64 v3 platform - should pass",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Backends:   []string{utils.BackendLlamaCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux, Variant: "v3"},
+			},
+			wantErr: false,
+		},
+		{
 			name: "vllm-cpp CPU backend with arm64 platform - should pass",
 			config: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
@@ -373,10 +488,21 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "vllm-cpp CUDA backend with amd64 platform - should pass",
+			name: "llama-cpp CPU backend with arm64 v8 platform - should pass",
 			config: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
-				Runtime:    utils.RuntimeNVIDIA,
+				Backends:   []string{utils.BackendLlamaCpp},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformARM64, OS: utils.PlatformLinux, Variant: "v8"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "vllm-cpp CUDA 13 backend with amd64 platform - should pass",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    string(backendcatalog.RuntimeCUDA13),
 				Backends:   []string{utils.BackendVLLMCpp},
 			},
 			targetPlatforms: []*specs.Platform{
@@ -431,7 +557,23 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "rocm runtime with amd64 platform - should pass",
+			name: "llama-cpp ROCm standard model tuple preserves compatibility",
+			config: &config.InferenceConfig{
+				APIVersion: "v1alpha1",
+				Runtime:    utils.RuntimeROCm,
+				Backends:   []string{utils.BackendLlamaCpp},
+				Models: []config.Model{{
+					Name:   "test",
+					Source: "model.gguf",
+				}},
+			},
+			targetPlatforms: []*specs.Platform{
+				{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux},
+			},
+			wantErr: false,
+		},
+		{
+			name: "llama-cpp ROCm runner tuple preserves compatibility",
 			config: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
 				Runtime:    "rocm",
@@ -470,8 +612,12 @@ func Test_validateBackendPlatformCompatibility(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := validateBackendPlatformCompatibility(tt.config, tt.targetPlatforms); (err != nil) != tt.wantErr {
-				t.Errorf("validateBackendPlatformCompatibility() error = %v, wantErr %v", err, tt.wantErr)
+			plans, err := resolveBackendPlans(tt.config, tt.targetPlatforms)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("resolveBackendPlans() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err == nil && len(plans) != len(tt.targetPlatforms) {
+				t.Errorf("resolveBackendPlans() plans = %d, want %d", len(plans), len(tt.targetPlatforms))
 			}
 		})
 	}

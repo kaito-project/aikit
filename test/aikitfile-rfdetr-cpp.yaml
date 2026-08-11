@@ -1,0 +1,16 @@
+#syntax=aikit:test
+apiVersion: v1alpha1
+debug: true
+backends:
+  - rfdetr-cpp
+models:
+  - name: rfdetr-nano-q4_K.gguf
+    source: https://huggingface.co/mudler/rfdetr-cpp-nano/resolve/c3dc0c037df499f5503545247df6618415fca643/rfdetr-nano-q4_K.gguf
+    sha256: "f38deba60fd7ad4d765415684f248f5b1ade454454e4b5c94e4ee96e79cc54ae"
+config: |
+  - name: rfdetr-smoke
+    backend: rfdetr-cpp
+    known_usecases:
+      - detection
+    parameters:
+      model: rfdetr-nano-q4_K.gguf

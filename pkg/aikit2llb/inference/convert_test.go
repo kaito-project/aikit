@@ -7,64 +7,16 @@ import (
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-const testInferenceModelName = "test"
-
-func TestInstallRocmInstallsPciutilsForLlamaCpp(t *testing.T) {
-	tests := []struct {
-		name     string
-		backends []string
-	}{
-		{
-			name:     "implicit default llama-cpp backend",
-			backends: nil,
-		},
-		{
-			name:     "explicit llama-cpp backend",
-			backends: []string{utils.BackendLlamaCpp},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := &config.InferenceConfig{
-				Runtime:  utils.RuntimeROCm,
-				Backends: tt.backends,
-			}
-
-			base := llb.Image(utils.Ubuntu24Base)
-			_, merged := installRocm(cfg, base, base)
-
-			def, err := merged.Marshal(context.Background())
-			if err != nil {
-				t.Fatalf("marshal failed: %v", err)
-			}
-
-			combined := marshalDefinitionToString(def)
-			wantInstall := "apt-get install -y --no-install-recommends pciutils rocm && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*"
-			if !strings.Contains(combined, wantInstall) {
-				t.Fatalf("expected ROCm install to contain %q, got: %s", wantInstall, combined)
-			}
-		})
-	}
-}
-
-func marshalDefinitionToString(def *llb.Definition) string {
-	if def == nil {
-		return ""
-	}
-
-	var combined strings.Builder
-	for _, d := range def.ToPB().Def {
-		combined.Write(d)
-	}
-
-	return combined.String()
-}
+const (
+	testInferenceModelName   = "test"
+	testInferenceModelSource = "model.gguf"
+)
 
 func TestAikit2LLBWithPlatformsSeparatesHelperAndTargetPlatforms(t *testing.T) {
 	buildPlatform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformARM64}
@@ -91,8 +43,28 @@ func TestAikit2LLBWithPlatformsSeparatesHelperAndTargetPlatforms(t *testing.T) {
 		t.Fatalf("marshal inference definition: %v", err)
 	}
 
-	helperSource := findInferenceSourceOp(t, definition, orasImage)
-	assertInferenceOpPlatform(t, helperSource, *buildPlatform)
+	helperSources := findInferenceSourceOps(t, definition, orasImage)
+	if len(helperSources) != 2 {
+		t.Fatalf("ORAS helper sources = %d, want build- and target-platform sources", len(helperSources))
+	}
+	var buildHelperFound, targetTrustFound bool
+	for _, helperSource := range helperSources {
+		if !strings.Contains(helperSource.op.GetSource().Identifier, "@sha256:") {
+			t.Fatalf("ORAS helper source = %q, want digest-qualified image", helperSource.op.GetSource().Identifier)
+		}
+		platform := inferenceOpPlatform(t, helperSource)
+		switch {
+		case reflect.DeepEqual(platform, *buildPlatform):
+			buildHelperFound = true
+		case reflect.DeepEqual(platform, *targetPlatform):
+			targetTrustFound = true
+		default:
+			t.Fatalf("ORAS helper platform = %#v, want %#v or %#v", platform, *buildPlatform, *targetPlatform)
+		}
+	}
+	if !buildHelperFound || !targetTrustFound {
+		t.Fatalf("ORAS helper platforms: build = %t, target = %t", buildHelperFound, targetTrustFound)
+	}
 
 	modelPull := findInferenceExecOp(t, definition, "example.com/models/test:latest")
 	assertInferenceOpPlatform(t, modelPull, *buildPlatform)
@@ -113,16 +85,17 @@ func TestAikit2LLBWithPlatformsSeparatesHelperAndTargetPlatforms(t *testing.T) {
 		}
 	}
 
-	localAIPull := findInferenceExecOp(t, definition, localAIRepo)
+	backend, err := ResolveBackend(cfg, *targetPlatform)
+	if err != nil {
+		t.Fatalf("resolve backend: %v", err)
+	}
+	localAIPull := findInferenceExecOp(t, definition, backend.Core.Ref)
 	assertInferenceOpPlatform(t, localAIPull, *buildPlatform)
-	if command := strings.Join(localAIPull.op.GetExec().Meta.Args, "\x00"); !strings.Contains(command, "-amd64") {
-		t.Fatalf("LocalAI artifact command = %q, want amd64 artifact", command)
+	if command := strings.Join(localAIPull.op.GetExec().Meta.Args, "\x00"); !strings.Contains(command, "@sha256:") {
+		t.Fatalf("LocalAI artifact command = %q, want digest-qualified artifact", command)
 	}
 
-	buildBaseSource := findInferenceSourceOp(t, definition, "ubuntu:22.04")
-	assertInferenceOpPlatform(t, buildBaseSource, *targetPlatform)
-
-	runtimeBaseSource := findInferenceSourceOp(t, definition, distrolessBase)
+	runtimeBaseSource := findInferenceSourceOp(t, definition, backend.RuntimeBase.Ref)
 	assertInferenceOpPlatform(t, runtimeBaseSource, *targetPlatform)
 
 	backendSources := findInferenceSourceOps(t, definition, utils.BackendOCIRegistry)
@@ -132,93 +105,177 @@ func TestAikit2LLBWithPlatformsSeparatesHelperAndTargetPlatforms(t *testing.T) {
 	for _, backendSource := range backendSources {
 		assertInferenceOpPlatform(t, backendSource, *targetPlatform)
 	}
+}
 
-	for _, graphOp := range decodeInferenceDefinition(t, definition) {
-		exec := graphOp.op.GetExec()
-		if exec == nil {
-			continue
-		}
-		command := strings.Join(exec.Meta.Args, "\x00")
-		for _, duplicateRuntime := range []string{"cuda-keyring", "libcublas", "cuda-cudart", "pciutils"} {
-			if strings.Contains(command, duplicateRuntime) {
-				t.Fatalf("llama-cpp CUDA graph unexpectedly installs %q in command %q", duplicateRuntime, command)
+func TestAikit2LLBUsesCatalogRuntimeBaseForArbitraryFamily(t *testing.T) {
+	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	backend := testArbitraryBackendPlan(*platform)
+	backend.SystemPackages = nil
+	cfg := &config.InferenceConfig{
+		Backends: []string{backend.Family},
+		Models: []config.Model{{
+			Name: testInferenceModelName, Source: testInferenceModelSource,
+		}},
+	}
+
+	state, _, err := aikit2LLBWithResolvedBackend(cfg, platform, platform, backend)
+	if err != nil {
+		t.Fatalf("convert inference config: %v", err)
+	}
+	definition, err := state.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal inference definition: %v", err)
+	}
+
+	runtimeBase := findInferenceSourceOp(t, definition, backend.RuntimeBase.Ref)
+	assertInferenceOpPlatform(t, runtimeBase, *platform)
+}
+
+func TestAikit2LLBInstallsRuntimeTrustOnlyForStandardImages(t *testing.T) {
+	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	backend := testArbitraryBackendPlan(*platform)
+	backend.SystemPackages = nil
+	backend.RunnerProfile = backendcatalog.RunnerProfileHFConfig
+
+	tests := []struct {
+		name      string
+		config    *config.InferenceConfig
+		wantTrust bool
+	}{
+		{
+			name: "standard image",
+			config: &config.InferenceConfig{
+				Backends: []string{backend.Family},
+				Models:   []config.Model{{Name: testInferenceModelName, Source: testInferenceModelSource}},
+			},
+			wantTrust: true,
+		},
+		{
+			name:   "runner image",
+			config: &config.InferenceConfig{Backends: []string{backend.Family}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state, _, err := aikit2LLBWithResolvedBackend(test.config, platform, platform, backend)
+			if err != nil {
+				t.Fatalf("convert inference config: %v", err)
 			}
-		}
+			definition, err := state.Marshal(context.Background())
+			if err != nil {
+				t.Fatalf("marshal inference definition: %v", err)
+			}
+
+			trustOps := inferenceOpsWithCustomNamePrefix(t, definition, "Installing standard runtime CA roots")
+			if !test.wantTrust {
+				if len(trustOps) != 0 {
+					t.Fatalf("standard runtime trust ops = %d, want none", len(trustOps))
+				}
+				return
+			}
+			if len(trustOps) != 1 {
+				t.Fatalf("standard runtime trust ops = %d, want 1", len(trustOps))
+			}
+
+			file := trustOps[0].op.GetFile()
+			if file == nil || len(file.Actions) != 1 {
+				t.Fatalf("standard runtime trust file actions = %v, want one copy", file)
+			}
+			copyAction := file.Actions[0].GetCopy()
+			if copyAction == nil {
+				t.Fatal("standard runtime trust action is not a copy")
+			}
+			if copyAction.Src != standardRuntimeCABundlePath || copyAction.Dest != standardRuntimeCABundlePath {
+				t.Errorf("standard runtime trust copy = %q -> %q, want %q -> %q", copyAction.Src, copyAction.Dest, standardRuntimeCABundlePath, standardRuntimeCABundlePath)
+			}
+		})
 	}
 }
 
-func TestGetBaseImageUsesMinimalCompatibleRuntime(t *testing.T) {
+func TestInstallStandardRuntimeTrustUsesTargetPlatform(t *testing.T) {
+	targetPlatform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	state, _ := installStandardRuntimeTrust(llb.Scratch(), llb.Scratch(), targetPlatform)
+	definition, err := state.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal standard runtime trust definition: %v", err)
+	}
+
+	trustSource := findInferenceSourceOp(t, definition, orasImage)
+	assertInferenceOpPlatform(t, trustSource, targetPlatform)
+}
+
+func TestORASToolingImageIsDigestPinned(t *testing.T) {
+	const want = "ghcr.io/oras-project/oras@sha256:0087224dd0decc354b5b0689068fbbc40cd5dc3dbf65fcb3868dfbd363dc790b"
+	if orasImage != want {
+		t.Fatalf("orasImage = %q, want %q", orasImage, want)
+	}
+}
+
+func inferenceOpsWithCustomNamePrefix(t *testing.T, definition *llb.Definition, prefix string) []inferenceDefinitionOp {
+	t.Helper()
+
+	var matches []inferenceDefinitionOp
+	for _, graphOp := range decodeInferenceDefinition(t, definition) {
+		metadata, ok := definition.Metadata[graphOp.digest]
+		if ok && strings.HasPrefix(metadata.Description["llb.customname"], prefix) {
+			matches = append(matches, graphOp)
+		}
+	}
+
+	return matches
+}
+
+func TestAikit2LLBUsesRunnerRuntimeBaseOnlyForRunnerMode(t *testing.T) {
 	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	backend := testArbitraryBackendPlan(*platform)
+	backend.RunnerProfile = backendcatalog.RunnerProfileHFConfig
+	runnerRuntimeBase := backendcatalog.Artifact{
+		Ref: "registry.example/runner-base@sha256:6666666666666666666666666666666666666666666666666666666666666666",
+	}
+	backend.RunnerRuntimeBase = &runnerRuntimeBase
+	backend.SystemPackages = nil
+
 	tests := []struct {
-		name   string
-		config *config.InferenceConfig
-		want   string
+		name       string
+		config     *config.InferenceConfig
+		wantBase   string
+		absentBase string
 	}{
 		{
-			name: "default standard llama-cpp",
-			config: &config.InferenceConfig{Models: []config.Model{{
-				Name: testInferenceModelName, Source: "model.gguf",
-			}}},
-			want: distrolessBase,
-		},
-		{
-			name: "explicit standard llama-cpp",
+			name: "standard image",
 			config: &config.InferenceConfig{
-				Backends: []string{utils.BackendLlamaCpp},
-				Models:   []config.Model{{Name: testInferenceModelName, Source: "model.gguf"}},
+				Backends: []string{backend.Family},
+				Models:   []config.Model{{Name: testInferenceModelName, Source: testInferenceModelSource}},
 			},
-			want: distrolessBase,
+			wantBase:   backend.RuntimeBase.Ref,
+			absentBase: runnerRuntimeBase.Ref,
 		},
 		{
-			name:   "llama-cpp runner",
-			config: &config.InferenceConfig{Backends: []string{utils.BackendLlamaCpp}},
-			want:   utils.UbuntuBase,
-		},
-		{
-			name: "standard Diffusers",
-			config: &config.InferenceConfig{
-				Backends: []string{utils.BackendDiffusers},
-				Models:   []config.Model{{Name: testInferenceModelName, Source: "model.safetensors"}},
-			},
-			want: utils.UbuntuBase,
-		},
-		{
-			name: "standard vLLM",
-			config: &config.InferenceConfig{
-				Backends: []string{utils.BackendVLLM},
-				Models:   []config.Model{{Name: testInferenceModelName, Source: "model.safetensors"}},
-			},
-			want: utils.UbuntuBase,
-		},
-		{
-			name: "standard vllm-cpp",
-			config: &config.InferenceConfig{
-				Backends: []string{utils.BackendVLLMCpp},
-				Models:   []config.Model{{Name: testInferenceModelName, Source: "model.gguf"}},
-			},
-			want: distrolessBase,
-		},
-		{
-			name:   "Apple Silicon",
-			config: &config.InferenceConfig{Runtime: utils.RuntimeAppleSilicon},
-			want:   utils.AppleSiliconBase,
-		},
-		{
-			name:   "ROCm",
-			config: &config.InferenceConfig{Runtime: utils.RuntimeROCm},
-			want:   utils.Ubuntu24Base,
+			name:       "runner image",
+			config:     &config.InferenceConfig{Backends: []string{backend.Family}},
+			wantBase:   runnerRuntimeBase.Ref,
+			absentBase: backend.RuntimeBase.Ref,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			state := getBaseImage(tt.config, platform)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state, image, err := aikit2LLBWithResolvedBackend(test.config, platform, platform, backend)
+			if err != nil {
+				t.Fatalf("convert inference config: %v", err)
+			}
 			definition, err := state.Marshal(context.Background())
 			if err != nil {
-				t.Fatalf("marshal base image: %v", err)
+				t.Fatalf("marshal inference definition: %v", err)
 			}
-			source := findInferenceSourceOp(t, definition, tt.want)
-			assertInferenceOpPlatform(t, source, *platform)
+			assertInferenceOpPlatform(t, findInferenceSourceOp(t, definition, test.wantBase), *platform)
+			if matches := findInferenceSourceOps(t, definition, test.absentBase); len(matches) != 0 {
+				t.Fatalf("unexpected runtime base %q appears %d times", test.absentBase, len(matches))
+			}
+			if got := image.Config.Labels["ai.kaito.aikit.runtime-base.artifact"]; got != test.wantBase {
+				t.Errorf("runtime base label = %q, want %q", got, test.wantBase)
+			}
 		})
 	}
 }
@@ -266,6 +323,22 @@ func TestAikit2LLBPreservesSinglePlatformBehavior(t *testing.T) {
 	}
 }
 
+func TestAikit2LLBWithBackendRejectsForgedResolution(t *testing.T) {
+	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	cfg := &config.InferenceConfig{
+		Models: []config.Model{{Name: testInferenceModelName, Source: testInferenceModelSource}},
+	}
+	backend, err := ResolveBackend(cfg, *platform)
+	if err != nil {
+		t.Fatalf("resolve backend: %v", err)
+	}
+	backend.Backend.Ref = strings.Split(backend.Backend.Ref, "@")[0] + "@sha256:" + strings.Repeat("f", 64)
+
+	if _, _, err := Aikit2LLBWithBackend(cfg, platform, platform, backend); err == nil || !strings.Contains(err.Error(), "does not match the embedded catalog") {
+		t.Fatalf("Aikit2LLBWithBackend() error = %v, want catalog mismatch", err)
+	}
+}
+
 func findInferenceSourceOp(t *testing.T, definition *llb.Definition, identifierFragment string) inferenceDefinitionOp {
 	t.Helper()
 
@@ -290,16 +363,21 @@ func findInferenceSourceOps(t *testing.T, definition *llb.Definition, identifier
 
 func assertInferenceOpPlatform(t *testing.T, graphOp inferenceDefinitionOp, want specs.Platform) {
 	t.Helper()
+	got := inferenceOpPlatform(t, graphOp)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("operation platform = %#v, want %#v", got, want)
+	}
+}
+
+func inferenceOpPlatform(t *testing.T, graphOp inferenceDefinitionOp) specs.Platform {
+	t.Helper()
 
 	if graphOp.op.Platform == nil {
-		t.Fatalf("operation platform is nil, want %#v", want)
+		t.Fatal("operation platform is nil")
 	}
-	got := specs.Platform{
+	return specs.Platform{
 		OS:           graphOp.op.Platform.OS,
 		Architecture: graphOp.op.Platform.Architecture,
 		Variant:      graphOp.op.Platform.Variant,
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("operation platform = %#v, want %#v", got, want)
 	}
 }

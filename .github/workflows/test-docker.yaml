@@ -41,6 +41,15 @@ jobs:
         exclude:
           - backend: llama-cuda
             arch: arm64
+        include:
+          - backend: silero-vad
+            arch: amd64
+          - backend: rfdetr-cpp
+            arch: amd64
+          - backend: piper
+            arch: amd64
+          - backend: parakeet-cpp
+            arch: amd64
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -118,7 +127,7 @@ jobs:
         run: docker run --name testmodel -d -p 8080:8080 --platform "linux/${{ matrix.arch }}" testmodel:test
 
       - name: run llama test
-        if: matrix.backend != 'vllm-cpp-cpu'
+        if: matrix.backend == 'llama' || matrix.backend == 'llama-cuda'
         run: |
           result=$(curl --fail --retry 10 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
             "model": "llama-3.2-1b-instruct",
@@ -132,7 +141,7 @@ jobs:
           fi
 
       - name: run tool calling test
-        if: matrix.backend != 'vllm-cpp-cpu'
+        if: matrix.backend == 'llama' || matrix.backend == 'llama-cuda'
         run: |
           result=$(curl --fail --retry 10 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
             "model": "llama-3.2-1b-instruct",
@@ -184,9 +193,135 @@ jobs:
             .choices[0].message.role == "assistant" and
             ((.choices[0].message.content // "") | gsub("^\\s+|\\s+$"; "") == "Paris")'
 
+      - name: run Silero VAD test
+        if: matrix.backend == 'silero-vad'
+        run: |
+          curl --fail --show-error --location --retry 5 --retry-all-errors \
+            --output /tmp/speech.wav \
+            https://raw.githubusercontent.com/mudler/parakeet.cpp/1bfbebfaaf493866f49597cd3b7901959d395c60/tests/fixtures/speech.wav
+          echo "5fceacff0315d49cb59fcc505bcecf1ed5f2f35c2897b1e65a59f30e5d922150  /tmp/speech.wav" | sha256sum --check
+
+          python3 - <<'PY'
+          import array
+          import json
+          import sys
+          import wave
+          from pathlib import Path
+
+          with wave.open("/tmp/speech.wav", "rb") as speech:
+              properties = (
+                  speech.getnchannels(),
+                  speech.getsampwidth(),
+                  speech.getframerate(),
+                  speech.getcomptype(),
+              )
+              if properties != (1, 2, 16000, "NONE"):
+                  raise ValueError(f"unexpected WAV properties: {properties}")
+              samples = array.array("h", speech.readframes(speech.getnframes()))
+
+          if sys.byteorder == "big":
+              samples.byteswap()
+
+          with Path("/tmp/vad-request.json").open("w", encoding="utf-8") as request:
+              json.dump(
+                  {"model": "silero-vad-smoke", "audio": [sample / 32768.0 for sample in samples]},
+                  request,
+                  separators=(",", ":"),
+              )
+          PY
+
+          curl --fail-with-body --show-error --max-time 300 --retry 10 --retry-all-errors \
+            http://127.0.0.1:8080/v1/vad \
+            -H "Content-Type: application/json" \
+            --data-binary @/tmp/vad-request.json \
+            --output /tmp/vad-response.json
+          jq . /tmp/vad-response.json
+          jq -e '
+            .error == null and
+            (.segments | type == "array" and length > 0) and
+            all(.segments[];
+              (.start | type) == "number" and
+              (.end | type) == "number" and
+              .end > .start
+            )' /tmp/vad-response.json
+
+      - name: run RF-DETR detection test
+        if: matrix.backend == 'rfdetr-cpp'
+        run: |
+          curl --fail --show-error --location --retry 5 --retry-all-errors \
+            --output /tmp/detection.jpg \
+            https://raw.githubusercontent.com/localai-org/rf-detr.cpp/98d0f381b832ef08a608b65c7dd78db066ed8b9a/tests/fixtures/ci/test_image.jpg
+          echo "ff3a2092bf7a3a572903482e4d73a25576f0f1c13dd53f2f6b7bb3c20fb0119d  /tmp/detection.jpg" | sha256sum --check
+
+          base64 --wrap=0 /tmp/detection.jpg > /tmp/detection.b64
+          jq -n --rawfile image /tmp/detection.b64 \
+            '{model: "rfdetr-smoke", image: ("data:image/jpeg;base64," + $image)}' \
+            > /tmp/detection-request.json
+          curl --fail-with-body --show-error --max-time 300 --retry 10 --retry-all-errors \
+            http://127.0.0.1:8080/v1/detection \
+            -H "Content-Type: application/json" \
+            --data-binary @/tmp/detection-request.json \
+            --output /tmp/detection-response.json
+          jq . /tmp/detection-response.json
+          jq -e '
+            .error == null and
+            (.detections | type == "array" and length > 0) and
+            any(.detections[];
+              .class_name == "person" and
+              (.confidence | type) == "number" and
+              .confidence > 0.5 and
+              (.width | type) == "number" and
+              .width > 0 and
+              (.height | type) == "number" and
+              .height > 0
+            )' /tmp/detection-response.json
+
+      - name: run Piper speech test
+        if: matrix.backend == 'piper'
+        run: |
+          curl --fail-with-body --show-error --max-time 300 --retry 10 --retry-all-errors \
+            http://127.0.0.1:8080/v1/audio/speech \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "piper-smoke",
+              "input": "AIKit CPU smoke test.",
+              "response_format": "wav"
+            }' \
+            --dump-header /tmp/piper-headers.txt \
+            --output /tmp/piper.wav
+
+          content_type=$(grep -i '^content-type:' /tmp/piper-headers.txt | tail -1 | tr -d '\r' | awk '{print $2}')
+          case "${content_type,,}" in
+            audio/wav*) ;;
+            *) echo "unexpected content type: $content_type" >&2; exit 1 ;;
+          esac
+          test "$(stat --format=%s /tmp/piper.wav)" -gt 44
+          test "$(head --bytes=4 /tmp/piper.wav)" = "RIFF"
+          test "$(dd if=/tmp/piper.wav bs=1 skip=8 count=4 status=none)" = "WAVE"
+
+      - name: run Parakeet transcription test
+        if: matrix.backend == 'parakeet-cpp'
+        run: |
+          curl --fail --show-error --location --retry 5 --retry-all-errors \
+            --output /tmp/speech.wav \
+            https://raw.githubusercontent.com/mudler/parakeet.cpp/1bfbebfaaf493866f49597cd3b7901959d395c60/tests/fixtures/speech.wav
+          echo "5fceacff0315d49cb59fcc505bcecf1ed5f2f35c2897b1e65a59f30e5d922150  /tmp/speech.wav" | sha256sum --check
+
+          curl --fail-with-body --show-error --max-time 300 --retry 10 --retry-all-errors \
+            http://127.0.0.1:8080/v1/audio/transcriptions \
+            -F "file=@/tmp/speech.wav;type=audio/wav" \
+            -F "model=parakeet-smoke" \
+            -F "response_format=json" \
+            --output /tmp/parakeet-response.json
+          jq . /tmp/parakeet-response.json
+          jq -e '
+            .error == null and
+            (.text | type == "string" and length > 0)' \
+            /tmp/parakeet-response.json
+
       - name: save logs
         if: always()
-        run: docker logs testmodel > /tmp/docker-${{ matrix.backend }}-${{ matrix.arch }}.log
+        run: docker logs testmodel > /tmp/docker-${{ matrix.backend }}-${{ matrix.arch }}.log 2>&1
 
       - name: publish test artifacts
         if: always()
@@ -195,6 +330,8 @@ jobs:
           name: test-${{ matrix.arch }}-${{ matrix.backend }}
           path: |
             /tmp/*.log
+            /tmp/*-response.json
+            /tmp/piper.wav
             /tmp/images/*.png
 
   test-protocol:

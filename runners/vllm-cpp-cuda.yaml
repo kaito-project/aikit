@@ -1,5 +1,5 @@
 #syntax=ghcr.io/kaito-project/aikit/aikit:latest
 apiVersion: v1alpha1
-runtime: cuda
+runtime: cuda-13
 backends:
   - vllm-cpp

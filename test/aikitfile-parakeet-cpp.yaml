@@ -1,0 +1,14 @@
+#syntax=aikit:test
+apiVersion: v1alpha1
+debug: true
+backends:
+  - parakeet-cpp
+models:
+  - name: tdt_ctc-110m-q4_k.gguf
+    source: https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/bf0af9f425fa01809cadec671b3cb672709d13e9/tdt_ctc-110m-q4_k.gguf
+    sha256: "2d1d90edac07326b20a896440628c50323530cf28c7e7ca99d439bad1dee9abf"
+config: |
+  - name: parakeet-smoke
+    backend: parakeet-cpp
+    parameters:
+      model: tdt_ctc-110m-q4_k.gguf

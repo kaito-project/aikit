@@ -1,24 +1,55 @@
 package inference
 
 import (
-	"slices"
 	"strings"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/util/system"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/pkg/errors"
 )
 
 const (
-	localAIEntrypointCommand = "local-ai"
-	localAILoadToMemoryEnv   = "LOCALAI_LOAD_TO_MEMORY="
-	runnerEntrypointPath     = "/usr/local/bin/aikit-runner"
-	runnerHFHomeEnv          = "HF_HOME=/models/.cache/huggingface"
+	localAIEntrypointCommand                = "local-ai"
+	localAILoadToMemoryEnv                  = "LOCALAI_LOAD_TO_MEMORY="
+	localAIModelGalleriesEnv                = "LOCALAI_GALLERIES=[]"
+	localAIBackendGalleriesEnv              = "LOCALAI_BACKEND_GALLERIES=[]"
+	localAIDisableModelGalleryAutoloadEnv   = "LOCALAI_AUTOLOAD_GALLERIES=false"
+	localAIDisableBackendGalleryAutoloadEnv = "LOCALAI_AUTOLOAD_BACKEND_GALLERIES=false"
+	localAIDisableGalleryWarmupEnv          = "LOCALAI_VRAM_WARM_LIMIT=0"
+	runnerEntrypointPath                    = "/usr/local/bin/aikit-runner"
+	runnerHFHomeEnv                         = "HF_HOME=/models/.cache/huggingface"
 )
 
-func NewImageConfig(c *config.InferenceConfig, platform *specs.Platform) *specs.Image {
-	img := emptyImage(c, platform)
+// NewImageConfig resolves the backend plan and creates its image metadata.
+func NewImageConfig(c *config.InferenceConfig, platform *specs.Platform) (*specs.Image, error) {
+	if platform == nil {
+		return nil, errors.New("platform is required")
+	}
+
+	backend, err := ResolveBackend(c, *platform)
+	if err != nil {
+		return nil, errors.Wrap(err, "resolving backend for image config")
+	}
+
+	return NewImageConfigWithBackend(c, backend, platform), nil
+}
+
+// NewImageConfigWithBackend creates image metadata from a pre-resolved backend plan.
+func NewImageConfigWithBackend(c *config.InferenceConfig, backend backendcatalog.Resolution, platform *specs.Platform) *specs.Image {
+	img := emptyImage(c, backend, platform)
+	runtimeBase := runtimeBaseForConfig(c, backend)
+	img.Config.Labels = map[string]string{
+		"ai.kaito.aikit.backend":                backend.Family,
+		"ai.kaito.aikit.backend.artifact":       backend.Backend.Ref,
+		"ai.kaito.aikit.backend.catalog.digest": backend.CatalogDigest,
+		"ai.kaito.aikit.backend.status":         string(backend.Status),
+		"ai.kaito.aikit.core.artifact":          backend.Core.Ref,
+		"ai.kaito.aikit.runtime":                string(requestedRuntime(c.Runtime)),
+		"ai.kaito.aikit.runtime-base.artifact":  runtimeBase.Ref,
+	}
 
 	if isRunnerMode(c) {
 		// Runner mode: use the aikit-runner entrypoint script
@@ -27,14 +58,7 @@ func NewImageConfig(c *config.InferenceConfig, platform *specs.Platform) *specs.
 		img.Config.Env = append(img.Config.Env, runnerHFHomeEnv)
 
 		// Add runner labels
-		backendLabel := strings.Join(c.Backends, ",")
-		img.Config.Labels = map[string]string{
-			"ai.kaito.aikit.runner":  "true",
-			"ai.kaito.aikit.backend": backendLabel,
-		}
-		if c.Runtime != "" {
-			img.Config.Labels["ai.kaito.aikit.runtime"] = c.Runtime
-		}
+		img.Config.Labels["ai.kaito.aikit.runner"] = "true"
 	} else {
 		// Standard mode: use local-ai directly
 		cmd := []string{}
@@ -47,12 +71,19 @@ func NewImageConfig(c *config.InferenceConfig, platform *specs.Platform) *specs.
 
 		img.Config.Entrypoint = []string{localAIEntrypointCommand}
 		img.Config.Cmd = cmd
+		img.Config.Env = append(img.Config.Env,
+			localAIModelGalleriesEnv,
+			localAIBackendGalleriesEnv,
+			localAIDisableModelGalleryAutoloadEnv,
+			localAIDisableBackendGalleryAutoloadEnv,
+			localAIDisableGalleryWarmupEnv,
+		)
 	}
 
 	return img
 }
 
-func emptyImage(c *config.InferenceConfig, platform *specs.Platform) *specs.Image {
+func emptyImage(c *config.InferenceConfig, backend backendcatalog.Resolution, platform *specs.Platform) *specs.Image {
 	img := &specs.Image{
 		Platform: specs.Platform{
 			Architecture: platform.Architecture,
@@ -69,35 +100,7 @@ func emptyImage(c *config.InferenceConfig, platform *specs.Platform) *specs.Imag
 	if len(c.LoadToMemory) > 0 {
 		img.Config.Env = append(img.Config.Env, localAILoadToMemoryEnv+strings.Join(c.LoadToMemory, ","))
 	}
-
-	minimumCUDAVersion := "12.0"
-	if slices.Contains(c.Backends, utils.BackendVLLMCpp) {
-		minimumCUDAVersion = "13.0"
-	}
-	cudaEnv := []string{
-		"NVIDIA_REQUIRE_CUDA=cuda>=" + minimumCUDAVersion,
-		"NVIDIA_DRIVER_CAPABILITIES=compute,utility",
-		"NVIDIA_VISIBLE_DEVICES=all",
-		"BUILD_TYPE=cublas",
-	}
-	if c.Runtime == utils.RuntimeNVIDIA {
-		img.Config.Env = append(img.Config.Env, cudaEnv...)
-	}
-
-	if c.Runtime == utils.RuntimeAppleSilicon {
-		img.Config.Env = append(img.Config.Env,
-			"VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/virtio_icd.aarch64.json",
-		)
-	}
-
-	rocmEnv := []string{
-		"PATH=" + system.DefaultPathEnv(utils.PlatformLinux) + ":/opt/rocm/bin",
-		"LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64:/opt/rocm/llvm/lib",
-		"LOCALAI_FORCE_META_BACKEND_CAPABILITY=amd",
-	}
-	if c.Runtime == utils.RuntimeROCm && platform.Architecture == "amd64" {
-		img.Config.Env = append(img.Config.Env, rocmEnv...)
-	}
+	img.Config.Env = append(img.Config.Env, backend.Environment...)
 
 	return img
 }

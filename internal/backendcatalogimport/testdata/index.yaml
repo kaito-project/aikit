@@ -1,0 +1,48 @@
+---
+- &llamacpp
+  name: llama-cpp
+  alias: llama-cpp
+  license: mit
+  tags:
+    - LLM
+    - text-to-text
+    - CPU
+  capabilities:
+    amd: rocm-llama-cpp
+    default: cpu-llama-cpp
+    nvidia: cuda12-llama-cpp
+    nvidia-l4t: nvidia-l4t-arm64-llama-cpp
+    vulkan: vulkan-llama-cpp
+- !!merge <<: *llamacpp
+  name: llama-cpp-development
+  capabilities:
+    default: cpu-llama-cpp-development
+    nvidia: cuda12-llama-cpp-development
+- !!merge <<: *llamacpp
+  name: cpu-llama-cpp
+  uri: quay.io/go-skynet/local-ai-backends:latest-cpu-llama-cpp
+  mirrors:
+    - mirror.example/local-ai-backends:latest-cpu-llama-cpp
+- !!merge <<: *llamacpp
+  name: cpu-llama-cpp
+  uri: quay.io/go-skynet/local-ai-backends:latest-cpu-llama-cpp
+  mirrors:
+    - mirror.example/local-ai-backends:latest-cpu-llama-cpp
+- !!merge <<: *llamacpp
+  name: cpu-llama-cpp-development
+  uri: registry.example/local-ai-backends:master-cpu-llama-cpp
+- !!merge <<: *llamacpp
+  name: cuda12-llama-cpp
+  uri: quay.io/go-skynet/local-ai-backends:latest-gpu-nvidia-cuda-12-llama-cpp
+- !!merge <<: *llamacpp
+  name: cuda12-llama-cpp-development
+  uri: registry.example/local-ai-backends:master-gpu-nvidia-cuda-12-llama-cpp
+- !!merge <<: *llamacpp
+  name: rocm-llama-cpp
+  uri: quay.io/go-skynet/local-ai-backends:latest-gpu-rocm-hipblas-llama-cpp
+- !!merge <<: *llamacpp
+  name: nvidia-l4t-arm64-llama-cpp
+  uri: quay.io/go-skynet/local-ai-backends:latest-nvidia-l4t-arm64-llama-cpp
+- !!merge <<: *llamacpp
+  name: vulkan-llama-cpp
+  uri: quay.io/go-skynet/local-ai-backends:latest-gpu-vulkan-llama-cpp

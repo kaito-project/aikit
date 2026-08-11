@@ -93,23 +93,24 @@ func TestBuildInferenceUsesBuildPlatformForArtifactHelpers(t *testing.T) {
 
 	seenTargets := make(map[string]bool, len(definitions))
 	for _, definition := range definitions {
-		helperSource := findBuildSourceOp(t, definition, "ghcr.io/oras-project/oras")
-		assertBuildOpPlatform(t, helperSource, buildPlatform)
+		backendSource := findBuildSourceOp(t, definition, utils.BackendOCIRegistry)
+		if backendSource.Platform == nil {
+			t.Fatal("backend source platform is nil")
+		}
+		targetArchitecture := backendSource.Platform.Architecture
+		targetPlatform := specs.Platform{OS: utils.PlatformLinux, Architecture: targetArchitecture}
+		seenTargets[targetArchitecture] = true
+
+		assertBuildOpPlatform(t, backendSource, targetPlatform)
+		assertBuildHelperPlatforms(t, findBuildSourceOps(t, definition, "ghcr.io/oras-project/oras"), buildPlatform, targetPlatform)
 
 		modelPull := findBuildExecOp(t, definition, "example.com/models/test:latest")
 		assertBuildOpPlatform(t, modelPull, buildPlatform)
 
-		localAIPull := findBuildExecOp(t, definition, "ghcr.io/kaito-project/aikit/localai:")
+		localAIPull := findBuildExecOp(t, definition, "ghcr.io/kaito-project/aikit/localai@sha256:")
 		assertBuildOpPlatform(t, localAIPull, buildPlatform)
 
-		targetArchitecture := artifactArchitecture(t, localAIPull)
-		targetPlatform := specs.Platform{OS: utils.PlatformLinux, Architecture: targetArchitecture}
-		seenTargets[targetArchitecture] = true
-
-		backendSource := findBuildSourceOp(t, definition, utils.BackendOCIRegistry)
-		assertBuildOpPlatform(t, backendSource, targetPlatform)
-
-		baseSource := findBuildSourceOp(t, definition, "ubuntu:22.04")
+		baseSource := findBuildSourceOp(t, definition, "ghcr.io/kaito-project/aikit/base@sha256:")
 		assertBuildOpPlatform(t, baseSource, targetPlatform)
 	}
 
@@ -203,6 +204,16 @@ type recordingBuildReference struct {
 func findBuildSourceOp(t *testing.T, definition *pb.Definition, identifierFragment string) *pb.Op {
 	t.Helper()
 
+	matches := findBuildSourceOps(t, definition, identifierFragment)
+	if len(matches) != 1 {
+		t.Fatalf("source ops containing %q = %d, want 1", identifierFragment, len(matches))
+	}
+	return matches[0]
+}
+
+func findBuildSourceOps(t *testing.T, definition *pb.Definition, identifierFragment string) []*pb.Op {
+	t.Helper()
+
 	var matches []*pb.Op
 	for _, data := range definition.Def {
 		op := new(pb.Op)
@@ -213,10 +224,8 @@ func findBuildSourceOp(t *testing.T, definition *pb.Definition, identifierFragme
 			matches = append(matches, op)
 		}
 	}
-	if len(matches) != 1 {
-		t.Fatalf("source ops containing %q = %d, want 1", identifierFragment, len(matches))
-	}
-	return matches[0]
+
+	return matches
 }
 
 func findBuildExecOp(t *testing.T, definition *pb.Definition, commandFragment string) *pb.Op {
@@ -254,15 +263,29 @@ func assertBuildOpPlatform(t *testing.T, op *pb.Op, want specs.Platform) {
 	}
 }
 
-func artifactArchitecture(t *testing.T, localAIPull *pb.Op) string {
+func assertBuildHelperPlatforms(t *testing.T, helpers []*pb.Op, buildPlatform, targetPlatform specs.Platform) {
 	t.Helper()
-
-	command := strings.Join(localAIPull.GetExec().Meta.Args, "\x00")
-	for _, architecture := range []string{utils.PlatformAMD64, utils.PlatformARM64} {
-		if strings.Contains(command, "-"+architecture) {
-			return architecture
-		}
+	want := map[string]specs.Platform{
+		platforms.Format(buildPlatform):  buildPlatform,
+		platforms.Format(targetPlatform): targetPlatform,
 	}
-	t.Fatalf("LocalAI artifact command does not select a supported target architecture: %q", command)
-	return ""
+	if len(helpers) != len(want) {
+		t.Fatalf("ORAS helper sources = %d, want %d unique build/target platforms", len(helpers), len(want))
+	}
+	for _, helper := range helpers {
+		if helper.Platform == nil {
+			t.Fatal("ORAS helper platform is nil")
+		}
+		got := specs.Platform{OS: helper.Platform.OS, Architecture: helper.Platform.Architecture, Variant: helper.Platform.Variant}
+		key := platforms.Format(got)
+		expected, ok := want[key]
+		if !ok {
+			t.Fatalf("ORAS helper platform = %#v, want build %#v or target %#v", got, buildPlatform, targetPlatform)
+		}
+		assertBuildOpPlatform(t, helper, expected)
+		delete(want, key)
+	}
+	if len(want) != 0 {
+		t.Fatalf("ORAS helper platforms are missing %v", want)
+	}
 }

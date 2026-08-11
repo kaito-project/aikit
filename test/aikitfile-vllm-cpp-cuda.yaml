@@ -1,7 +1,7 @@
 #syntax=aikit:test
 apiVersion: v1alpha1
 debug: true
-runtime: cuda
+runtime: cuda-13
 backends:
   - vllm-cpp
 models:

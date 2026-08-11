@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/solver/pb"
@@ -103,33 +104,39 @@ func TestInstallRunnerDependencies(t *testing.T) {
 	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
 	tests := []struct {
 		name             string
-		backend          string
+		runnerProfile    backendcatalog.RunnerProfile
 		wantDependencies bool
+		wantDownloader   bool
 	}{
 		{
-			name:             "llama-cpp installs downloader dependencies",
-			backend:          utils.BackendLlamaCpp,
+			name:             "llama-cpp profile installs downloader dependencies",
+			runnerProfile:    backendcatalog.RunnerProfileLlamaCpp,
+			wantDependencies: true,
+			wantDownloader:   true,
+		},
+		{
+			name:             "HF config profile installs runtime trust store",
+			runnerProfile:    backendcatalog.RunnerProfileHFConfig,
 			wantDependencies: true,
 		},
 		{
-			name:    "diffusers uses bundled downloader",
-			backend: utils.BackendDiffusers,
+			name:          "unsupported profile has no runner dependencies",
+			runnerProfile: backendcatalog.RunnerProfileUnsupported,
 		},
 		{
-			name:    "vllm uses bundled downloader",
-			backend: utils.BackendVLLM,
-		},
-		{
-			name:             "vllm-cpp installs downloader dependencies",
-			backend:          utils.BackendVLLMCpp,
+			name:             "vllm-cpp profile installs downloader dependencies",
+			runnerProfile:    backendcatalog.RunnerProfileVLLMCpp,
 			wantDependencies: true,
+			wantDownloader:   true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			state, _ := installRunnerDependencies(
-				&config.InferenceConfig{Backends: []string{tt.backend}},
+			backend := testArbitraryBackendPlan(platform)
+			backend.RunnerProfile = tt.runnerProfile
+			state, _ := installRunnerDependenciesWithBackend(
+				backend,
 				llb.Scratch(),
 				llb.Scratch(),
 				platform,
@@ -152,8 +159,7 @@ func TestInstallRunnerDependencies(t *testing.T) {
 				"s|http://security.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g",
 				"Acquire::Retries=5",
 				"APT::Update::Error-Mode=any",
-				"apt-get install --no-install-recommends -y curl ca-certificates python3 python3-pip",
-				"huggingface-hub==" + runnerHuggingFaceHubVersion,
+				"ca-certificates",
 				"apt-get clean",
 				"rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /root/.cache/pip",
 			} {
@@ -161,14 +167,33 @@ func TestInstallRunnerDependencies(t *testing.T) {
 					t.Errorf("runner dependency command does not contain %q: %s", expected, command)
 				}
 			}
-			if count := strings.Count(command, "--no-cache-dir"); count != 2 {
-				t.Errorf("--no-cache-dir count = %d, want 2 in both pip install paths: %s", count, command)
-			}
-			if count := strings.Count(command, "--no-compile"); count != 2 {
-				t.Errorf("--no-compile count = %d, want 2 in both pip install paths: %s", count, command)
-			}
-			if strings.Contains(command, "huggingface-hub[cli]") {
-				t.Errorf("runner dependency command should install the pinned core package without the legacy CLI extra: %s", command)
+			if tt.wantDownloader {
+				for _, expected := range []string{
+					"apt-get install --no-install-recommends -y " + runnerDownloaderPackages,
+					"huggingface-hub==" + runnerHuggingFaceHubVersion,
+				} {
+					if !strings.Contains(command, expected) {
+						t.Errorf("runner dependency command does not contain %q: %s", expected, command)
+					}
+				}
+				if count := strings.Count(command, "--no-cache-dir"); count != 2 {
+					t.Errorf("--no-cache-dir count = %d, want 2 in both pip install paths: %s", count, command)
+				}
+				if count := strings.Count(command, "--no-compile"); count != 2 {
+					t.Errorf("--no-compile count = %d, want 2 in both pip install paths: %s", count, command)
+				}
+				if strings.Contains(command, "huggingface-hub[cli]") {
+					t.Errorf("runner dependency command should install the pinned core package without the legacy CLI extra: %s", command)
+				}
+			} else {
+				if !strings.Contains(command, "apt-get install --no-install-recommends -y "+runnerTrustStorePackage) {
+					t.Errorf("HF config trust-store command does not install only %q: %s", runnerTrustStorePackage, command)
+				}
+				for _, unexpected := range []string{"curl ", "python3", "huggingface-hub=="} {
+					if strings.Contains(command, unexpected) {
+						t.Errorf("HF config trust-store command unexpectedly contains %q: %s", unexpected, command)
+					}
+				}
 			}
 		})
 	}
@@ -203,6 +228,7 @@ func TestGenerateRunnerScript(t *testing.T) {
 		{
 			name: "diffusers backend script",
 			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
 				Backends: []string{utils.BackendDiffusers},
 			},
 			expectContains: []string{
@@ -223,6 +249,7 @@ func TestGenerateRunnerScript(t *testing.T) {
 		{
 			name: "vllm backend script",
 			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
 				Backends: []string{utils.BackendVLLM},
 			},
 			expectContains: []string{
@@ -1149,7 +1176,7 @@ func TestVLLMCppRunnerRejectsUnsupportedModelReferences(t *testing.T) {
 	}{
 		{
 			name:      "non-GGUF direct URL",
-			model:     "https://example.com/model.safetensors",
+			model:     testSafetensorsURL,
 			wantError: "direct URLs must point to a .gguf file",
 		},
 		{

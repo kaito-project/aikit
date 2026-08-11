@@ -1,0 +1,203 @@
+{
+  "schemaVersion": "v1alpha1",
+  "references": [
+    {
+      "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.8.2-cpu-llama-cpp",
+      "manifests": [
+        {
+          "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "platform": {
+            "os": "linux",
+            "architecture": "x86_64"
+          }
+        },
+        {
+          "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "platform": {
+            "os": "linux",
+            "architecture": "aarch64",
+            "variant": "v8"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-nvidia-cuda-12-llama-cpp",
+      "manifests": [
+        {
+          "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "platform": {
+            "os": "linux",
+            "architecture": "amd64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-rocm-hipblas-llama-cpp",
+      "manifests": [
+        {
+          "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "platform": {
+            "os": "linux",
+            "architecture": "amd64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.8.2-nvidia-l4t-arm64-llama-cpp",
+      "manifests": [
+        {
+          "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "platform": {
+            "os": "linux",
+            "architecture": "arm64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "quay.io/go-skynet/local-ai-backends:v3.12.1-gpu-vulkan-llama-cpp",
+      "manifests": [
+        {
+          "digest": "sha256:abababababababababababababababababababababababababababababababab",
+          "platform": {
+            "os": "linux",
+            "architecture": "arm64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "registry.example/core:v4.8.2-amd64",
+      "manifests": [
+        {
+          "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "platform": {
+            "os": "linux",
+            "architecture": "amd64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "registry.example/core:v4.8.2-arm64",
+      "manifests": [
+        {
+          "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "platform": {
+            "os": "linux",
+            "architecture": "arm64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "registry.example/core:v3.12.1-arm64",
+      "manifests": [
+        {
+          "digest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "platform": {
+            "os": "linux",
+            "architecture": "arm64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "ghcr.io/kaito-project/aikit/base:latest",
+      "manifests": [
+        {
+          "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+          "platform": {
+            "os": "linux",
+            "architecture": "amd64"
+          }
+        },
+        {
+          "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+          "platform": {
+            "os": "linux",
+            "architecture": "arm64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "docker.io/library/ubuntu:22.04",
+      "manifests": [
+        {
+          "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+          "platform": {
+            "os": "linux",
+            "architecture": "amd64"
+          }
+        },
+        {
+          "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+          "platform": {
+            "os": "linux",
+            "architecture": "arm64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "docker.io/library/ubuntu:24.04",
+      "manifests": [
+        {
+          "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "platform": {
+            "os": "linux",
+            "architecture": "aarch64",
+            "variant": "v8"
+          }
+        },
+        {
+          "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "platform": {
+            "os": "linux",
+            "architecture": "x86_64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "docker.io/rocm/dev-ubuntu-24.04:7.2.1",
+      "manifests": [
+        {
+          "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "platform": {
+            "os": "linux",
+            "architecture": "amd64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "ghcr.io/kaito-project/aikit/applesilicon/base:latest",
+      "manifests": [
+        {
+          "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "platform": {
+            "os": "linux",
+            "architecture": "arm64"
+          }
+        }
+      ]
+    },
+    {
+      "sourceRef": "nvcr.io/nvidia/l4t-jetpack:r36.4.0",
+      "manifests": [
+        {
+          "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "platform": {
+            "os": "linux",
+            "architecture": "arm64"
+          }
+        }
+      ]
+    }
+  ]
+}

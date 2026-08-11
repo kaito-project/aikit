@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/utils"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -70,7 +71,7 @@ func benchmarkInferenceConfig(templateCount int) *config.InferenceConfig {
 
 	return &config.InferenceConfig{
 		APIVersion: "v1alpha1",
-		Backends:   []string{defaultBackendName},
+		Backends:   []string{utils.BackendLlamaCpp},
 		Models: []config.Model{
 			{
 				Name:            "tiny",

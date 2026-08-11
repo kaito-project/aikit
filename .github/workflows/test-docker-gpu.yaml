@@ -13,6 +13,8 @@ on:
           - llama-cuda
           - diffusers
           - vllm
+          - whisper
+          - transformers
 
 permissions: read-all
 
@@ -24,7 +26,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        backend: ${{ inputs.backend == 'all' && fromJson('["llama-cuda", "diffusers", "vllm"]') || fromJson(format('["{0}"]', inputs.backend)) }}
+        backend: ${{ inputs.backend == 'all' && fromJson('["llama-cuda", "diffusers", "vllm", "whisper", "transformers"]') || fromJson(format('["{0}"]', inputs.backend)) }}
     steps:
       - name: cleanup workspace
         run: |
@@ -134,6 +136,41 @@ jobs:
           if [ -z "$choices" ]; then
             exit 1
           fi
+
+      - name: run test (whisper)
+        if: matrix.backend == 'whisper'
+        timeout-minutes: 10
+        run: |
+          curl --fail --location --silent --show-error \
+            https://raw.githubusercontent.com/ggml-org/whisper.cpp/306c88f4d1286aec1bf96e544632897886af5501/samples/jfk.wav \
+            --output /tmp/jfk.wav
+          echo "59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e  /tmp/jfk.wav" | sha256sum --check
+
+          result=$(curl --fail --show-error --max-time 300 http://127.0.0.1:8080/v1/audio/transcriptions \
+            -F file=@/tmp/jfk.wav \
+            -F model=whisper-tiny-en)
+          echo "$result"
+
+          echo "$result" | jq -e '
+            (.text | type) == "string" and
+            (.text | ascii_downcase | contains("fellow americans"))
+          ' > /dev/null
+
+      - name: run test (transformers)
+        if: matrix.backend == 'transformers'
+        timeout-minutes: 10
+        run: |
+          result=$(curl --fail --show-error --max-time 300 http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
+            "model": "Qwen2.5-0.5B-Instruct",
+            "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
+          }')
+          echo "$result"
+
+          echo "$result" | jq -e '
+            (.error? == null) and
+            ((.choices | type) == "array") and
+            ((.choices | length) > 0)
+          ' > /dev/null
 
       - name: save logs
         if: always()
