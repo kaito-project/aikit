@@ -24,8 +24,26 @@ type pendingEntry struct {
 	Fallbacks []fallbackTarget
 }
 
+type reviewedPolicyRequirements struct {
+	Source   SourcePin
+	Version  string
+	Overlays []reviewedPolicyOverlay
+}
+
 // Generate parses, resolves, normalizes, and overlays the pinned LocalAI catalog.
 func Generate(ctx context.Context, source []byte, options GenerateOptions) (Catalog, error) {
+	return generate(ctx, source, options, localAIReviewedPolicyRequirements())
+}
+
+func localAIReviewedPolicyRequirements() reviewedPolicyRequirements {
+	return reviewedPolicyRequirements{
+		Source:   LocalAIV482Source,
+		Version:  reviewedLocalAIVersion,
+		Overlays: reviewedPolicyOverlays,
+	}
+}
+
+func generate(ctx context.Context, source []byte, options GenerateOptions, requirements reviewedPolicyRequirements) (Catalog, error) {
 	if options.Resolver == nil {
 		return Catalog{}, errors.New("OCI resolver is required")
 	}
@@ -56,6 +74,7 @@ func Generate(ctx context.Context, source []byte, options GenerateOptions) (Cata
 	resolver := newCachedResolver(options.Resolver)
 	pending := make([]pendingEntry, 0, len(sourceEntries))
 	byTuple := make(map[string][]byte)
+	emittedPolicyTuples := make(map[reviewedPolicyKey]struct{})
 	for _, selectorEntry := range sourceEntries {
 		if selectorEntry.URI != "" || len(selectorEntry.Capabilities) == 0 || strings.HasSuffix(selectorEntry.Name, "-development") {
 			continue
@@ -111,6 +130,12 @@ func Generate(ctx context.Context, source []byte, options GenerateOptions) (Cata
 			for _, manifest := range manifests {
 				if manifest.Platform.OS == "" || manifest.Platform.Architecture == "" {
 					return Catalog{}, fmt.Errorf("backend reference %q manifest %s has no platform", sourceRef, manifest.Digest)
+				}
+				policyKey := reviewedPolicyKey{
+					Version:  options.Version,
+					Family:   family,
+					Selector: selector,
+					Platform: manifest.Platform,
 				}
 				policy, err := policyFor(policyInput{
 					ImportedVersion: options.Version,
@@ -176,11 +201,18 @@ func Generate(ctx context.Context, source []byte, options GenerateOptions) (Cata
 					if !bytes.Equal(previous, encoded) {
 						return Catalog{}, fmt.Errorf("normalization produced conflicting tuple %q", tupleKey)
 					}
+					emittedPolicyTuples[policyKey] = struct{}{}
 					continue
 				}
 				byTuple[tupleKey] = encoded
 				pending = append(pending, pendingEntry{Entry: entry, Fallbacks: policy.Fallbacks})
+				emittedPolicyTuples[policyKey] = struct{}{}
 			}
+		}
+	}
+	if requirements.applies(options) {
+		if err := validateReviewedPolicyOverlayConsumption(requirements.Version, requirements.Overlays, emittedPolicyTuples); err != nil {
+			return Catalog{}, errors.Wrap(err, "validate reviewed policy overlay consumption")
 		}
 	}
 	if len(pending) == 0 {
@@ -222,6 +254,31 @@ func Generate(ctx context.Context, source []byte, options GenerateOptions) (Cata
 		Defaults:      defaults,
 		Entries:       entries,
 	}, nil
+}
+
+func (requirements reviewedPolicyRequirements) applies(options GenerateOptions) bool {
+	return requirements.Version == options.Version && requirements.Source == options.Source
+}
+
+func validateReviewedPolicyOverlayConsumption(version string, overlays []reviewedPolicyOverlay, emitted map[reviewedPolicyKey]struct{}) error {
+	for _, overlay := range overlays {
+		if overlay.Key.Version != version {
+			continue
+		}
+		if _, ok := emitted[overlay.Key]; ok {
+			continue
+		}
+
+		return fmt.Errorf(
+			"reviewed policy overlay %s/%s/%s on %s did not produce its expected catalog entry",
+			overlay.Key.Version,
+			overlay.Key.Family,
+			overlay.Key.Selector,
+			overlay.Key.Platform.key(),
+		)
+	}
+
+	return nil
 }
 
 func generatedDefaults() Defaults {

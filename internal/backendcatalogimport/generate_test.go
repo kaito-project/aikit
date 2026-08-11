@@ -226,6 +226,139 @@ func TestGenerateRejectsReviewedPolicyMappingDrift(t *testing.T) {
 	}
 }
 
+func TestReviewedPolicyRequirementsApplyOnlyToExactPinnedSource(t *testing.T) {
+	requirements := localAIReviewedPolicyRequirements()
+	exact := GenerateOptions{
+		Source:  LocalAIV482Source,
+		Version: LocalAIVersion,
+	}
+	if !requirements.applies(exact) {
+		t.Fatal("reviewed policy requirements do not apply to the exact LocalAI source pin")
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*GenerateOptions)
+	}{
+		{name: "repository", mutate: func(options *GenerateOptions) { options.Source.Repository += "-mirror" }},
+		{name: "path", mutate: func(options *GenerateOptions) { options.Source.Path += ".moved" }},
+		{name: "revision", mutate: func(options *GenerateOptions) { options.Source.Revision = strings.Repeat("1", 40) }},
+		{name: "digest", mutate: func(options *GenerateOptions) { options.Source.SHA256 = "sha256:" + strings.Repeat("1", 64) }},
+		{name: "version", mutate: func(options *GenerateOptions) { options.Version = fixtureFutureVersion }},
+		{
+			name: "synthetic fixture",
+			mutate: func(options *GenerateOptions) {
+				options.Source = fixturePin(readFixture(t, "testdata/index.yaml"))
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			options := exact
+			test.mutate(&options)
+			if requirements.applies(options) {
+				t.Fatal("reviewed policy requirements apply outside the exact LocalAI source pin and version")
+			}
+		})
+	}
+}
+
+func TestGenerateRequiresEveryApplicableReviewedPolicyOverlay(t *testing.T) {
+	const vllmSource = `- name: vllm
+  capabilities:
+    nvidia: cuda12-vllm
+- name: cuda12-vllm
+  uri: quay.io/go-skynet/local-ai-backends:latest-gpu-nvidia-cuda-12-vllm
+`
+	vllmKey := reviewedPolicyKey{
+		Version:  reviewedLocalAIVersion,
+		Family:   familyVLLM,
+		Selector: selectorNVIDIA,
+		Platform: linuxPlatform(architectureAMD64),
+	}
+	vllmOverlay, found := reviewedPolicyOverlayFor(vllmKey)
+	if !found {
+		t.Fatalf("reviewed vLLM policy overlay %v is missing", vllmKey)
+	}
+
+	completeSource := sourceWithDefaultFixture(t, vllmSource)
+	missingSelectorSource := bytes.Replace(
+		completeSource,
+		[]byte("    nvidia: cuda12-vllm\n"),
+		[]byte("    nvidia-missing: cuda12-vllm\n"),
+		1,
+	)
+	if bytes.Equal(missingSelectorSource, completeSource) {
+		t.Fatal("missing-selector fixture did not change")
+	}
+
+	tests := []struct {
+		name      string
+		source    []byte
+		manifests []ResolvedManifest
+		wantErr   string
+	}{
+		{
+			name:   "complete reviewed tuple",
+			source: completeSource,
+			manifests: []ResolvedManifest{{
+				Digest:   fixtureDigestA,
+				Platform: linuxPlatform(architectureAMD64),
+			}},
+		},
+		{
+			name:   "missing selector",
+			source: missingSelectorSource,
+			manifests: []ResolvedManifest{{
+				Digest:   fixtureDigestA,
+				Platform: linuxPlatform(architectureAMD64),
+			}},
+			wantErr: "reviewed policy overlay v4.8.2/vllm/nvidia on linux/amd64/ did not produce its expected catalog entry",
+		},
+		{
+			name:   "missing non-default vLLM platform",
+			source: completeSource,
+			manifests: []ResolvedManifest{{
+				Digest:   fixtureDigestA,
+				Platform: linuxPlatform(architectureARM64),
+			}},
+			wantErr: "reviewed policy overlay v4.8.2/vllm/nvidia on linux/amd64/ did not produce its expected catalog entry",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pin := fixturePin(test.source)
+			_, err := generate(context.Background(), test.source, GenerateOptions{
+				Source:          pin,
+				Version:         LocalAIVersion,
+				CoreRefTemplate: fixtureCoreRefTemplate,
+				Resolver: scriptedResolver{
+					base: readSnapshot(t, "testdata/resolutions.json"),
+					manifests: staticResolver{
+						vllmOverlay.SourceRef: test.manifests,
+					},
+				},
+			}, reviewedPolicyRequirements{
+				Source:   pin,
+				Version:  reviewedLocalAIVersion,
+				Overlays: []reviewedPolicyOverlay{vllmOverlay},
+			})
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("generate() error = %v", err)
+				}
+
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("generate() error = %v, want containing %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestGenerateDoesNotPromoteFutureRelease(t *testing.T) {
 	source := readFixture(t, "testdata/index.yaml")
 	catalog, err := Generate(context.Background(), source, GenerateOptions{

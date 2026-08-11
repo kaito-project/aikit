@@ -8,6 +8,7 @@ import (
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/util/system"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/pkg/errors"
 )
 
 const (
@@ -22,13 +23,18 @@ const (
 	runnerHFHomeEnv                         = "HF_HOME=/models/.cache/huggingface"
 )
 
-func NewImageConfig(c *config.InferenceConfig, platform *specs.Platform) *specs.Image {
-	backend, err := ResolveBackend(c, *platform)
-	if err != nil {
-		panic("resolving backend for image config: " + err.Error())
+// NewImageConfig resolves the backend plan and creates its image metadata.
+func NewImageConfig(c *config.InferenceConfig, platform *specs.Platform) (*specs.Image, error) {
+	if platform == nil {
+		return nil, errors.New("platform is required")
 	}
 
-	return NewImageConfigWithBackend(c, backend, platform)
+	backend, err := ResolveBackend(c, *platform)
+	if err != nil {
+		return nil, errors.Wrap(err, "resolving backend for image config")
+	}
+
+	return NewImageConfigWithBackend(c, backend, platform), nil
 }
 
 // NewImageConfigWithBackend creates image metadata from a pre-resolved backend plan.

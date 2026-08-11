@@ -1,7 +1,9 @@
 package inference
 
 import (
+	stderrors "errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
@@ -59,7 +61,10 @@ func TestNewImageConfigEntrypoint(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			img := NewImageConfig(tt.config, tt.platform)
+			img, err := NewImageConfig(tt.config, tt.platform)
+			if err != nil {
+				t.Fatalf("NewImageConfig() error = %v", err)
+			}
 
 			if !reflect.DeepEqual(img.Config.Entrypoint, tt.wantEntrypoint) {
 				t.Errorf("entrypoint = %v, want %v", img.Config.Entrypoint, tt.wantEntrypoint)
@@ -225,10 +230,46 @@ func TestNewImageConfigCommandWithLoadToMemory(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			img := NewImageConfig(tt.config, platform)
+			img, err := NewImageConfig(tt.config, platform)
+			if err != nil {
+				t.Fatalf("NewImageConfig() error = %v", err)
+			}
 			if !reflect.DeepEqual(img.Config.Cmd, tt.wantCmd) {
 				t.Errorf("command = %v, want %v", img.Config.Cmd, tt.wantCmd)
 			}
 		})
+	}
+}
+
+func TestNewImageConfigReturnsResolutionError(t *testing.T) {
+	platform := &specs.Platform{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux}
+	image, err := NewImageConfig(&config.InferenceConfig{
+		Runtime:  utils.RuntimeCUDA12,
+		Backends: []string{utils.BackendVLLMCpp},
+	}, platform)
+	if err == nil {
+		t.Fatal("NewImageConfig() succeeded, want error")
+	}
+	if image != nil {
+		t.Fatalf("NewImageConfig() image = %#v, want nil", image)
+	}
+	if !stderrors.Is(err, backendcatalog.ErrNotFound) {
+		t.Fatalf("NewImageConfig() error = %v, want exact resolution failure", err)
+	}
+	if !strings.Contains(err.Error(), "resolving backend for image config") {
+		t.Fatalf("NewImageConfig() error = %q, want image config context", err)
+	}
+}
+
+func TestNewImageConfigRequiresPlatform(t *testing.T) {
+	image, err := NewImageConfig(&config.InferenceConfig{}, nil)
+	if err == nil {
+		t.Fatal("NewImageConfig() succeeded, want error")
+	}
+	if image != nil {
+		t.Fatalf("NewImageConfig() image = %#v, want nil", image)
+	}
+	if err.Error() != "platform is required" {
+		t.Fatalf("NewImageConfig() error = %q, want platform requirement", err)
 	}
 }

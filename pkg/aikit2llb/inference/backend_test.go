@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	stderrors "errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -581,9 +584,14 @@ func TestInstallBackendModelAliasesCoverPrimaryAndFallbackArtifacts(t *testing.T
 		}
 	}
 	for _, guard := range []string{
-		`[ ! -d "$model_path" ]`,
-		`[ -e "$alias_path" ] || [ -L "$alias_path" ]`,
-		`mkdir -p "${alias_path%/*}"`,
+		`require_real_directory "$backend_dir"`,
+		`require_real_directory "$model_path"`,
+		`ensure_real_directory "$ancestor"`,
+		`[ -L "$alias_path" ]`,
+		`actual_target=$(readlink "$alias_path")`,
+		`[ "$actual_target" != "$model_target" ]`,
+		`[ -e "$alias_path" ]`,
+		`mkdir "$directory"`,
 	} {
 		if !strings.Contains(command, guard) {
 			t.Errorf("backend model alias command does not contain guard %q", guard)
@@ -599,6 +607,226 @@ func TestInstallBackendModelAliasesCoverPrimaryAndFallbackArtifacts(t *testing.T
 	if !mountedRoot {
 		t.Fatal("backend model alias operation does not mount the image root")
 	}
+}
+
+func TestBackendModelAliasScriptCreatesExactAliasesIdempotently(t *testing.T) {
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	resolved := testArbitraryBackendPlan(platform)
+	modelPath := "organization/repository"
+	imageRoot := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(imageRoot, "models", filepath.FromSlash(modelPath)), 0o755); err != nil {
+		t.Fatalf("create baked model directory: %v", err)
+	}
+	artifacts := append([]backendcatalog.BackendArtifact{resolved.Backend}, resolved.Fallbacks...)
+	for _, artifact := range artifacts {
+		if err := os.MkdirAll(filepath.Join(imageRoot, "backends", artifact.InstallName), 0o755); err != nil {
+			t.Fatalf("create backend directory %q: %v", artifact.InstallName, err)
+		}
+	}
+
+	for iteration := 0; iteration < 2; iteration++ {
+		output, err := executeBackendModelAliasScript(resolved, []string{modelPath}, imageRoot)
+		if err != nil {
+			t.Fatalf("execute backend model alias script iteration %d: %v: %s", iteration, err, output)
+		}
+	}
+
+	wantTarget := "/models/" + modelPath
+	for _, artifact := range artifacts {
+		backendDir := filepath.Join(imageRoot, "backends", artifact.InstallName)
+		ancestor := filepath.Join(backendDir, "organization")
+		info, err := os.Lstat(ancestor)
+		if err != nil {
+			t.Fatalf("inspect alias ancestor for %q: %v", artifact.InstallName, err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("alias ancestor for %q has mode %s, want real directory", artifact.InstallName, info.Mode())
+		}
+
+		aliasPath := filepath.Join(backendDir, filepath.FromSlash(modelPath))
+		info, err = os.Lstat(aliasPath)
+		if err != nil {
+			t.Fatalf("inspect alias for %q: %v", artifact.InstallName, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("alias for %q has mode %s, want symlink", artifact.InstallName, info.Mode())
+		}
+		gotTarget, err := os.Readlink(aliasPath)
+		if err != nil {
+			t.Fatalf("read alias for %q: %v", artifact.InstallName, err)
+		}
+		if gotTarget != wantTarget {
+			t.Fatalf("alias for %q points to %q, want %q", artifact.InstallName, gotTarget, wantTarget)
+		}
+	}
+}
+
+func TestBackendModelAliasScriptFailsClosedOnUnsafeLayouts(t *testing.T) {
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	modelPath := "organization/repository"
+	tests := []struct {
+		name        string
+		wantMessage string
+		setup       func(t *testing.T, imageRoot string, backendDir string, modelDir string)
+		verify      func(t *testing.T, imageRoot string, backendDir string)
+	}{
+		{
+			name:        "missing baked model directory",
+			wantMessage: "Backend model alias path is not a directory",
+			setup: func(t *testing.T, _ string, backendDir string, _ string) {
+				t.Helper()
+				if err := os.MkdirAll(backendDir, 0o755); err != nil {
+					t.Fatalf("create backend directory: %v", err)
+				}
+			},
+		},
+		{
+			name:        "missing backend directory",
+			wantMessage: "Backend model alias path is not a directory",
+			setup: func(t *testing.T, _ string, _ string, modelDir string) {
+				t.Helper()
+				if err := os.MkdirAll(modelDir, 0o755); err != nil {
+					t.Fatalf("create baked model directory: %v", err)
+				}
+			},
+		},
+		{
+			name:        "backend directory symlink",
+			wantMessage: "Backend model alias path is a symlink",
+			setup: func(t *testing.T, imageRoot string, backendDir string, modelDir string) {
+				t.Helper()
+				if err := os.MkdirAll(modelDir, 0o755); err != nil {
+					t.Fatalf("create baked model directory: %v", err)
+				}
+				outside := filepath.Join(imageRoot, "outside-backend")
+				if err := os.MkdirAll(outside, 0o755); err != nil {
+					t.Fatalf("create outside backend directory: %v", err)
+				}
+				if err := os.MkdirAll(filepath.Dir(backendDir), 0o755); err != nil {
+					t.Fatalf("create backends directory: %v", err)
+				}
+				if err := os.Symlink(outside, backendDir); err != nil {
+					t.Fatalf("create backend symlink: %v", err)
+				}
+			},
+		},
+		{
+			name:        "alias ancestor symlink",
+			wantMessage: "Backend model alias ancestor is a symlink",
+			setup: func(t *testing.T, imageRoot string, backendDir string, modelDir string) {
+				t.Helper()
+				if err := os.MkdirAll(modelDir, 0o755); err != nil {
+					t.Fatalf("create baked model directory: %v", err)
+				}
+				if err := os.MkdirAll(backendDir, 0o755); err != nil {
+					t.Fatalf("create backend directory: %v", err)
+				}
+				outside := filepath.Join(imageRoot, "outside-ancestor")
+				if err := os.MkdirAll(outside, 0o755); err != nil {
+					t.Fatalf("create outside ancestor directory: %v", err)
+				}
+				if err := os.Symlink(outside, filepath.Join(backendDir, "organization")); err != nil {
+					t.Fatalf("create ancestor symlink: %v", err)
+				}
+			},
+			verify: func(t *testing.T, imageRoot string, _ string) {
+				t.Helper()
+				outsideAlias := filepath.Join(imageRoot, "outside-ancestor", "repository")
+				if _, err := os.Lstat(outsideAlias); !os.IsNotExist(err) {
+					t.Fatalf("outside alias unexpectedly exists or could not be inspected: %v", err)
+				}
+			},
+		},
+		{
+			name:        "alias ancestor regular file",
+			wantMessage: "Backend model alias ancestor is not a directory",
+			setup: func(t *testing.T, _ string, backendDir string, modelDir string) {
+				t.Helper()
+				if err := os.MkdirAll(modelDir, 0o755); err != nil {
+					t.Fatalf("create baked model directory: %v", err)
+				}
+				if err := os.MkdirAll(backendDir, 0o755); err != nil {
+					t.Fatalf("create backend directory: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(backendDir, "organization"), []byte("conflict"), 0o600); err != nil {
+					t.Fatalf("create ancestor file: %v", err)
+				}
+			},
+		},
+		{
+			name:        "final alias regular file",
+			wantMessage: "Backend model alias conflicts with existing path",
+			setup: func(t *testing.T, _ string, backendDir string, modelDir string) {
+				t.Helper()
+				prepareBackendModelAliasParents(t, backendDir, modelDir)
+				if err := os.WriteFile(filepath.Join(backendDir, filepath.FromSlash(modelPath)), []byte("conflict"), 0o600); err != nil {
+					t.Fatalf("create alias file: %v", err)
+				}
+			},
+		},
+		{
+			name:        "final alias directory",
+			wantMessage: "Backend model alias conflicts with existing path",
+			setup: func(t *testing.T, _ string, backendDir string, modelDir string) {
+				t.Helper()
+				prepareBackendModelAliasParents(t, backendDir, modelDir)
+				if err := os.Mkdir(filepath.Join(backendDir, filepath.FromSlash(modelPath)), 0o755); err != nil {
+					t.Fatalf("create alias directory: %v", err)
+				}
+			},
+		},
+		{
+			name:        "final alias wrong symlink",
+			wantMessage: "Backend model alias has unexpected target",
+			setup: func(t *testing.T, _ string, backendDir string, modelDir string) {
+				t.Helper()
+				prepareBackendModelAliasParents(t, backendDir, modelDir)
+				if err := os.Symlink("/models/wrong", filepath.Join(backendDir, filepath.FromSlash(modelPath))); err != nil {
+					t.Fatalf("create wrong alias symlink: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resolved := testArbitraryBackendPlan(platform)
+			resolved.Fallbacks = nil
+			imageRoot := t.TempDir()
+			backendDir := filepath.Join(imageRoot, "backends", resolved.Backend.InstallName)
+			modelDir := filepath.Join(imageRoot, "models", filepath.FromSlash(modelPath))
+			test.setup(t, imageRoot, backendDir, modelDir)
+
+			output, err := executeBackendModelAliasScript(resolved, []string{modelPath}, imageRoot)
+			if err == nil {
+				t.Fatalf("backend model alias script succeeded, want failure: %s", output)
+			}
+			if !strings.Contains(output, test.wantMessage) {
+				t.Fatalf("backend model alias script output = %q, want message containing %q", output, test.wantMessage)
+			}
+			if test.verify != nil {
+				test.verify(t, imageRoot, backendDir)
+			}
+		})
+	}
+}
+
+func prepareBackendModelAliasParents(t *testing.T, backendDir string, modelDir string) {
+	t.Helper()
+	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+		t.Fatalf("create baked model directory: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(backendDir, "organization"), 0o755); err != nil {
+		t.Fatalf("create backend alias parent: %v", err)
+	}
+}
+
+func executeBackendModelAliasScript(backend backendcatalog.Resolution, modelPaths []string, imageRoot string) (string, error) {
+	command := exec.Command("sh")
+	command.Stdin = strings.NewReader(backendModelAliasScript(backend, modelPaths, imageRoot))
+	output, err := command.CombinedOutput()
+	return string(output), err
 }
 
 func testArbitraryBackendPlan(platform specs.Platform) backendcatalog.Resolution {

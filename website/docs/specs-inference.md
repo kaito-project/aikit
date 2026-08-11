@@ -36,15 +36,15 @@ AIKit enters **runner mode** only when `backends` contains one family and `model
 | `runtime` value | Requested profile |
 |---|---|
 | Omitted or `cpu` | CPU/default artifact. |
-| `cuda` | CUDA 12; retained as the backward-compatible alias. |
-| `cuda-12` | Exact CUDA 12 artifact. |
+| `cuda` | Legacy CUDA 12 compatibility mapping, retained for existing configurations. |
+| `cuda-12` | Explicit CUDA 12 request. |
 | `cuda-13` | Exact CUDA 13 artifact. |
 | `rocm` | AMD ROCm artifact. |
 | `applesilicon` | Apple Silicon ARM64 profile. |
 
 `vulkan` and `intel` are not public runtime values. On Linux ARM64, a CUDA request resolves internally to the corresponding exact NVIDIA L4T artifact for the requested CUDA major. If that backend and platform do not have the corresponding artifact, the build fails.
 
-Existing aikitfiles that omit `runtime` or use `runtime: cuda`, `runtime: rocm`, or `runtime: applesilicon` remain valid. `cpu`, `cuda-12`, and `cuda-13` add explicit spellings without changing those existing values.
+Existing aikitfiles that omit `runtime` or use `runtime: cuda`, `runtime: rocm`, or `runtime: applesilicon` remain valid. `cuda` preserves the legacy CUDA 12 catalog mapping; it is not interchangeable with an explicit `cuda-12` request. Depending on the backend family and frontend release, `cuda` and `cuda-12` can resolve to different catalog entries, LocalAI versions, or artifact digests. Keep `cuda` when preserving an existing configuration's selection semantics, and use `cuda-12` for a new explicit CUDA 12 request.
 
 Source compatibility does not guarantee identical image contents across frontend releases. A newer frontend can embed different artifact digests, defaults, statuses, or install instructions. Pin the frontend by digest when those choices must remain fixed.
 
@@ -92,7 +92,7 @@ Catalog entries have one of these statuses:
 
 Status describes tuple selection, not end-to-end validation of every workload, and it does not make a tuple runner-capable. Runner mode separately requires `runnerProfile`.
 
-AIKit does not silently substitute another family, CUDA major, runtime, or platform. A missing, incompatible, quarantined, or deprecated selection fails the build. In particular, `cuda-12` never falls forward to CUDA 13, `cuda-13` never falls back to CUDA 12, and an unavailable CUDA ARM64/L4T artifact is not replaced with an AMD64 artifact. For a multi-platform build, every requested platform must resolve before the build proceeds.
+AIKit does not silently substitute another family, CUDA major, runtime, or platform. A missing, incompatible, quarantined, or deprecated selection fails the build. In particular, `cuda` is not rewritten to `cuda-12`, `cuda-12` never falls forward to CUDA 13, `cuda-13` never falls back to CUDA 12, and an unavailable CUDA ARM64/L4T artifact is not replaced with an AMD64 artifact. For a multi-platform build, every requested platform must resolve before the build proceeds.
 
 Catalog `fallbacks` are different from selection fallback. They are digest-pinned companion artifacts deliberately installed by the selected plan—for example, a CUDA llama.cpp plan can include its CPU backend for runtime use without a GPU. AIKit never reaches for an undeclared artifact or changes the requested tuple to make resolution succeed.
 

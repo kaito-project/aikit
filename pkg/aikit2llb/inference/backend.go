@@ -180,45 +180,92 @@ func installBackendModelAliases(backend backendcatalog.Resolution, modelPaths []
 		return s
 	}
 
+	script := backendModelAliasScript(backend, modelPaths, "/aikit-root")
+	helper := orasToolingImage(buildPlatform)
+	run := helper.Run(
+		utils.Sh(script),
+		llb.WithCustomName("Linking baked model directories into backend working directories"),
+	)
+	return run.AddMount("/aikit-root", s)
+}
+
+func backendModelAliasScript(backend backendcatalog.Resolution, modelPaths []string, imageRoot string) string {
 	artifacts := make([]backendcatalog.BackendArtifact, 0, 1+len(backend.Fallbacks))
 	artifacts = append(artifacts, backend.Backend)
 	artifacts = append(artifacts, backend.Fallbacks...)
 
 	seenInstallNames := make(map[string]struct{}, len(artifacts))
 	var script strings.Builder
-	script.WriteString("set -eu\n")
+	script.WriteString(`set -eu
+fail() {
+  printf '%s\n' "$1" >&2
+  exit 1
+}
+require_real_directory() {
+  directory=$1
+  if [ -L "$directory" ]; then
+    fail "Backend model alias path is a symlink: $directory"
+  fi
+  if [ ! -d "$directory" ]; then
+    fail "Backend model alias path is not a directory: $directory"
+  fi
+}
+ensure_real_directory() {
+  directory=$1
+  if [ -L "$directory" ]; then
+    fail "Backend model alias ancestor is a symlink: $directory"
+  fi
+  if [ -e "$directory" ]; then
+    if [ ! -d "$directory" ]; then
+      fail "Backend model alias ancestor is not a directory: $directory"
+    fi
+    return
+  fi
+  if ! mkdir "$directory"; then
+    fail "Failed to create backend model alias ancestor: $directory"
+  fi
+}
+`)
 	for _, artifact := range artifacts {
 		if _, ok := seenInstallNames[artifact.InstallName]; ok {
 			continue
 		}
 		seenInstallNames[artifact.InstallName] = struct{}{}
 
-		backendDir := path.Join("/aikit-root/backends", artifact.InstallName)
+		backendDir := path.Join(imageRoot, "backends", artifact.InstallName)
+		fmt.Fprintf(&script, "backend_dir=%s\n", quoteShellWord(backendDir))
+		script.WriteString("require_real_directory \"$backend_dir\"\n")
 		for _, modelPath := range modelPaths {
 			alias := path.Join(backendDir, modelPath)
-			materialized := path.Join("/aikit-root/models", modelPath)
+			materialized := path.Join(imageRoot, "models", modelPath)
 			target := path.Join("/models", modelPath)
 			fmt.Fprintf(&script, "alias_path=%s\n", quoteShellWord(alias))
 			fmt.Fprintf(&script, "model_path=%s\n", quoteShellWord(materialized))
 			fmt.Fprintf(&script, "model_target=%s\n", quoteShellWord(target))
-			script.WriteString("if [ ! -d \"$model_path\" ]; then\n")
-			script.WriteString("  echo \"Skipping model alias $alias_path: baked directory is missing\" >&2\n")
-			script.WriteString("elif [ -e \"$alias_path\" ] || [ -L \"$alias_path\" ]; then\n")
-			script.WriteString("  echo \"Skipping model alias $alias_path: backend path already exists\" >&2\n")
-			script.WriteString("elif mkdir -p \"${alias_path%/*}\"; then\n")
-			script.WriteString("  ln -s \"$model_target\" \"$alias_path\"\n")
-			script.WriteString("else\n")
-			script.WriteString("  echo \"Skipping model alias $alias_path: parent path conflicts with backend contents\" >&2\n")
+			script.WriteString("require_real_directory \"$model_path\"\n")
+
+			ancestor := backendDir
+			components := strings.Split(modelPath, "/")
+			for _, component := range components[:len(components)-1] {
+				ancestor = path.Join(ancestor, component)
+				fmt.Fprintf(&script, "ancestor=%s\n", quoteShellWord(ancestor))
+				script.WriteString("ensure_real_directory \"$ancestor\"\n")
+			}
+
+			script.WriteString("if [ -L \"$alias_path\" ]; then\n")
+			script.WriteString("  actual_target=$(readlink \"$alias_path\") || fail \"Failed to read backend model alias: $alias_path\"\n")
+			script.WriteString("  if [ \"$actual_target\" != \"$model_target\" ]; then\n")
+			script.WriteString("    fail \"Backend model alias has unexpected target: $alias_path -> $actual_target\"\n")
+			script.WriteString("  fi\n")
+			script.WriteString("elif [ -e \"$alias_path\" ]; then\n")
+			script.WriteString("  fail \"Backend model alias conflicts with existing path: $alias_path\"\n")
+			script.WriteString("elif ! ln -s \"$model_target\" \"$alias_path\"; then\n")
+			script.WriteString("  fail \"Failed to create backend model alias: $alias_path\"\n")
 			script.WriteString("fi\n")
 		}
 	}
 
-	helper := orasToolingImage(buildPlatform)
-	run := helper.Run(
-		utils.Sh(script.String()),
-		llb.WithCustomName("Linking baked model directories into backend working directories"),
-	)
-	return run.AddMount("/aikit-root", s)
+	return script.String()
 }
 
 func quoteShellWord(value string) string {

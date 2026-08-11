@@ -78,9 +78,11 @@ The `model` build argument is the model URL to download and use. You can use any
 
 The `runtime` build argument requests a runtime from the frontend's embedded backend catalog. By default, AIKit selects the catalog's CPU runtime and default backend family. You can also set `cpu` explicitly.
 
-You can use `cuda` to request NVIDIA CUDA 12 runtime libraries. `cuda` remains an alias for `cuda-12`; use `cuda-13` to request CUDA 13 exactly. For example:
+You can use `cuda` to preserve AIKit's legacy NVIDIA CUDA 12 compatibility mapping. For example:
 
 `--build-arg="runtime=cuda"`.
+
+For a new explicit CUDA 12 request, use `cuda-12`. These are distinct catalog mappings: depending on the backend family and frontend release, `cuda` and `cuda-12` can resolve to different LocalAI versions or artifact digests even though both target CUDA 12. Use `cuda-13` to request CUDA 13 exactly.
 
 You can use `rocm` to request an AMD ROCm catalog plan. This guide's ROCm example uses `llama-cpp` on Linux AMD64. For example:
 
