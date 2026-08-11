@@ -1,0 +1,18 @@
+#syntax=aikit:test
+apiVersion: v1alpha1
+debug: true
+backendCapability: default
+backends:
+  - piper
+models:
+  - name: en/en_US/amy/low/en_US-amy-low.onnx
+    source: https://huggingface.co/rhasspy/piper-voices/resolve/ea046e8458f6acd997706d6e6066a022b42f6fb1/en/en_US/amy/low/en_US-amy-low.onnx
+    sha256: "a5a91abb7de0f104358a25aded480ddacf1ff0762886325886ec406a2e86aab3"
+  - name: en/en_US/amy/low/en_US-amy-low.onnx.json
+    source: https://huggingface.co/rhasspy/piper-voices/resolve/ea046e8458f6acd997706d6e6066a022b42f6fb1/en/en_US/amy/low/en_US-amy-low.onnx.json
+    sha256: "2250a9a605b8dc35a116717fadc5056695dd809e34a15d02f72a0f52d53d3ebb"
+config: |
+  - name: piper-smoke
+    backend: piper
+    parameters:
+      model: en/en_US/amy/low/en_US-amy-low.onnx

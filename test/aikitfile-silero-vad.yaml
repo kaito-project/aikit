@@ -1,0 +1,15 @@
+#syntax=aikit:test
+apiVersion: v1alpha1
+debug: true
+backendCapability: default
+backends:
+  - silero-vad
+models:
+  - name: model.onnx
+    source: https://huggingface.co/onnx-community/silero-vad/resolve/e71cae966052b992a7eca6b17738916ce0eca4ec/onnx/model.onnx
+    sha256: "a4a068cd6cf1ea8355b84327595838ca748ec29a25bc91fc82e6c299ccdc5808"
+config: |
+  - name: silero-vad-smoke
+    backend: silero-vad
+    parameters:
+      model: model.onnx
