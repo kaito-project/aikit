@@ -36,15 +36,15 @@ AIKit enters **runner mode** only when `backends` contains one family and `model
 | `runtime` value | Requested profile |
 |---|---|
 | Omitted or `cpu` | CPU/default artifact. |
-| `cuda` | Legacy CUDA 12 compatibility mapping, retained for existing configurations. |
+| `cuda` | Legacy family-specific CUDA mapping, retained for existing configurations. |
 | `cuda-12` | Explicit CUDA 12 request. |
 | `cuda-13` | Exact CUDA 13 artifact. |
 | `rocm` | AMD ROCm artifact. |
 | `applesilicon` | Apple Silicon ARM64 profile. |
 
-`vulkan` and `intel` are not public runtime values. On Linux ARM64, a CUDA request resolves internally to the corresponding exact NVIDIA L4T artifact for the requested CUDA major. If that backend and platform do not have the corresponding artifact, the build fails.
+`vulkan` and `intel` are not public runtime values. On Linux ARM64, `cuda-12` and `cuda-13` resolve internally to the corresponding exact NVIDIA L4T artifact, while `cuda` uses the backend family's legacy L4T mapping. If that backend and platform do not have the required artifact, the build fails.
 
-Existing aikitfiles that omit `runtime` or use `runtime: cuda`, `runtime: rocm`, or `runtime: applesilicon` remain valid. `cuda` preserves the legacy CUDA 12 catalog mapping; it is not interchangeable with an explicit `cuda-12` request. Depending on the backend family and frontend release, `cuda` and `cuda-12` can resolve to different catalog entries, LocalAI versions, or artifact digests. Keep `cuda` when preserving an existing configuration's selection semantics, and use `cuda-12` for a new explicit CUDA 12 request.
+Existing aikitfiles that omit `runtime` or use `runtime: cuda`, `runtime: rocm`, or `runtime: applesilicon` remain API-compatible, but a build still requires the selected frontend to contain the requested family, runtime, and platform tuple. `cuda` preserves each backend family's legacy CUDA mapping; it can select CUDA 12 or CUDA 13 and is not interchangeable with an explicit `cuda-12` request. Depending on the backend family and frontend release, `cuda` and `cuda-12` can resolve to different CUDA majors, catalog entries, LocalAI versions, or artifact digests. Keep `cuda` when preserving an existing configuration's selection semantics, and use `cuda-12` for a new explicit CUDA 12 request.
 
 Source compatibility does not guarantee identical image contents across frontend releases. A newer frontend can embed different artifact digests, defaults, statuses, or install instructions. Pin the frontend by digest when those choices must remain fixed.
 
@@ -63,7 +63,7 @@ For every standard build, AIKit resolves one exact plan for each target platform
 | `environment` | Runtime environment added to the image. |
 | `runnerProfile` | Explicit runner adapter, consulted only in runner mode. |
 
-The runtime base, LocalAI core, and backend artifacts are all OCI digest-pinned. Package names in `systemPackages` are resolved at build time and are not version- or digest-locked by the catalog. Any `supported` or `experimental` catalog tuple can be materialized in standard mode, including families not covered by a dedicated AIKit guide. Generic installation does not prove that a particular model format or LocalAI configuration works end to end; the model and `config` must still match the selected LocalAI backend.
+The runtime base, LocalAI core, and backend artifacts are all OCI digest-pinned. Package names in `systemPackages` are resolved at build time and are not version- or digest-locked by the catalog. Any `supported` or `experimental` tuple reachable through the public runtimes above can be materialized in standard mode, including families not covered by a dedicated AIKit guide. The catalog can also contain internal tuples that are not public runtime choices. Generic installation does not prove that a particular model format or LocalAI configuration works end to end; the model and `config` must still match the selected LocalAI backend.
 
 Use an explicit versioned CUDA runtime when the CUDA major must be fixed:
 
@@ -85,8 +85,8 @@ Catalog entries have one of these statuses:
 
 | Status | Build behavior |
 |---|---|
-| `supported` | Selectable for the exact family, runtime, and platform tuple under AIKit's current support policy. |
-| `experimental` | Selectable for the exact tuple, but has less compatibility assurance and may change. |
+| `supported` | Selectable under AIKit's current support policy when the tuple is reachable through a public runtime. |
+| `experimental` | Selectable when reachable through a public runtime, but has less compatibility assurance and may change. |
 | `quarantined` | Disabled by catalog policy; builds cannot select it. |
 | `deprecated` | Retained as catalog history but unavailable for new builds. |
 

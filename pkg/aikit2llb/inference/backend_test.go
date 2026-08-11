@@ -151,6 +151,19 @@ func TestResolveBackendCurrentCompatibility(t *testing.T) {
 			wantRunner:  backendcatalog.RunnerProfileVLLMCpp,
 		},
 		{
+			name: "legacy CUDA vllm-cpp",
+			config: &config.InferenceConfig{
+				Runtime:  utils.RuntimeNVIDIA,
+				Backends: []string{utils.BackendVLLMCpp},
+			},
+			platform:        specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64},
+			wantName:        "cuda13-vllm-cpp",
+			wantVersion:     testLocalAIVersion,
+			wantProfile:     backendcatalog.TargetProfileCUDA13,
+			wantRunner:      backendcatalog.RunnerProfileVLLMCpp,
+			wantEnvironment: testCUDA13Environment,
+		},
+		{
 			name: "exact CUDA 13 vllm-cpp",
 			config: &config.InferenceConfig{
 				Runtime:  utils.RuntimeCUDA13,
@@ -210,13 +223,6 @@ func TestResolveBackendFailsClosed(t *testing.T) {
 		{
 			name:   "unknown family does not become llama-cpp",
 			config: &config.InferenceConfig{Backends: []string{"unknown"}},
-		},
-		{
-			name: "vllm-cpp CUDA alias does not substitute CUDA 13",
-			config: &config.InferenceConfig{
-				Runtime:  utils.RuntimeCUDA,
-				Backends: []string{utils.BackendVLLMCpp},
-			},
 		},
 		{
 			name: "vllm-cpp exact CUDA 12 does not substitute CUDA 13",

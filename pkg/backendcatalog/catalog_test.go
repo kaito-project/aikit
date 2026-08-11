@@ -145,7 +145,16 @@ func TestDefaultResolvesCurrentRunnerTuples(t *testing.T) {
 			wantInstall: "cpu-vllm-cpp", wantRunner: RunnerProfileVLLMCpp,
 		},
 		{
-			name: "vllm.cpp CUDA 13 amd64",
+			name: "vllm.cpp legacy CUDA amd64",
+			request: Request{
+				Family: testFamilyVLLMCpp, Runtime: RuntimeCUDA,
+				Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64},
+			},
+			wantRuntime: RuntimeCUDA, wantTarget: TargetProfileCUDA13,
+			wantInstall: "cuda13-vllm-cpp", wantRunner: RunnerProfileVLLMCpp, wantEnv: testCUDA13Environment,
+		},
+		{
+			name: "vllm.cpp exact CUDA 13 amd64",
 			request: Request{
 				Family: testFamilyVLLMCpp, Runtime: RuntimeCUDA13,
 				Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64},
@@ -220,6 +229,8 @@ func TestDefaultMapsPublicRuntimesToInternalSelectors(t *testing.T) {
 		{name: "family CPU alias", family: "vllm", runtime: RuntimeCPU, architecture: testArchitectureAMD64, wantSelector: SelectorCPU, wantTarget: TargetProfileCPU},
 		{name: "CUDA alias amd64", runtime: RuntimeCUDA, architecture: testArchitectureAMD64, wantSelector: SelectorNVIDIA, wantTarget: TargetProfileCUDA12},
 		{name: "CUDA alias arm64", runtime: RuntimeCUDA, architecture: testArchitectureARM64, wantSelector: SelectorNVIDIAL4T, wantTarget: TargetProfileL4TCUDA12},
+		{name: "family CUDA 13 alias amd64", family: testFamilyVLLMCpp, runtime: RuntimeCUDA, architecture: testArchitectureAMD64, wantSelector: SelectorNVIDIA, wantTarget: TargetProfileCUDA13},
+		{name: "family L4T CUDA 13 alias arm64", family: testFamilyVLLMCpp, runtime: RuntimeCUDA, architecture: testArchitectureARM64, wantSelector: SelectorNVIDIAL4T, wantTarget: TargetProfileL4TCUDA13},
 		{name: "exact CUDA 12 amd64", runtime: RuntimeCUDA12, architecture: testArchitectureAMD64, wantSelector: SelectorNVIDIACUDA12, wantTarget: TargetProfileCUDA12},
 		{name: "exact CUDA 12 arm64", runtime: RuntimeCUDA12, architecture: testArchitectureARM64, wantSelector: SelectorL4TCUDA12, wantTarget: TargetProfileL4TCUDA12},
 		{name: "exact CUDA 13 amd64", runtime: RuntimeCUDA13, architecture: testArchitectureAMD64, wantSelector: SelectorNVIDIACUDA13, wantTarget: TargetProfileCUDA13},
@@ -266,13 +277,6 @@ func TestResolverRejectsUnsupportedPublicRuntimeTuples(t *testing.T) {
 		request Request
 		wantErr error
 	}{
-		{
-			name: "CUDA alias does not select vllm-cpp CUDA 13",
-			request: Request{Family: testFamilyVLLMCpp, Runtime: RuntimeCUDA, Platform: Platform{
-				OS: testOSLinux, Architecture: testArchitectureAMD64,
-			}},
-			wantErr: ErrNotFound,
-		},
 		{
 			name: "exact CUDA 12 does not select vllm-cpp CUDA 13",
 			request: Request{Family: testFamilyVLLMCpp, Runtime: RuntimeCUDA12, Platform: Platform{

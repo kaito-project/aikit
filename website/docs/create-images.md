@@ -78,11 +78,11 @@ The `model` build argument is the model URL to download and use. You can use any
 
 The `runtime` build argument requests a runtime from the frontend's embedded backend catalog. By default, AIKit selects the catalog's CPU runtime and default backend family. You can also set `cpu` explicitly.
 
-You can use `cuda` to preserve AIKit's legacy NVIDIA CUDA 12 compatibility mapping. For example:
+You can use `cuda` to preserve AIKit's legacy family-specific NVIDIA CUDA mapping. For example:
 
 `--build-arg="runtime=cuda"`.
 
-For a new explicit CUDA 12 request, use `cuda-12`. These are distinct catalog mappings: depending on the backend family and frontend release, `cuda` and `cuda-12` can resolve to different LocalAI versions or artifact digests even though both target CUDA 12. Use `cuda-13` to request CUDA 13 exactly.
+For a new explicit CUDA 12 request, use `cuda-12`. These are distinct catalog mappings: depending on the backend family and frontend release, `cuda` can select CUDA 12 or CUDA 13 and can resolve to a different LocalAI version or artifact digest. Use `cuda-13` to request CUDA 13 exactly.
 
 You can use `rocm` to request an AMD ROCm catalog plan. This guide's ROCm example uses `llama-cpp` on Linux AMD64. For example:
 
@@ -106,7 +106,7 @@ docker buildx build -t my-model --load \
 [Pre-made models](https://kaito-project.github.io/aikit/docs/premade-models) are offered with multi-platform support. Docker runtime will automatically choose the correct platform to run the image. For more information, please see [multi-platform images documentation](https://docs.docker.com/build/building/multi-platform/).
 
 :::note
-The default CPU `llama-cpp` tuple supports both Linux AMD64 and ARM64. Other combinations are release-specific. For CUDA on Linux ARM64, AIKit selects the corresponding L4T artifact for the requested CUDA major internally. AIKit preflights every requested platform and fails the whole request if any tuple is unavailable; it does not silently choose a different backend, CUDA major, runtime, or platform.
+The default CPU `llama-cpp` tuple supports both Linux AMD64 and ARM64. Other combinations are release-specific. On Linux ARM64, `cuda-12` and `cuda-13` select the corresponding L4T artifact, while `cuda` uses the backend family's legacy L4T mapping. AIKit preflights every requested platform and fails the whole request if any tuple is unavailable; it does not silently choose a different backend, CUDA major, runtime, or platform.
 :::
 
 ## Advanced Usage

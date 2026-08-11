@@ -221,7 +221,7 @@ type tupleKey struct {
 
 type runtimeSelection struct {
 	catalogRuntime Runtime
-	targetProfile  TargetProfile
+	targetProfiles []TargetProfile
 	selectors      []Selector
 }
 
@@ -328,7 +328,7 @@ func (r *Resolver) Resolve(request Request) (Resolution, error) {
 	found := false
 	for _, selector := range selection.selectors {
 		candidate, ok := r.entries[keyFor(request.Family, selector, request.Platform)]
-		if !ok || candidate.Runtime != selection.catalogRuntime || candidate.TargetProfile != selection.targetProfile {
+		if !ok || candidate.Runtime != selection.catalogRuntime || !containsTargetProfile(selection.targetProfiles, candidate.TargetProfile) {
 			continue
 		}
 		entry = candidate
@@ -360,18 +360,18 @@ func (r *Resolver) selectRuntime(runtime Runtime, platform Platform) (runtimeSel
 			selectors = append(selectors, SelectorCPU)
 		}
 
-		return runtimeSelection{catalogRuntime: RuntimeCPU, targetProfile: TargetProfileCPU, selectors: selectors}, nil
+		return runtimeSelection{catalogRuntime: RuntimeCPU, targetProfiles: []TargetProfile{TargetProfileCPU}, selectors: selectors}, nil
 	case RuntimeCUDA:
 		selector, ok := r.platformDefaults[defaultSelectorKeyFor(RuntimeCUDA, platform)]
 		if !ok {
 			selector = r.defaults[RuntimeCUDA]
 		}
-		target := TargetProfileCUDA12
+		targets := []TargetProfile{TargetProfileCUDA12, TargetProfileCUDA13}
 		if platform.Architecture == platformArchitectureARM64 {
-			target = TargetProfileL4TCUDA12
+			targets = []TargetProfile{TargetProfileL4TCUDA12, TargetProfileL4TCUDA13}
 		}
 
-		return runtimeSelection{catalogRuntime: RuntimeCUDA, targetProfile: target, selectors: []Selector{selector}}, nil
+		return runtimeSelection{catalogRuntime: RuntimeCUDA, targetProfiles: targets, selectors: []Selector{selector}}, nil
 	case RuntimeCUDA12:
 		selector := SelectorNVIDIACUDA12
 		target := TargetProfileCUDA12
@@ -380,7 +380,7 @@ func (r *Resolver) selectRuntime(runtime Runtime, platform Platform) (runtimeSel
 			target = TargetProfileL4TCUDA12
 		}
 
-		return runtimeSelection{catalogRuntime: RuntimeCUDA, targetProfile: target, selectors: []Selector{selector}}, nil
+		return runtimeSelection{catalogRuntime: RuntimeCUDA, targetProfiles: []TargetProfile{target}, selectors: []Selector{selector}}, nil
 	case RuntimeCUDA13:
 		selector := SelectorNVIDIACUDA13
 		target := TargetProfileCUDA13
@@ -389,22 +389,32 @@ func (r *Resolver) selectRuntime(runtime Runtime, platform Platform) (runtimeSel
 			target = TargetProfileL4TCUDA13
 		}
 
-		return runtimeSelection{catalogRuntime: RuntimeCUDA, targetProfile: target, selectors: []Selector{selector}}, nil
+		return runtimeSelection{catalogRuntime: RuntimeCUDA, targetProfiles: []TargetProfile{target}, selectors: []Selector{selector}}, nil
 	case RuntimeROCm:
 		return runtimeSelection{
 			catalogRuntime: RuntimeROCm,
-			targetProfile:  TargetProfileROCm,
+			targetProfiles: []TargetProfile{TargetProfileROCm},
 			selectors:      []Selector{r.defaults[RuntimeROCm]},
 		}, nil
 	case RuntimeAppleSilicon:
 		return runtimeSelection{
 			catalogRuntime: RuntimeAppleSilicon,
-			targetProfile:  TargetProfileVulkan,
+			targetProfiles: []TargetProfile{TargetProfileVulkan},
 			selectors:      []Selector{r.defaults[RuntimeAppleSilicon]},
 		}, nil
 	default:
 		return runtimeSelection{}, errors.Wrapf(ErrInvalidRequest, "runtime %q is not supported", runtime)
 	}
+}
+
+func containsTargetProfile(targets []TargetProfile, candidate TargetProfile) bool {
+	for _, target := range targets {
+		if candidate == target {
+			return true
+		}
+	}
+
+	return false
 }
 
 func ensureJSONEOF(decoder *json.Decoder) error {
