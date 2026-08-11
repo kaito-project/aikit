@@ -17882,10 +17882,13 @@
       },
       "runtime": "cuda",
       "targetProfile": "cuda13",
-      "status": "experimental",
+      "status": "supported",
       "channel": "stable",
       "runtimeBase": {
-        "ref": "docker.io/library/ubuntu@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467"
+        "ref": "ghcr.io/kaito-project/aikit/base@sha256:48c78ee9c94b3d928ac56b56da498497676f81955bdf074c258de09d8fe3f3e4"
+      },
+      "runnerRuntimeBase": {
+        "ref": "docker.io/library/ubuntu@sha256:0199853f6d6b20b0424f3c5694a72a62764f01e6a771b1eb48a4197848986c7e"
       },
       "core": {
         "ref": "ghcr.io/kaito-project/aikit/localai@sha256:01c90f6df2a9d5e8d16c80f60a277d45b3c89622251c84a3f833324e0322ee8d"
@@ -17902,7 +17905,7 @@
         "NVIDIA_REQUIRE_CUDA=cuda\u003e=13.0",
         "NVIDIA_VISIBLE_DEVICES=all"
       ],
-      "runnerProfile": "unsupported",
+      "runnerProfile": "vllm-cpp",
       "workloads": [
         "cpu",
         "cuda",

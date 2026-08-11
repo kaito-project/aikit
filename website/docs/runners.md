@@ -6,7 +6,7 @@ Runner images are reusable AIKit images that download models at runtime instead 
 
 Runner mode is available only for a resolved catalog entry with an explicit `runnerProfile`. The profile selects a reviewed AIKit adapter for model download, cache layout, input validation, generated configuration, and startup behavior. It is an internal catalog field, not a value users can add to an aikitfile.
 
-A backend being installable in a standard model image does not make it runner-capable. When `backends` contains one family and `models` is empty, AIKit requests runner mode and fails if that exact family, selector, runtime, and platform tuple has `runnerProfile: unsupported`. There is no silent switch back to standard mode or to a different runner.
+A backend being installable in a standard model image does not make it runner-capable. When `backends` contains one family and `models` is empty, AIKit requests runner mode and fails if that exact family, runtime, and platform tuple has `runnerProfile: unsupported`. There is no silent switch back to standard mode or to a different runner.
 
 ## Pre-built Runner Images
 
@@ -24,7 +24,7 @@ Pre-built runner images are available at `ghcr.io/kaito-project/aikit/runners/`:
 :::note
 Pre-built runner images are currently published for CPU and NVIDIA CUDA only. The exact llama.cpp ROCm tuple is runner-capable for custom builds, but AIKit does not currently publish a pre-built ROCm runner image. Other ROCm families remain unavailable in runner mode unless their exact catalog entries name a runner profile.
 
-Published image names describe the intended runner families, not every possible backend capability. Consult the generated catalog lock for the selected frontend release before relying on a specific CUDA major, L4T variant, architecture, or experimental integration.
+Published image names describe the intended runner families, not every possible runtime. Consult the generated catalog lock for the selected frontend release before relying on a specific CUDA major, architecture, or experimental integration. NVIDIA L4T artifact selection for CUDA on Linux ARM64 is internal.
 :::
 
 ## Quick Start
@@ -178,11 +178,11 @@ Build the CPU or NVIDIA examples for the desired supported platform:
 docker buildx build -t my-runner -f runner.yaml .
 ```
 
-Each example is a catalog request, not an open-ended backend download. The build succeeds only when the exact entry is selectable (`supported` or `experimental`) and its `runnerProfile` is not `unsupported`. Missing tuples and `quarantined` or `deprecated` entries fail the build; AIKit does not fall back to another runner, family, or selector. Use `backendCapability` to request an exact selector, as described in the [Inference API Specifications](specs-inference.md#backend-catalog-selection).
+Each example is a catalog request, not an open-ended backend download. The build succeeds only when the exact entry is selectable (`supported` or `experimental`) and its `runnerProfile` is not `unsupported`. Missing tuples and `quarantined` or `deprecated` entries fail the build; AIKit does not fall back to another runner, family, CUDA major, runtime, or platform. Use `runtime` to request the execution profile, as described in the [Inference API Specifications](specs-inference.md#backend-catalog-selection).
 
 ### Explicit runner adapters
 
-AIKit implements the following runner adapter behaviors. The embedded catalog decides which exact tuples may use them; the family names below describe the current assignments, not a general promise for every selector or platform.
+AIKit implements the following runner adapter behaviors. The embedded catalog decides which exact tuples may use them; the family names below describe the current assignments, not a general promise for every runtime or platform.
 
 | `runnerProfile` | Current family assignment | Behavior |
 |---|---|---|

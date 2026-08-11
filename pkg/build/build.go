@@ -40,6 +40,7 @@ const (
 	keyCacheImports          = "cache-imports"
 	nvidiaUUIDPattern        = `[A-Fa-f0-9]{8}-(?:[A-Fa-f0-9]{4}-){3}[A-Fa-f0-9]{12}`
 	maximumBackendNameLength = 128
+	supportedRuntimeValues   = `"cpu", "cuda", "cuda-12", "cuda-13", "rocm", and "applesilicon"`
 )
 
 var (
@@ -317,10 +318,14 @@ func resolveBackendPlans(cfg *config.InferenceConfig, targetPlatforms []*specs.P
 			return nil, err
 		}
 		if plans[i].Status == backendcatalog.StatusExperimental {
+			runtime := cfg.Runtime
+			if runtime == "" {
+				runtime = string(backendcatalog.RuntimeCPU)
+			}
 			logrus.Warnf(
-				"backend %s selector %s for %s/%s is experimental",
+				"backend %s runtime %s for %s/%s is experimental",
 				plans[i].Family,
-				plans[i].Selector,
+				runtime,
 				platform.OS,
 				platform.Architecture,
 			)
@@ -861,10 +866,16 @@ func validateInferenceConfig(c *config.InferenceConfig) error {
 	}
 
 	switch c.Runtime {
-	case "", utils.RuntimeNVIDIA, utils.RuntimeROCm, utils.RuntimeAppleSilicon:
+	case "",
+		string(backendcatalog.RuntimeCPU),
+		string(backendcatalog.RuntimeCUDA),
+		string(backendcatalog.RuntimeCUDA12),
+		string(backendcatalog.RuntimeCUDA13),
+		string(backendcatalog.RuntimeROCm),
+		string(backendcatalog.RuntimeAppleSilicon):
 		// Exact compatibility is enforced by catalog resolution for each platform.
 	default:
-		return errors.Errorf("runtime %s is not supported", c.Runtime)
+		return errors.Errorf("runtime %q is not supported; supported runtimes are %s", c.Runtime, supportedRuntimeValues)
 	}
 
 	return nil

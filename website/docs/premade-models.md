@@ -69,7 +69,7 @@ To enable GPU acceleration on Apple Silicon, please see [Podman Desktop document
 
 Apple Silicon is an _experimental_ runtime and it may change in the future. This runtime is specific to Apple Silicon only, and it will not work as expected on other architectures, including Intel Macs.
 
-The published Apple Silicon images use the experimental `llama-cpp` Vulkan plan with GGUF models. Other experimental catalog tuples, if present, are not a promise that a published image or end-to-end model workflow is available.
+The published Apple Silicon images use the experimental `llama-cpp` Apple Silicon profile with GGUF models. Other experimental catalog tuples, if present, are not a promise that a published image or end-to-end model workflow is available.
 :::
 
 | Model       | Optimization | Parameters | Command                                                                                                  | Model Name              | License                                                            |

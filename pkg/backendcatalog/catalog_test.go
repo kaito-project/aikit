@@ -81,7 +81,7 @@ func TestDefaultResolvesCurrentRunnerTuples(t *testing.T) {
 		{
 			name: "diffusers CUDA 12 amd64",
 			request: Request{
-				Family: "diffusers", Selector: SelectorNVIDIA, Runtime: RuntimeCUDA,
+				Family: "diffusers", Runtime: RuntimeCUDA,
 				Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64},
 			},
 			wantRuntime: RuntimeCUDA, wantTarget: TargetProfileCUDA12,
@@ -90,7 +90,7 @@ func TestDefaultResolvesCurrentRunnerTuples(t *testing.T) {
 		{
 			name: "llama CPU amd64",
 			request: Request{
-				Family: testFamilyLlamaCpp, Selector: SelectorDefault, Runtime: RuntimeCPU,
+				Family: testFamilyLlamaCpp, Runtime: RuntimeCPU,
 				Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64},
 			},
 			wantRuntime: RuntimeCPU, wantTarget: TargetProfileCPU,
@@ -99,7 +99,7 @@ func TestDefaultResolvesCurrentRunnerTuples(t *testing.T) {
 		{
 			name: "llama CPU arm64",
 			request: Request{
-				Family: testFamilyLlamaCpp, Selector: SelectorDefault, Runtime: RuntimeCPU,
+				Family: testFamilyLlamaCpp, Runtime: RuntimeCPU,
 				Platform: Platform{OS: testOSLinux, Architecture: testArchitectureARM64},
 			},
 			wantRuntime: RuntimeCPU, wantTarget: TargetProfileCPU,
@@ -108,7 +108,7 @@ func TestDefaultResolvesCurrentRunnerTuples(t *testing.T) {
 		{
 			name: "llama CUDA 12 amd64",
 			request: Request{
-				Family: testFamilyLlamaCpp, Selector: SelectorNVIDIA, Runtime: RuntimeCUDA,
+				Family: testFamilyLlamaCpp, Runtime: RuntimeCUDA,
 				Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64},
 			},
 			wantRuntime: RuntimeCUDA, wantTarget: TargetProfileCUDA12,
@@ -118,7 +118,7 @@ func TestDefaultResolvesCurrentRunnerTuples(t *testing.T) {
 		{
 			name: "vLLM CUDA 12 amd64",
 			request: Request{
-				Family: "vllm", Selector: SelectorNVIDIA, Runtime: RuntimeCUDA,
+				Family: "vllm", Runtime: RuntimeCUDA,
 				Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64},
 			},
 			wantRuntime: RuntimeCUDA, wantTarget: TargetProfileCUDA12,
@@ -129,7 +129,7 @@ func TestDefaultResolvesCurrentRunnerTuples(t *testing.T) {
 		{
 			name: "vllm.cpp CPU amd64",
 			request: Request{
-				Family: testFamilyVLLMCpp, Selector: SelectorDefault, Runtime: RuntimeCPU,
+				Family: testFamilyVLLMCpp, Runtime: RuntimeCPU,
 				Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64},
 			},
 			wantRuntime: RuntimeCPU, wantTarget: TargetProfileCPU,
@@ -138,7 +138,7 @@ func TestDefaultResolvesCurrentRunnerTuples(t *testing.T) {
 		{
 			name: "vllm.cpp CPU arm64",
 			request: Request{
-				Family: testFamilyVLLMCpp, Selector: SelectorDefault, Runtime: RuntimeCPU,
+				Family: testFamilyVLLMCpp, Runtime: RuntimeCPU,
 				Platform: Platform{OS: testOSLinux, Architecture: testArchitectureARM64},
 			},
 			wantRuntime: RuntimeCPU, wantTarget: TargetProfileCPU,
@@ -147,7 +147,7 @@ func TestDefaultResolvesCurrentRunnerTuples(t *testing.T) {
 		{
 			name: "vllm.cpp CUDA 13 amd64",
 			request: Request{
-				Family: testFamilyVLLMCpp, Selector: SelectorNVIDIA, Runtime: RuntimeCUDA,
+				Family: testFamilyVLLMCpp, Runtime: RuntimeCUDA13,
 				Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64},
 			},
 			wantRuntime: RuntimeCUDA, wantTarget: TargetProfileCUDA13,
@@ -194,6 +194,139 @@ func TestDefaultResolvesCurrentRunnerTuples(t *testing.T) {
 	}
 }
 
+func TestDefaultMapsPublicRuntimesToInternalSelectors(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := Default()
+	if err != nil {
+		t.Fatalf("parse default catalog: %v", err)
+	}
+	resolver, err := NewResolver(catalog)
+	if err != nil {
+		t.Fatalf("create resolver: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		family       string
+		runtime      Runtime
+		architecture string
+		wantSelector Selector
+		wantTarget   TargetProfile
+	}{
+		{name: "omitted runtime", architecture: testArchitectureAMD64, wantSelector: SelectorDefault, wantTarget: TargetProfileCPU},
+		{name: "CPU amd64", runtime: RuntimeCPU, architecture: testArchitectureAMD64, wantSelector: SelectorDefault, wantTarget: TargetProfileCPU},
+		{name: "CPU arm64", runtime: RuntimeCPU, architecture: testArchitectureARM64, wantSelector: SelectorDefault, wantTarget: TargetProfileCPU},
+		{name: "family CPU alias", family: "vllm", runtime: RuntimeCPU, architecture: testArchitectureAMD64, wantSelector: SelectorCPU, wantTarget: TargetProfileCPU},
+		{name: "CUDA alias amd64", runtime: RuntimeCUDA, architecture: testArchitectureAMD64, wantSelector: SelectorNVIDIA, wantTarget: TargetProfileCUDA12},
+		{name: "CUDA alias arm64", runtime: RuntimeCUDA, architecture: testArchitectureARM64, wantSelector: SelectorNVIDIAL4T, wantTarget: TargetProfileL4TCUDA12},
+		{name: "exact CUDA 12 amd64", runtime: RuntimeCUDA12, architecture: testArchitectureAMD64, wantSelector: SelectorNVIDIACUDA12, wantTarget: TargetProfileCUDA12},
+		{name: "exact CUDA 12 arm64", runtime: RuntimeCUDA12, architecture: testArchitectureARM64, wantSelector: SelectorL4TCUDA12, wantTarget: TargetProfileL4TCUDA12},
+		{name: "exact CUDA 13 amd64", runtime: RuntimeCUDA13, architecture: testArchitectureAMD64, wantSelector: SelectorNVIDIACUDA13, wantTarget: TargetProfileCUDA13},
+		{name: "exact CUDA 13 arm64", runtime: RuntimeCUDA13, architecture: testArchitectureARM64, wantSelector: SelectorL4TCUDA13, wantTarget: TargetProfileL4TCUDA13},
+		{name: "ROCm amd64", runtime: RuntimeROCm, architecture: testArchitectureAMD64, wantSelector: SelectorAMD, wantTarget: TargetProfileROCm},
+		{name: "Apple Silicon arm64", runtime: RuntimeAppleSilicon, architecture: testArchitectureARM64, wantSelector: SelectorVulkan, wantTarget: TargetProfileVulkan},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			resolution, resolveErr := resolver.Resolve(Request{
+				Family:  tt.family,
+				Runtime: tt.runtime,
+				Platform: Platform{
+					OS:           testOSLinux,
+					Architecture: tt.architecture,
+				},
+			})
+			if resolveErr != nil {
+				t.Fatalf("Resolve() error = %v", resolveErr)
+			}
+			if resolution.Selector != tt.wantSelector || resolution.TargetProfile != tt.wantTarget {
+				t.Errorf("selector/target = %q/%q, want %q/%q", resolution.Selector, resolution.TargetProfile, tt.wantSelector, tt.wantTarget)
+			}
+		})
+	}
+}
+
+func TestResolverRejectsUnsupportedPublicRuntimeTuples(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := Default()
+	if err != nil {
+		t.Fatalf("parse default catalog: %v", err)
+	}
+	resolver, err := NewResolver(catalog)
+	if err != nil {
+		t.Fatalf("create resolver: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		request Request
+		wantErr error
+	}{
+		{
+			name: "CUDA alias does not select vllm-cpp CUDA 13",
+			request: Request{Family: testFamilyVLLMCpp, Runtime: RuntimeCUDA, Platform: Platform{
+				OS: testOSLinux, Architecture: testArchitectureAMD64,
+			}},
+			wantErr: ErrNotFound,
+		},
+		{
+			name: "exact CUDA 12 does not select vllm-cpp CUDA 13",
+			request: Request{Family: testFamilyVLLMCpp, Runtime: RuntimeCUDA12, Platform: Platform{
+				OS: testOSLinux, Architecture: testArchitectureAMD64,
+			}},
+			wantErr: ErrNotFound,
+		},
+		{
+			name: "ROCm rejects arm64",
+			request: Request{Runtime: RuntimeROCm, Platform: Platform{
+				OS: testOSLinux, Architecture: testArchitectureARM64,
+			}},
+			wantErr: ErrInvalidRequest,
+		},
+		{
+			name: "Apple Silicon rejects amd64",
+			request: Request{Runtime: RuntimeAppleSilicon, Platform: Platform{
+				OS: testOSLinux, Architecture: testArchitectureAMD64,
+			}},
+			wantErr: ErrInvalidRequest,
+		},
+		{
+			name: "CPU rejects non-Linux",
+			request: Request{Runtime: RuntimeCPU, Platform: Platform{
+				OS: "darwin", Architecture: testArchitectureARM64,
+			}},
+			wantErr: ErrInvalidRequest,
+		},
+		{
+			name: "Vulkan is not public",
+			request: Request{Runtime: Runtime("vulkan"), Platform: Platform{
+				OS: testOSLinux, Architecture: testArchitectureAMD64,
+			}},
+			wantErr: ErrInvalidRequest,
+		},
+		{
+			name: "Intel is not public",
+			request: Request{Runtime: Runtime("intel"), Platform: Platform{
+				OS: testOSLinux, Architecture: testArchitectureAMD64,
+			}},
+			wantErr: ErrInvalidRequest,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if _, resolveErr := resolver.Resolve(tt.request); !stderrors.Is(resolveErr, tt.wantErr) {
+				t.Fatalf("Resolve() error = %v, want %v", resolveErr, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestDefaultRejectsLiveQuarantinedTuples(t *testing.T) {
 	t.Parallel()
 
@@ -208,21 +341,21 @@ func TestDefaultRejectsLiveQuarantinedTuples(t *testing.T) {
 
 	tests := []Request{
 		{
-			Family: "kokoro", Selector: SelectorDefault, Runtime: RuntimeCPU,
+			Family: "kokoro", Runtime: RuntimeCPU,
 			Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64},
 		},
 		{
-			Family: "sglang", Selector: SelectorNVIDIA, Runtime: RuntimeCUDA,
+			Family: "sglang", Runtime: RuntimeCUDA,
 			Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64},
 		},
 		{
-			Family: "sglang", Selector: Selector("nvidia-cuda-12"), Runtime: RuntimeCUDA,
+			Family: "sglang", Runtime: RuntimeCUDA12,
 			Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64},
 		},
 	}
 	for _, request := range tests {
 		if _, err := resolver.Resolve(request); !stderrors.Is(err, ErrUnavailable) {
-			t.Errorf("resolve %s/%s error = %v, want ErrUnavailable", request.Family, request.Selector, err)
+			t.Errorf("resolve %s/%s error = %v, want ErrUnavailable", request.Family, request.Runtime, err)
 		}
 	}
 }
@@ -725,7 +858,6 @@ func TestResolverPrefersPlatformScopedDefault(t *testing.T) {
 		name         string
 		request      Request
 		wantSelector Selector
-		wantErr      error
 	}{
 		{
 			name: "generic amd64 default",
@@ -755,25 +887,12 @@ func TestResolverPrefersPlatformScopedDefault(t *testing.T) {
 			}},
 			wantSelector: SelectorNVIDIAL4T,
 		},
-		{
-			name: "explicit selector does not use platform default",
-			request: Request{Selector: SelectorNVIDIA, Runtime: RuntimeCUDA, Platform: Platform{
-				OS: testOSLinux, Architecture: testArchitectureARM64,
-			}},
-			wantErr: ErrNotFound,
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			resolution, resolveErr := resolver.Resolve(tt.request)
-			if tt.wantErr != nil {
-				if !stderrors.Is(resolveErr, tt.wantErr) {
-					t.Fatalf("Resolve() error = %v, want %v", resolveErr, tt.wantErr)
-				}
-				return
-			}
 			if resolveErr != nil {
 				t.Fatalf("Resolve() error = %v", resolveErr)
 			}
@@ -795,8 +914,7 @@ func TestResolverMatchesExactTupleAndFailsClosed(t *testing.T) {
 
 	exact := Request{
 		Family:   "llama-cpp",
-		Selector: SelectorNVIDIACUDA12,
-		Runtime:  RuntimeCUDA,
+		Runtime:  RuntimeCUDA12,
 		Platform: Platform{OS: "linux", Architecture: "amd64"},
 	}
 	if _, err := resolver.Resolve(exact); err != nil {
@@ -804,10 +922,10 @@ func TestResolverMatchesExactTupleAndFailsClosed(t *testing.T) {
 	}
 
 	notFound := []Request{
-		{Family: testFamilyLlamaCpp, Selector: SelectorNVIDIA, Runtime: exact.Runtime, Platform: exact.Platform},
-		{Family: testFamilyLlamaCpp, Selector: exact.Selector, Runtime: exact.Runtime, Platform: Platform{OS: testOSLinux, Architecture: testArchitectureARM64}},
-		{Family: testFamilyLlamaCpp, Selector: exact.Selector, Runtime: exact.Runtime, Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64, Variant: "v8"}},
-		{Family: testFamilyLlamaCpp, Selector: exact.Selector, Runtime: RuntimeCPU, Platform: exact.Platform},
+		{Family: testFamilyLlamaCpp, Runtime: RuntimeCUDA12, Platform: Platform{OS: testOSLinux, Architecture: testArchitectureARM64}},
+		{Family: testFamilyLlamaCpp, Runtime: RuntimeCUDA12, Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64, Variant: "v8"}},
+		{Family: testFamilyLlamaCpp, Runtime: RuntimeCUDA13, Platform: exact.Platform},
+		{Family: "missing-family", Runtime: RuntimeCPU, Platform: exact.Platform},
 	}
 	for _, request := range notFound {
 		if _, err := resolver.Resolve(request); !stderrors.Is(err, ErrNotFound) {
@@ -832,7 +950,14 @@ func TestResolverNormalizesPlatformAliases(t *testing.T) {
 	t.Parallel()
 
 	catalog := validTestCatalog()
+	catalog.Entries[0].Selector = SelectorDefault
 	catalog.Entries[0].Platform = Platform{OS: testOSLinux, Architecture: testArchitectureARM64}
+	catalog.Entries[0].Runtime = RuntimeCPU
+	catalog.Entries[0].TargetProfile = TargetProfileCPU
+	catalog.Entries[0].Fallbacks = nil
+	catalog.Entries[0].SystemPackages = nil
+	catalog.Entries[0].RuntimeSymlinks = nil
+	catalog.Entries[0].Environment = nil
 	resolver, err := NewResolver(&catalog)
 	if err != nil {
 		t.Fatalf("create resolver: %v", err)
@@ -843,6 +968,7 @@ func TestResolverNormalizesPlatformAliases(t *testing.T) {
 		{OS: testOSLinux, Architecture: testArchitectureARM64, Variant: "v8"},
 	} {
 		request := validTestRequest()
+		request.Runtime = RuntimeCPU
 		request.Platform = platform
 		if _, err := resolver.Resolve(request); err != nil {
 			t.Errorf("resolve platform alias %#v: %v", platform, err)
@@ -869,7 +995,6 @@ func TestResolverIgnoresCompatibleCPUVariantsForLookup(t *testing.T) {
 			},
 			incompatiblePlatforms: []Platform{
 				{OS: testOSLinux, Architecture: testArchitectureAMD64, Variant: "v5"},
-				{OS: "darwin", Architecture: testArchitectureAMD64, Variant: "v3"},
 			},
 		},
 		{
@@ -888,7 +1013,14 @@ func TestResolverIgnoresCompatibleCPUVariantsForLookup(t *testing.T) {
 			t.Parallel()
 
 			catalog := validTestCatalog()
+			catalog.Entries[0].Selector = SelectorDefault
 			catalog.Entries[0].Platform = tt.entryPlatform
+			catalog.Entries[0].Runtime = RuntimeCPU
+			catalog.Entries[0].TargetProfile = TargetProfileCPU
+			catalog.Entries[0].Fallbacks = nil
+			catalog.Entries[0].SystemPackages = nil
+			catalog.Entries[0].RuntimeSymlinks = nil
+			catalog.Entries[0].Environment = nil
 			resolver, err := NewResolver(&catalog)
 			if err != nil {
 				t.Fatalf("create resolver: %v", err)
@@ -896,6 +1028,7 @@ func TestResolverIgnoresCompatibleCPUVariantsForLookup(t *testing.T) {
 
 			for _, platform := range tt.compatiblePlatforms {
 				request := validTestRequest()
+				request.Runtime = RuntimeCPU
 				request.Platform = platform
 				if _, err := resolver.Resolve(request); err != nil {
 					t.Errorf("resolve compatible platform %#v: %v", platform, err)
@@ -903,6 +1036,7 @@ func TestResolverIgnoresCompatibleCPUVariantsForLookup(t *testing.T) {
 			}
 			for _, platform := range tt.incompatiblePlatforms {
 				request := validTestRequest()
+				request.Runtime = RuntimeCPU
 				request.Platform = platform
 				if _, err := resolver.Resolve(request); !stderrors.Is(err, ErrNotFound) {
 					t.Errorf("resolve incompatible platform %#v error = %v, want ErrNotFound", platform, err)
@@ -1063,7 +1197,6 @@ func validTestCatalog() Catalog {
 func validTestRequest() Request {
 	return Request{
 		Family:   testFamilyLlamaCpp,
-		Selector: SelectorNVIDIACUDA12,
 		Runtime:  RuntimeCUDA,
 		Platform: Platform{OS: testOSLinux, Architecture: testArchitectureAMD64},
 	}

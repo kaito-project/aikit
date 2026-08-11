@@ -281,14 +281,27 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			name:              "vllm-cpp CUDA",
 			family:            familyVLLMCpp,
 			selector:          selectorNVIDIA,
-			target:            "cuda13-vllm-cpp",
+			target:            backendTargetCUDAVLLMCpp,
 			architecture:      architectureAMD64,
 			status:            statusSupported,
 			runtimeBase:       chiseledRuntimeBase,
 			runnerRuntimeBase: ubuntu22RuntimeBase,
 			environment:       cuda13Environment,
 			runner:            familyVLLMCpp,
-			sourceRef:         "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-nvidia-cuda-13-vllm-cpp",
+			sourceRef:         reviewedSourceCUDAVLLMCpp,
+		},
+		{
+			name:              "vllm-cpp exact CUDA 13",
+			family:            familyVLLMCpp,
+			selector:          selectorNVIDIACUDA13,
+			target:            backendTargetCUDAVLLMCpp,
+			architecture:      architectureAMD64,
+			status:            statusSupported,
+			runtimeBase:       chiseledRuntimeBase,
+			runnerRuntimeBase: ubuntu22RuntimeBase,
+			environment:       cuda13Environment,
+			runner:            familyVLLMCpp,
+			sourceRef:         reviewedSourceCUDAVLLMCpp,
 		},
 		{
 			name:         "NVIDIA-routed Vulkan exposes graphics",
@@ -385,7 +398,7 @@ func TestReviewedPolicyOverlayMatrix(t *testing.T) {
 	if err := validateReviewedPolicyOverlays(reviewedPolicyOverlays); err != nil {
 		t.Fatalf("validateReviewedPolicyOverlays() error = %v", err)
 	}
-	if got, want := len(reviewedPolicyOverlays), 13; got != want {
+	if got, want := len(reviewedPolicyOverlays), 14; got != want {
 		t.Fatalf("reviewed overlay count = %d, want %d", got, want)
 	}
 
@@ -418,8 +431,8 @@ func TestReviewedPolicyOverlayMatrix(t *testing.T) {
 		}
 		fallbacks += len(overlay.Fallbacks)
 	}
-	if supported != 8 || runnerEnabled != 12 || fallbacks != 5 {
-		t.Fatalf("reviewed overlay totals = supported %d, runner-enabled %d, fallbacks %d; want 8, 12, 5", supported, runnerEnabled, fallbacks)
+	if supported != 9 || runnerEnabled != 13 || fallbacks != 5 {
+		t.Fatalf("reviewed overlay totals = supported %d, runner-enabled %d, fallbacks %d; want 9, 13, 5", supported, runnerEnabled, fallbacks)
 	}
 }
 

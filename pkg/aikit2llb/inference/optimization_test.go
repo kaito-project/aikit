@@ -40,7 +40,7 @@ func TestInstallBackendMetadataIsDeterministic(t *testing.T) {
 
 	var wantHead digest.Digest
 	for i := 0; i < 25; i++ {
-		state := installBackends(backend, platform, base, base)
+		state := installBackends(backend, backendcatalog.RuntimeCPU, platform, base, base)
 		definition, err := state.Marshal(context.Background())
 		if err != nil {
 			t.Fatalf("marshal backend definition: %v", err)

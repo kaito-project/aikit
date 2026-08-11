@@ -1,12 +1,14 @@
 package build
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -327,6 +329,68 @@ func Test_validateConfig(t *testing.T) {
 	}
 }
 
+func TestValidateInferenceConfigRuntime(t *testing.T) {
+	tests := []struct {
+		name    string
+		runtime string
+		wantErr bool
+	}{
+		{name: "runtime omitted"},
+		{name: "CPU runtime", runtime: string(backendcatalog.RuntimeCPU)},
+		{name: "CUDA alias", runtime: string(backendcatalog.RuntimeCUDA)},
+		{name: "CUDA 12 runtime", runtime: string(backendcatalog.RuntimeCUDA12)},
+		{name: "CUDA 13 runtime", runtime: string(backendcatalog.RuntimeCUDA13)},
+		{name: "ROCm runtime", runtime: string(backendcatalog.RuntimeROCm)},
+		{name: "Apple Silicon runtime", runtime: string(backendcatalog.RuntimeAppleSilicon)},
+		{
+			name:    "Vulkan runtime is not public",
+			runtime: "vulkan",
+			wantErr: true,
+		},
+		{
+			name:    "Intel runtime is not public",
+			runtime: "intel",
+			wantErr: true,
+		},
+		{
+			name:    "catalog selector is not a runtime",
+			runtime: "nvidia-cuda-12",
+			wantErr: true,
+		},
+		{
+			name:    "unknown runtime",
+			runtime: "foo",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inferenceConfig := &config.InferenceConfig{
+				APIVersion: utils.APIv1alpha1,
+				Runtime:    tt.runtime,
+			}
+			err := validateInferenceConfig(inferenceConfig)
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("validateInferenceConfig() error = %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("validateInferenceConfig() error = nil, want an unsupported runtime error")
+			}
+			wantErr := fmt.Sprintf(
+				`runtime %q is not supported; supported runtimes are "cpu", "cuda", "cuda-12", "cuda-13", "rocm", and "applesilicon"`,
+				tt.runtime,
+			)
+			if err.Error() != wantErr {
+				t.Errorf("validateInferenceConfig() error = %q, want %q", err, wantErr)
+			}
+		})
+	}
+}
+
 func TestResolveBackendPlans(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -435,10 +499,10 @@ func TestResolveBackendPlans(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "vllm-cpp CUDA backend with amd64 platform - should pass",
+			name: "vllm-cpp CUDA 13 backend with amd64 platform - should pass",
 			config: &config.InferenceConfig{
 				APIVersion: "v1alpha1",
-				Runtime:    utils.RuntimeNVIDIA,
+				Runtime:    string(backendcatalog.RuntimeCUDA13),
 				Backends:   []string{utils.BackendVLLMCpp},
 			},
 			targetPlatforms: []*specs.Platform{

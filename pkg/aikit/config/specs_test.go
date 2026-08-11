@@ -24,7 +24,6 @@ func TestNewFromBytes(t *testing.T) {
 			args: args{b: []byte(`
 apiVersion: v1alpha1
 runtime: cuda
-backendCapability: nvidia-cuda-13
 backends:
 - diffusers
 loadToMemory:
@@ -35,9 +34,8 @@ models:
   source: foo
 `)},
 			want: &InferenceConfig{
-				APIVersion:        utils.APIv1alpha1,
-				Runtime:           utils.RuntimeNVIDIA,
-				BackendCapability: "nvidia-cuda-13",
+				APIVersion: utils.APIv1alpha1,
+				Runtime:    utils.RuntimeNVIDIA,
 				Backends: []string{
 					utils.BackendDiffusers,
 				},
@@ -87,6 +85,43 @@ loadToMemory: test
 			}
 			if !reflect.DeepEqual(infCfg, tt.want) {
 				t.Errorf("NewFromBytes() = %v, want %v", infCfg, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewFromBytesPreservesInferenceRuntime(t *testing.T) {
+	tests := []struct {
+		name    string
+		runtime string
+	}{
+		{name: "runtime omitted"},
+		{name: "CPU runtime", runtime: "cpu"},
+		{name: "CUDA alias", runtime: "cuda"},
+		{name: "CUDA 12 runtime", runtime: "cuda-12"},
+		{name: "CUDA 13 runtime", runtime: "cuda-13"},
+		{name: "ROCm runtime", runtime: "rocm"},
+		{name: "Apple Silicon runtime", runtime: "applesilicon"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := "apiVersion: v1alpha1\n"
+			if tt.runtime != "" {
+				input += "runtime: " + tt.runtime + "\n"
+			}
+			inferenceConfig, fineTuneConfig, err := NewFromBytes([]byte(input))
+			if err != nil {
+				t.Fatalf("NewFromBytes() error = %v", err)
+			}
+			if fineTuneConfig != nil {
+				t.Fatalf("NewFromBytes() fine-tune config = %#v, want nil", fineTuneConfig)
+			}
+			if inferenceConfig == nil {
+				t.Fatal("NewFromBytes() returned no inference config")
+			}
+			if inferenceConfig.Runtime != tt.runtime {
+				t.Errorf("NewFromBytes() runtime = %q, want %q", inferenceConfig.Runtime, tt.runtime)
 			}
 		})
 	}

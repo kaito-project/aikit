@@ -45,12 +45,14 @@ const (
 	SelectorL4TCUDA13    Selector = "nvidia-l4t-cuda-13"
 )
 
-// Runtime is the AIKit runtime selected for an entry.
+// Runtime is an AIKit runtime requested by users or recorded for a catalog entry.
 type Runtime string
 
 const (
 	RuntimeCPU          Runtime = "cpu"
 	RuntimeCUDA         Runtime = "cuda"
+	RuntimeCUDA12       Runtime = "cuda-12"
+	RuntimeCUDA13       Runtime = "cuda-13"
 	RuntimeROCm         Runtime = "rocm"
 	RuntimeAppleSilicon Runtime = "applesilicon"
 )
@@ -177,11 +179,10 @@ type Entry struct {
 	Workloads         []string          `json:"workloads,omitempty"`
 }
 
-// Request identifies one runtime, family, selector, and platform tuple. Empty
-// family and selector values use the catalog-owned defaults for the runtime and platform.
+// Request identifies one public runtime, family, and platform tuple. An empty
+// family uses the catalog-owned default, and an empty runtime selects CPU.
 type Request struct {
 	Family   string
-	Selector Selector
 	Runtime  Runtime
 	Platform Platform
 }
@@ -216,6 +217,12 @@ type tupleKey struct {
 	os           string
 	architecture string
 	variant      string
+}
+
+type runtimeSelection struct {
+	catalogRuntime Runtime
+	targetProfile  TargetProfile
+	selectors      []Selector
 }
 
 //go:embed catalog.lock.json
@@ -305,42 +312,99 @@ func (r *Resolver) Resolve(request Request) (Resolution, error) {
 	if request.Family == "" {
 		request.Family = r.defaultFamily
 	}
-	if request.Selector == "" {
-		selector, ok := r.platformDefaults[defaultSelectorKeyFor(request.Runtime, request.Platform)]
-		if !ok {
-			selector = r.defaults[request.Runtime]
-		}
-		request.Selector = selector
+	if request.Runtime == "" {
+		request.Runtime = RuntimeCPU
 	}
 	if err := validateRequest(request); err != nil {
 		return Resolution{}, err
 	}
 
-	entry, ok := r.entries[keyFor(request.Family, request.Selector, request.Platform)]
-	if !ok {
-		return Resolution{}, errors.Wrapf(
-			ErrNotFound,
-			"family %q selector %q platform %q",
-			request.Family,
-			request.Selector,
-			formatPlatform(request.Platform),
-		)
+	selection, err := r.selectRuntime(request.Runtime, request.Platform)
+	if err != nil {
+		return Resolution{}, err
 	}
-	if entry.Runtime != request.Runtime {
+
+	var entry Entry
+	found := false
+	for _, selector := range selection.selectors {
+		candidate, ok := r.entries[keyFor(request.Family, selector, request.Platform)]
+		if !ok || candidate.Runtime != selection.catalogRuntime || candidate.TargetProfile != selection.targetProfile {
+			continue
+		}
+		entry = candidate
+		found = true
+		break
+	}
+	if !found {
 		return Resolution{}, errors.Wrapf(
 			ErrNotFound,
-			"family %q selector %q runtime %q platform %q",
+			"family %q runtime %q platform %q",
 			request.Family,
-			request.Selector,
 			request.Runtime,
 			formatPlatform(request.Platform),
 		)
 	}
 	if entry.Status == StatusQuarantined || entry.Status == StatusDeprecated {
-		return Resolution{}, errors.Wrapf(ErrUnavailable, "family %q selector %q has status %q", entry.Family, entry.Selector, entry.Status)
+		return Resolution{}, errors.Wrapf(ErrUnavailable, "family %q runtime %q has status %q", entry.Family, request.Runtime, entry.Status)
 	}
 
 	return Resolution{Entry: cloneEntry(entry), CatalogDigest: r.catalogDigest, Source: r.source}, nil
+}
+
+func (r *Resolver) selectRuntime(runtime Runtime, platform Platform) (runtimeSelection, error) {
+	switch runtime {
+	case RuntimeCPU:
+		selector := r.defaults[RuntimeCPU]
+		selectors := []Selector{selector}
+		if selector != SelectorCPU {
+			selectors = append(selectors, SelectorCPU)
+		}
+
+		return runtimeSelection{catalogRuntime: RuntimeCPU, targetProfile: TargetProfileCPU, selectors: selectors}, nil
+	case RuntimeCUDA:
+		selector, ok := r.platformDefaults[defaultSelectorKeyFor(RuntimeCUDA, platform)]
+		if !ok {
+			selector = r.defaults[RuntimeCUDA]
+		}
+		target := TargetProfileCUDA12
+		if platform.Architecture == platformArchitectureARM64 {
+			target = TargetProfileL4TCUDA12
+		}
+
+		return runtimeSelection{catalogRuntime: RuntimeCUDA, targetProfile: target, selectors: []Selector{selector}}, nil
+	case RuntimeCUDA12:
+		selector := SelectorNVIDIACUDA12
+		target := TargetProfileCUDA12
+		if platform.Architecture == platformArchitectureARM64 {
+			selector = SelectorL4TCUDA12
+			target = TargetProfileL4TCUDA12
+		}
+
+		return runtimeSelection{catalogRuntime: RuntimeCUDA, targetProfile: target, selectors: []Selector{selector}}, nil
+	case RuntimeCUDA13:
+		selector := SelectorNVIDIACUDA13
+		target := TargetProfileCUDA13
+		if platform.Architecture == platformArchitectureARM64 {
+			selector = SelectorL4TCUDA13
+			target = TargetProfileL4TCUDA13
+		}
+
+		return runtimeSelection{catalogRuntime: RuntimeCUDA, targetProfile: target, selectors: []Selector{selector}}, nil
+	case RuntimeROCm:
+		return runtimeSelection{
+			catalogRuntime: RuntimeROCm,
+			targetProfile:  TargetProfileROCm,
+			selectors:      []Selector{r.defaults[RuntimeROCm]},
+		}, nil
+	case RuntimeAppleSilicon:
+		return runtimeSelection{
+			catalogRuntime: RuntimeAppleSilicon,
+			targetProfile:  TargetProfileVulkan,
+			selectors:      []Selector{r.defaults[RuntimeAppleSilicon]},
+		}, nil
+	default:
+		return runtimeSelection{}, errors.Wrapf(ErrInvalidRequest, "runtime %q is not supported", runtime)
+	}
 }
 
 func ensureJSONEOF(decoder *json.Decoder) error {

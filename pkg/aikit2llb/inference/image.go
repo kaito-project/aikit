@@ -39,9 +39,9 @@ func NewImageConfigWithBackend(c *config.InferenceConfig, backend backendcatalog
 		"ai.kaito.aikit.backend":                backend.Family,
 		"ai.kaito.aikit.backend.artifact":       backend.Backend.Ref,
 		"ai.kaito.aikit.backend.catalog.digest": backend.CatalogDigest,
-		"ai.kaito.aikit.backend.selector":       string(backend.Selector),
 		"ai.kaito.aikit.backend.status":         string(backend.Status),
 		"ai.kaito.aikit.core.artifact":          backend.Core.Ref,
+		"ai.kaito.aikit.runtime":                string(requestedRuntime(c.Runtime)),
 		"ai.kaito.aikit.runtime-base.artifact":  runtimeBase.Ref,
 	}
 
@@ -53,9 +53,6 @@ func NewImageConfigWithBackend(c *config.InferenceConfig, backend backendcatalog
 
 		// Add runner labels
 		img.Config.Labels["ai.kaito.aikit.runner"] = "true"
-		if c.Runtime != "" {
-			img.Config.Labels["ai.kaito.aikit.runtime"] = c.Runtime
-		}
 	} else {
 		// Standard mode: use local-ai directly
 		cmd := []string{}

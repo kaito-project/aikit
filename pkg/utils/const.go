@@ -1,7 +1,11 @@
 package utils // nolint:revive
 
 const (
-	RuntimeNVIDIA       = "cuda"
+	RuntimeCPU          = "cpu"
+	RuntimeCUDA         = "cuda"
+	RuntimeCUDA12       = "cuda-12"
+	RuntimeCUDA13       = "cuda-13"
+	RuntimeNVIDIA       = RuntimeCUDA
 	RuntimeROCm         = "rocm"
 	RuntimeAppleSilicon = "applesilicon" // experimental apple silicon runtime with vulkan arm64 support
 

@@ -5,7 +5,7 @@ title: GPU Acceleration
 :::note
 AIKit supports NVIDIA GPU acceleration, AMD GPU acceleration via ROCm, and experimental support for Apple Silicon. Please open an issue if you'd like to see support for other GPU vendors.
 
-The examples on this page describe documented paths, not a hardcoded backend matrix. The catalog embedded in the selected frontend release is authoritative for each backend family, selector, runtime, and platform tuple. A selectable experimental tuple can be installed in a standard model image without implying end-to-end validation or runner support. See [Backend catalog selection](specs-inference.md#backend-catalog-selection).
+The examples on this page describe documented paths, not a hardcoded backend matrix. The catalog embedded in the selected frontend release is authoritative for each backend family, runtime, and platform tuple. A selectable experimental tuple can be installed in a standard model image without implying end-to-end validation or runner support. See [Backend catalog selection](specs-inference.md#backend-catalog-selection).
 :::
 
 ## NVIDIA
@@ -61,7 +61,7 @@ https://www.youtube.com/watch?v=yFh_Zfk34PE
 
 ### vLLM Backend
 
-This guide uses the supported default [vLLM](https://docs.vllm.ai/) catalog plan for high-throughput NVIDIA CUDA inference with Hugging Face safetensors models on Linux AMD64. A frontend release can contain experimental vLLM plans for other selectors, runtimes, or platforms in standard mode; their presence is not a promise of end-to-end workload compatibility.
+This guide uses the supported default [vLLM](https://docs.vllm.ai/) catalog plan for high-throughput NVIDIA CUDA inference with Hugging Face safetensors models on Linux AMD64. A frontend release can contain experimental vLLM plans for other runtimes or platforms in standard mode; their presence is not a promise of end-to-end workload compatibility.
 
 Example aikitfile:
 
@@ -274,7 +274,7 @@ To get started with Apple Silicon GPU-accelerated inferencing, make sure to set 
 runtime: applesilicon         # use Apple Silicon runtime
 ```
 
-This guide and the published Apple Silicon model images use the default `llama-cpp` Vulkan plan with GGUF models. A frontend release can contain other experimental Apple Silicon tuples for standard builds; catalog presence does not promise a published image or a validated end-to-end workflow, and runner mode still requires an explicit runner profile.
+This guide and the published Apple Silicon model images use the default `llama-cpp` Apple Silicon profile with GGUF models. A frontend release can contain other experimental Apple Silicon tuples for standard builds; catalog presence does not promise a published image or a validated end-to-end workflow, and runner mode still requires an explicit runner profile.
 
 After building the model, you can run it with:
 

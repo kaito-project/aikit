@@ -83,7 +83,7 @@ func aikit2LLBWithResolvedBackend(c *config.InferenceConfig, buildPlatform, targ
 	}
 
 	// Install the exact backend artifacts selected during catalog preflight.
-	merge = installBackends(backend, *targetPlatform, state, merge)
+	merge = installBackends(backend, requestedRuntime(c.Runtime), *targetPlatform, state, merge)
 	if len(c.Models) > 0 {
 		merge = installBackendModelAliases(backend, localAIModelDirectories(c.Config, c.Models), *buildPlatform, merge)
 	}

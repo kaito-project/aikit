@@ -78,7 +78,7 @@ func validateEntry(entry Entry) error {
 	if err := validatePlatform(entry.Platform); err != nil {
 		return err
 	}
-	if !validRuntime(entry.Runtime) {
+	if !validCatalogRuntime(entry.Runtime) {
 		return errors.Wrapf(ErrInvalidCatalog, "runtime %q is not supported", entry.Runtime)
 	}
 	if !validTargetProfile(entry.TargetProfile) {
@@ -162,14 +162,19 @@ func validateRequest(request Request) error {
 	if err := validateSafeName("family", request.Family); err != nil {
 		return errors.Wrap(ErrInvalidRequest, err.Error())
 	}
-	if err := validateSelector(request.Selector); err != nil {
-		return errors.Wrap(ErrInvalidRequest, err.Error())
-	}
-	if !validRuntime(request.Runtime) {
+	if !validRequestRuntime(request.Runtime) {
 		return errors.Wrapf(ErrInvalidRequest, "runtime %q is not supported", request.Runtime)
 	}
 	if err := validatePlatform(request.Platform); err != nil {
 		return errors.Wrap(ErrInvalidRequest, err.Error())
+	}
+	if !requestRuntimeSupportsPlatform(request.Runtime, request.Platform) {
+		return errors.Wrapf(
+			ErrInvalidRequest,
+			"runtime %q is not supported on platform %q",
+			request.Runtime,
+			formatPlatform(request.Platform),
+		)
 	}
 
 	return nil
@@ -184,7 +189,7 @@ func validateDefaults(defaults Defaults) error {
 	}
 	seen := make(map[defaultSelectorKey]int, len(defaults.Selectors))
 	for i, selection := range defaults.Selectors {
-		if !validRuntime(selection.Runtime) {
+		if !validCatalogRuntime(selection.Runtime) {
 			return errors.Wrapf(ErrInvalidCatalog, "defaults.selectors[%d].runtime %q is not supported", i, selection.Runtime)
 		}
 		if err := validateSelector(selection.Selector); err != nil {
@@ -394,10 +399,35 @@ func validateRuntimeSymlinks(symlinks []RuntimeSymlink) error {
 	return nil
 }
 
-func validRuntime(runtime Runtime) bool {
+func validCatalogRuntime(runtime Runtime) bool {
 	switch runtime {
 	case RuntimeCPU, RuntimeCUDA, RuntimeROCm, RuntimeAppleSilicon:
 		return true
+	default:
+		return false
+	}
+}
+
+func validRequestRuntime(runtime Runtime) bool {
+	switch runtime {
+	case RuntimeCPU, RuntimeCUDA, RuntimeCUDA12, RuntimeCUDA13, RuntimeROCm, RuntimeAppleSilicon:
+		return true
+	default:
+		return false
+	}
+}
+
+func requestRuntimeSupportsPlatform(runtime Runtime, platform Platform) bool {
+	if platform.OS != platformOSLinux {
+		return false
+	}
+	switch runtime {
+	case RuntimeCPU, RuntimeCUDA, RuntimeCUDA12, RuntimeCUDA13:
+		return platform.Architecture == platformArchitectureAMD64 || platform.Architecture == platformArchitectureARM64
+	case RuntimeROCm:
+		return platform.Architecture == platformArchitectureAMD64
+	case RuntimeAppleSilicon:
+		return platform.Architecture == platformArchitectureARM64
 	default:
 		return false
 	}

@@ -27,18 +27,18 @@ type backendMetadata struct {
 	CatalogDigest string `json:"catalog_digest"`
 	Artifact      string `json:"artifact"`
 	SourceRef     string `json:"source_ref,omitempty"`
-	Selector      string `json:"selector,omitempty"`
+	Runtime       string `json:"runtime,omitempty"`
 	Status        string `json:"status,omitempty"`
 }
 
 // installBackends installs the exact primary and fallback artifacts from a resolved catalog entry.
-func installBackends(backend backendcatalog.Resolution, platform specs.Platform, s llb.State, merge llb.State) llb.State {
+func installBackends(backend backendcatalog.Resolution, runtime backendcatalog.Runtime, platform specs.Platform, s llb.State, merge llb.State) llb.State {
 	merge = installSystemPackages(backend.SystemPackages, s, merge)
 	merge = installRuntimeSymlinks(backend.RuntimeSymlinks, s, merge)
 
-	merge = installBackendArtifact(backend, backend.Backend, true, platform, s, merge)
+	merge = installBackendArtifact(backend, runtime, backend.Backend, true, platform, s, merge)
 	for _, fallback := range backend.Fallbacks {
-		merge = installBackendArtifact(backend, fallback, false, platform, s, merge)
+		merge = installBackendArtifact(backend, runtime, fallback, false, platform, s, merge)
 	}
 
 	return merge
@@ -265,6 +265,7 @@ func installRuntimeSymlinks(symlinks []backendcatalog.RuntimeSymlink, s llb.Stat
 
 func installBackendArtifact(
 	backend backendcatalog.Resolution,
+	runtime backendcatalog.Runtime,
 	artifact backendcatalog.BackendArtifact,
 	primary bool,
 	platform specs.Platform,
@@ -280,7 +281,7 @@ func installBackendArtifact(
 		llb.WithCustomName(fmt.Sprintf("Installing backend %s from %s", backend.Family, artifact.Ref)),
 	)
 
-	metadata := marshalBackendMetadata(backend, artifact, primary)
+	metadata := marshalBackendMetadata(backend, runtime, artifact, primary)
 
 	s = s.File(
 		llb.Copy(backendState, "/", backendDir+"/", &llb.CopyInfo{
@@ -293,7 +294,7 @@ func installBackendArtifact(
 	return llb.Merge([]llb.State{merge, diff})
 }
 
-func marshalBackendMetadata(backend backendcatalog.Resolution, artifact backendcatalog.BackendArtifact, primary bool) []byte {
+func marshalBackendMetadata(backend backendcatalog.Resolution, runtime backendcatalog.Runtime, artifact backendcatalog.BackendArtifact, primary bool) []byte {
 	uri := artifact.Ref
 	artifactMetadata := backendMetadata{
 		Alias:         backend.Family,
@@ -309,7 +310,7 @@ func marshalBackendMetadata(backend backendcatalog.Resolution, artifact backendc
 	if primary {
 		artifactMetadata.URI = backend.SourceRef
 		artifactMetadata.SourceRef = backend.SourceRef
-		artifactMetadata.Selector = string(backend.Selector)
+		artifactMetadata.Runtime = string(runtime)
 		artifactMetadata.Status = string(backend.Status)
 	}
 

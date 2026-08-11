@@ -11,7 +11,7 @@ This backend:
 - provides support for GGUF (recommended) and GGML models
 - has catalog plans for CPU and accelerator runtimes on selected platforms
 
-Exact runtime, selector, platform, and status availability is defined by the catalog embedded in the selected frontend release. CPU dispatch such as AVX2 happens inside the selected LocalAI backend; values such as `nvidia-cuda-13` or `nvidia-l4t` are catalog selectors requested with `backendCapability`. See [Backend catalog selection](specs-inference.md#backend-catalog-selection).
+Exact runtime, platform, and status availability is defined by the catalog embedded in the selected frontend release. CPU dispatch such as AVX2 happens inside the selected LocalAI backend. Use `runtime: cuda-12` or `runtime: cuda-13` to request a CUDA major; on Linux ARM64, AIKit selects the corresponding L4T artifact internally. See [Backend catalog selection](specs-inference.md#backend-catalog-selection).
 
 ## Example
 

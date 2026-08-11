@@ -97,12 +97,11 @@ func TestResolveBackendCurrentCompatibility(t *testing.T) {
 			wantEnvironment: testCUDA12Environment,
 		},
 		{
-			name: "CUDA diffusers exposes promoted release through exact selector",
+			name: "exact CUDA 12 diffusers selects promoted release",
 			config: &config.InferenceConfig{
-				Runtime:           utils.RuntimeNVIDIA,
-				Backends:          []string{utils.BackendDiffusers},
-				BackendCapability: string(backendcatalog.SelectorNVIDIACUDA12),
-				Models:            []config.Model{{Name: "test", Source: "test"}},
+				Runtime:  utils.RuntimeCUDA12,
+				Backends: []string{utils.BackendDiffusers},
+				Models:   []config.Model{{Name: "test", Source: "test"}},
 			},
 			platform:        specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64},
 			wantName:        "cuda12-diffusers",
@@ -149,9 +148,9 @@ func TestResolveBackendCurrentCompatibility(t *testing.T) {
 			wantRunner:  backendcatalog.RunnerProfileVLLMCpp,
 		},
 		{
-			name: "CUDA vllm-cpp selects upstream nvidia default",
+			name: "exact CUDA 13 vllm-cpp",
 			config: &config.InferenceConfig{
-				Runtime:  utils.RuntimeNVIDIA,
+				Runtime:  utils.RuntimeCUDA13,
 				Backends: []string{utils.BackendVLLMCpp},
 			},
 			platform:        specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64},
@@ -210,18 +209,17 @@ func TestResolveBackendFailsClosed(t *testing.T) {
 			config: &config.InferenceConfig{Backends: []string{"unknown"}},
 		},
 		{
-			name: "unsupported exact selector does not use nvidia default",
+			name: "vllm-cpp CUDA alias does not substitute CUDA 13",
 			config: &config.InferenceConfig{
-				Runtime:           utils.RuntimeNVIDIA,
-				Backends:          []string{utils.BackendVLLMCpp},
-				BackendCapability: "nvidia-cuda-12",
+				Runtime:  utils.RuntimeCUDA,
+				Backends: []string{utils.BackendVLLMCpp},
 			},
 		},
 		{
-			name: "runtime mismatch is rejected",
+			name: "vllm-cpp exact CUDA 12 does not substitute CUDA 13",
 			config: &config.InferenceConfig{
-				Backends:          []string{utils.BackendLlamaCpp},
-				BackendCapability: "nvidia",
+				Runtime:  utils.RuntimeCUDA12,
+				Backends: []string{utils.BackendVLLMCpp},
 			},
 		},
 	}
@@ -232,10 +230,24 @@ func TestResolveBackendFailsClosed(t *testing.T) {
 			if err == nil {
 				t.Fatal("ResolveBackend() succeeded, want error")
 			}
-			if !stderrors.Is(err, backendcatalog.ErrNotFound) && !strings.Contains(err.Error(), "requires runtime") {
+			if !stderrors.Is(err, backendcatalog.ErrNotFound) {
 				t.Fatalf("ResolveBackend() error = %v, want exact resolution failure", err)
 			}
 		})
+	}
+}
+
+func TestResolveBackendReportsOmittedRuntimeAsCPU(t *testing.T) {
+	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	_, err := ResolveBackend(&config.InferenceConfig{Backends: []string{"unknown"}}, platform)
+	if err == nil {
+		t.Fatal("ResolveBackend() succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), `runtime "cpu"`) {
+		t.Fatalf("ResolveBackend() error = %q, want normalized CPU runtime", err)
+	}
+	if strings.Contains(err.Error(), `runtime ""`) {
+		t.Fatalf("ResolveBackend() error exposes an empty runtime: %q", err)
 	}
 }
 
@@ -276,7 +288,7 @@ func TestInstallBackendsUsesOnlyCatalogArtifacts(t *testing.T) {
 	resolved := testArbitraryBackendPlan(platform)
 
 	base := llb.Image(resolved.RuntimeBase.Ref, llb.Platform(platform))
-	state := installBackends(resolved, platform, base, base)
+	state := installBackends(resolved, backendcatalog.RuntimeCPU, platform, base, base)
 	definition, err := state.Marshal(context.Background())
 	if err != nil {
 		t.Fatalf("marshal backend definition: %v", err)
@@ -324,14 +336,14 @@ func TestInstallBackendsUsesOnlyCatalogArtifacts(t *testing.T) {
 			}
 			if metadata.Artifact == resolved.Backend.Ref {
 				primaryMetadataFiles++
-				if metadata.URI != resolved.SourceRef || metadata.SourceRef != resolved.SourceRef || metadata.Selector != string(resolved.Selector) || metadata.Status != string(resolved.Status) {
+				if metadata.URI != resolved.SourceRef || metadata.SourceRef != resolved.SourceRef || metadata.Runtime != string(backendcatalog.RuntimeCPU) || metadata.Status != string(resolved.Status) {
 					t.Errorf("primary metadata = %+v, want selected entry provenance", metadata)
 				}
 			} else {
 				if metadata.URI != metadata.Artifact {
 					t.Errorf("fallback metadata URI = %q, want installed artifact %q", metadata.URI, metadata.Artifact)
 				}
-				if metadata.SourceRef != "" || metadata.Selector != "" || metadata.Status != "" {
+				if metadata.SourceRef != "" || metadata.Runtime != "" || metadata.Status != "" {
 					t.Errorf("fallback metadata contains primary-only provenance: %+v", metadata)
 				}
 			}
@@ -379,9 +391,9 @@ func TestBackendMetadataMatchesLocalAIV482(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			metadataJSON := marshalBackendMetadata(resolved, test.artifact, test.primary)
+			metadataJSON := marshalBackendMetadata(resolved, backendcatalog.RuntimeCPU, test.artifact, test.primary)
 			for iteration := 0; iteration < 10; iteration++ {
-				if got := string(marshalBackendMetadata(resolved, test.artifact, test.primary)); got != string(metadataJSON) {
+				if got := string(marshalBackendMetadata(resolved, backendcatalog.RuntimeCPU, test.artifact, test.primary)); got != string(metadataJSON) {
 					t.Fatalf("metadata changed on serialization %d: got %q, want %q", iteration, got, metadataJSON)
 				}
 			}
@@ -414,6 +426,16 @@ func TestBackendMetadataMatchesLocalAIV482(t *testing.T) {
 					t.Errorf("metadata %q = %q, want %q", key, got, value)
 				}
 			}
+			if test.primary {
+				if got := metadata["runtime"]; got != string(backendcatalog.RuntimeCPU) {
+					t.Errorf("metadata runtime = %q, want %q", got, backendcatalog.RuntimeCPU)
+				}
+			} else if _, ok := metadata["runtime"]; ok {
+				t.Error("fallback metadata unexpectedly contains runtime")
+			}
+			if _, ok := metadata["selector"]; ok {
+				t.Error("metadata unexpectedly exposes the internal catalog selector")
+			}
 			if _, ok := metadata["installed_at"]; ok {
 				t.Error("metadata unexpectedly contains nondeterministic installed_at")
 			}
@@ -428,7 +450,7 @@ func TestInstallBackendKeepsCopyAndMetadataInOneFileOp(t *testing.T) {
 	resolved.SystemPackages = nil
 
 	base := llb.Image(resolved.RuntimeBase.Ref, llb.Platform(platform))
-	state := installBackends(resolved, platform, base, base)
+	state := installBackends(resolved, backendcatalog.RuntimeCPU, platform, base, base)
 	definition, err := state.Marshal(context.Background())
 	if err != nil {
 		t.Fatalf("marshal backend definition: %v", err)
@@ -471,7 +493,7 @@ func TestInstallBackendsUsesCatalogSystemPackagesForArbitraryFamily(t *testing.T
 	resolved := testArbitraryBackendPlan(platform)
 	base := llb.Image(resolved.RuntimeBase.Ref, llb.Platform(platform))
 
-	state := installBackends(resolved, platform, base, base)
+	state := installBackends(resolved, backendcatalog.RuntimeCPU, platform, base, base)
 	definition, err := state.Marshal(context.Background())
 	if err != nil {
 		t.Fatalf("marshal backend definition: %v", err)
@@ -496,7 +518,7 @@ func TestInstallBackendsUsesCatalogRuntimeSymlinksForArbitraryFamily(t *testing.
 	resolved := testArbitraryBackendPlan(platform)
 	base := llb.Image(resolved.RuntimeBase.Ref, llb.Platform(platform))
 
-	state := installBackends(resolved, platform, base, base)
+	state := installBackends(resolved, backendcatalog.RuntimeCPU, platform, base, base)
 	definition, err := state.Marshal(context.Background())
 	if err != nil {
 		t.Fatalf("marshal backend definition: %v", err)
@@ -530,7 +552,7 @@ func TestInstallBackendModelAliasesCoverPrimaryAndFallbackArtifacts(t *testing.T
 	base := llb.Image(resolved.RuntimeBase.Ref, llb.Platform(platform))
 	modelPaths := []string{testFasterWhisperModelPath, testRerankerModelPath}
 
-	state := installBackends(resolved, platform, base, base)
+	state := installBackends(resolved, backendcatalog.RuntimeCPU, platform, base, base)
 	state = installBackendModelAliases(resolved, modelPaths, platform, state)
 	definition, err := state.Marshal(context.Background())
 	if err != nil {

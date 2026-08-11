@@ -1,7 +1,6 @@
 #syntax=aikit:test
 apiVersion: v1alpha1
 debug: true
-backendCapability: default
 backends:
   - rfdetr-cpp
 models:

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/kaito-project/aikit/pkg/aikit/config"
+	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/util/system"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
@@ -159,6 +160,36 @@ func TestNewImageConfigEnvironmentUsesCatalogPlan(t *testing.T) {
 			img := NewImageConfigWithBackend(tt.config, backend, platform)
 			if !reflect.DeepEqual(img.Config.Env, tt.wantEnv) {
 				t.Errorf("environment = %v, want %v", img.Config.Env, tt.wantEnv)
+			}
+		})
+	}
+}
+
+func TestNewImageConfigUsesOnlyPublicRuntimeLabel(t *testing.T) {
+	platform := &specs.Platform{Architecture: utils.PlatformAMD64, OS: utils.PlatformLinux}
+	backend := testArbitraryBackendPlan(*platform)
+	tests := []struct {
+		name        string
+		configValue string
+		wantRuntime backendcatalog.Runtime
+	}{
+		{name: "omitted runtime is CPU", wantRuntime: backendcatalog.RuntimeCPU},
+		{name: "explicit CPU", configValue: string(backendcatalog.RuntimeCPU), wantRuntime: backendcatalog.RuntimeCPU},
+		{name: "CUDA alias remains CUDA", configValue: string(backendcatalog.RuntimeCUDA), wantRuntime: backendcatalog.RuntimeCUDA},
+		{name: "exact CUDA 12", configValue: string(backendcatalog.RuntimeCUDA12), wantRuntime: backendcatalog.RuntimeCUDA12},
+		{name: "exact CUDA 13", configValue: string(backendcatalog.RuntimeCUDA13), wantRuntime: backendcatalog.RuntimeCUDA13},
+		{name: "ROCm", configValue: string(backendcatalog.RuntimeROCm), wantRuntime: backendcatalog.RuntimeROCm},
+		{name: "Apple Silicon", configValue: string(backendcatalog.RuntimeAppleSilicon), wantRuntime: backendcatalog.RuntimeAppleSilicon},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			img := NewImageConfigWithBackend(&config.InferenceConfig{Runtime: test.configValue}, backend, platform)
+			if got := img.Config.Labels["ai.kaito.aikit.runtime"]; got != string(test.wantRuntime) {
+				t.Errorf("runtime label = %q, want %q", got, test.wantRuntime)
+			}
+			if _, ok := img.Config.Labels["ai.kaito.aikit.backend.selector"]; ok {
+				t.Error("image labels unexpectedly expose the internal catalog selector")
 			}
 		})
 	}

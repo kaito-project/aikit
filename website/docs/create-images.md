@@ -76,9 +76,9 @@ The `model` build argument is the model URL to download and use. You can use any
 
 #### `runtime`
 
-The `runtime` build argument requests a runtime from the frontend's embedded backend catalog. By default, AIKit selects the catalog's CPU runtime and default backend family.
+The `runtime` build argument requests a runtime from the frontend's embedded backend catalog. By default, AIKit selects the catalog's CPU runtime and default backend family. You can also set `cpu` explicitly.
 
-You can use `cuda` to include NVIDIA CUDA runtime libraries. For example:
+You can use `cuda` to request NVIDIA CUDA 12 runtime libraries. `cuda` remains an alias for `cuda-12`; use `cuda-13` to request CUDA 13 exactly. For example:
 
 `--build-arg="runtime=cuda"`.
 
@@ -104,7 +104,7 @@ docker buildx build -t my-model --load \
 [Pre-made models](https://kaito-project.github.io/aikit/docs/premade-models) are offered with multi-platform support. Docker runtime will automatically choose the correct platform to run the image. For more information, please see [multi-platform images documentation](https://docs.docker.com/build/building/multi-platform/).
 
 :::note
-The default CPU `llama-cpp` tuple supports both Linux AMD64 and ARM64. Other combinations are release-specific: for example, an embedded catalog can contain explicit NVIDIA L4T selectors for ARM64, while a default CUDA or ROCm request may not resolve on both architectures. AIKit preflights every requested platform and fails the whole request if any tuple is unavailable; it does not silently choose a different backend or selector.
+The default CPU `llama-cpp` tuple supports both Linux AMD64 and ARM64. Other combinations are release-specific. For CUDA on Linux ARM64, AIKit selects the corresponding L4T artifact for the requested CUDA major internally. AIKit preflights every requested platform and fails the whole request if any tuple is unavailable; it does not silently choose a different backend, CUDA major, runtime, or platform.
 :::
 
 ## Advanced Usage

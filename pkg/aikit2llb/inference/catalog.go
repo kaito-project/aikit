@@ -47,16 +47,11 @@ func ResolveBackendWithResolver(c *config.InferenceConfig, platform specs.Platfo
 		return backendcatalog.Resolution{}, errors.New("only one backend is supported at this time")
 	}
 
-	selector := backendcatalog.Selector(c.BackendCapability)
-	runtime := backendcatalog.Runtime(c.Runtime)
-	if runtime == "" {
-		runtime = backendcatalog.RuntimeCPU
-	}
+	runtime := requestedRuntime(c.Runtime)
 
 	resolution, err := resolver.Resolve(backendcatalog.Request{
-		Family:   family,
-		Selector: selector,
-		Runtime:  runtime,
+		Family:  family,
+		Runtime: runtime,
 		Platform: backendcatalog.Platform{
 			OS:           platform.OS,
 			Architecture: platform.Architecture,
@@ -66,9 +61,9 @@ func ResolveBackendWithResolver(c *config.InferenceConfig, platform specs.Platfo
 	if err != nil {
 		return backendcatalog.Resolution{}, errors.Wrapf(
 			err,
-			"resolving backend %q selector %q for %s/%s",
+			"resolving backend %q for runtime %q on %s/%s",
 			family,
-			selector,
+			runtime,
 			platform.OS,
 			platform.Architecture,
 		)
@@ -76,15 +71,23 @@ func ResolveBackendWithResolver(c *config.InferenceConfig, platform specs.Platfo
 
 	if isRunnerMode(c) && resolution.RunnerProfile == backendcatalog.RunnerProfileUnsupported {
 		return backendcatalog.Resolution{}, errors.Errorf(
-			"backend %q selector %q does not have an audited runner profile for %s/%s",
+			"backend %q runtime %q does not have an audited runner profile for %s/%s",
 			resolution.Family,
-			resolution.Selector,
+			runtime,
 			platform.OS,
 			platform.Architecture,
 		)
 	}
 
 	return resolution, nil
+}
+
+func requestedRuntime(runtime string) backendcatalog.Runtime {
+	if runtime == "" {
+		return backendcatalog.RuntimeCPU
+	}
+
+	return backendcatalog.Runtime(runtime)
 }
 
 func getDefaultResolver() (*backendcatalog.Resolver, error) {

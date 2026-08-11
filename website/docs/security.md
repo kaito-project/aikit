@@ -40,7 +40,7 @@ Catalog generation requires a full upstream LocalAI commit and an expected SHA-2
 
 The current promotion path does not independently verify upstream OCI signatures or attestations, or the payload checksum of the mirrored LocalAI binary. Digest pinning prevents tag movement after a frontend is published, but it does not establish who produced the original artifact. Treat the signed frontend and its reviewed lock as the current trust boundary rather than assuming transitive provenance verification for every upstream artifact.
 
-Builds read the embedded snapshot and fetch catalog-managed OCI content by digest when it is not already cached. They do not download mutable catalog metadata, resolve a catalog channel, or silently replace a rejected selection with another family, selector, runtime, or platform. Updating the catalog therefore requires a newly promoted and signed frontend release.
+Builds read the embedded snapshot and fetch catalog-managed OCI content by digest when it is not already cached. They do not download mutable catalog metadata, resolve a catalog channel, or silently replace a rejected selection with another family, CUDA major, runtime, or platform. Updating the catalog therefore requires a newly promoted and signed frontend release.
 
 The signed frontend image is the trust boundary for its embedded catalog. For reproducible or policy-controlled builds, pin the frontend by digest in the syntax directive and verify that digest's signature:
 
