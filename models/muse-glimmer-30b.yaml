@@ -1,6 +1,7 @@
 #syntax=ghcr.io/kaito-project/aikit/aikit:latest
 apiVersion: v1alpha1
 debug: true
+runtime: cuda
 models:
   - name: muse-glimmer-30b
     source: https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF/resolve/a0532f7263ee67f1e0a5f5c5fdcd50dd62fc9aa4/muse-glimmer-30B-kquant-17gb.gguf
