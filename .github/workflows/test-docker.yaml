@@ -201,20 +201,33 @@ jobs:
             https://raw.githubusercontent.com/mudler/parakeet.cpp/1bfbebfaaf493866f49597cd3b7901959d395c60/tests/fixtures/speech.wav
           echo "5fceacff0315d49cb59fcc505bcecf1ed5f2f35c2897b1e65a59f30e5d922150  /tmp/speech.wav" | sha256sum --check
 
-          ffmpeg -hide_banner -loglevel error -y -i /tmp/speech.wav \
-            -ac 1 -ar 16000 -f f32le /tmp/speech.f32
           python3 - <<'PY'
+          import array
           import json
-          import struct
+          import sys
+          import wave
           from pathlib import Path
 
-          audio = Path("/tmp/speech.f32").read_bytes()
-          if len(audio) % 4 != 0:
-              raise ValueError("float32 PCM byte count is not aligned")
+          with wave.open("/tmp/speech.wav", "rb") as speech:
+              properties = (
+                  speech.getnchannels(),
+                  speech.getsampwidth(),
+                  speech.getframerate(),
+                  speech.getcomptype(),
+              )
+              if properties != (1, 2, 16000, "NONE"):
+                  raise ValueError(f"unexpected WAV properties: {properties}")
+              samples = array.array("h", speech.readframes(speech.getnframes()))
 
-          samples = struct.unpack(f"<{len(audio) // 4}f", audio)
+          if sys.byteorder == "big":
+              samples.byteswap()
+
           with Path("/tmp/vad-request.json").open("w", encoding="utf-8") as request:
-              json.dump({"model": "silero-vad-smoke", "audio": samples}, request, separators=(",", ":"))
+              json.dump(
+                  {"model": "silero-vad-smoke", "audio": [sample / 32768.0 for sample in samples]},
+                  request,
+                  separators=(",", ":"),
+              )
           PY
 
           curl --fail-with-body --show-error --max-time 300 --retry 10 --retry-all-errors \
@@ -254,9 +267,13 @@ jobs:
             .error == null and
             (.detections | type == "array" and length > 0) and
             any(.detections[];
-              .class_name == "dog" and
+              .class_name == "person" and
               (.confidence | type) == "number" and
-              .confidence > 0
+              .confidence > 0.5 and
+              (.width | type) == "number" and
+              .width > 0 and
+              (.height | type) == "number" and
+              .height > 0
             )' /tmp/detection-response.json
 
       - name: run Piper speech test
@@ -290,11 +307,9 @@ jobs:
             https://raw.githubusercontent.com/mudler/parakeet.cpp/1bfbebfaaf493866f49597cd3b7901959d395c60/tests/fixtures/speech.wav
           echo "5fceacff0315d49cb59fcc505bcecf1ed5f2f35c2897b1e65a59f30e5d922150  /tmp/speech.wav" | sha256sum --check
 
-          ffmpeg -hide_banner -loglevel error -y -i /tmp/speech.wav \
-            -ac 2 -ar 44100 -c:a pcm_s16le /tmp/speech-input.wav
           curl --fail-with-body --show-error --max-time 300 --retry 10 --retry-all-errors \
             http://127.0.0.1:8080/v1/audio/transcriptions \
-            -F "file=@/tmp/speech-input.wav;type=audio/wav" \
+            -F "file=@/tmp/speech.wav;type=audio/wav" \
             -F "model=parakeet-smoke" \
             -F "response_format=json" \
             --output /tmp/parakeet-response.json
