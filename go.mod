@@ -9,7 +9,7 @@ require (
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/pkg/errors v0.9.1
-	github.com/sirupsen/logrus v1.9.4
+	github.com/sirupsen/logrus v1.10.1
 	golang.org/x/sync v0.22.0
 	google.golang.org/grpc v1.83.0
 	gopkg.in/yaml.v2 v2.4.0
