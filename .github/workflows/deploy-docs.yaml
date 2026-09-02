@@ -19,6 +19,10 @@ permissions:
 jobs:
   deploy:
     name: Generate docs website to GitHub Pages
+    concurrency:
+      group: ${{ github.event_name == 'push' && 'release-artifacts' || format('deploy-docs-{0}', github.run_id) }}
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     permissions:
       contents: write

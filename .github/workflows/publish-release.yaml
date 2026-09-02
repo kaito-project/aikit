@@ -1,0 +1,589 @@
+name: Publish release
+run-name: Publish ${{ inputs.release_version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Prepared stable version to publish (vX.Y.Z)'
+        required: true
+        type: string
+
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
+  queue: max
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      release_branch: ${{ steps.release.outputs.release_branch }}
+      release_commit: ${{ steps.commit.outputs.sha }}
+      release_pr: ${{ steps.provenance.outputs.release_pr }}
+      release_tag_exists: ${{ steps.commit.outputs.tag_exists }}
+      release_version: ${{ inputs.release_version }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            *.githubusercontent.com:443
+
+      - name: Validate workflow request
+        id: release
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "Publish release must be run from main, not ${GITHUB_REF}." >&2
+            exit 1
+          fi
+          if ! [[ "${RELEASE_VERSION}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "release_version must use stable semantic version form vX.Y.Z." >&2
+            exit 1
+          fi
+
+          echo "release_branch=release-${BASH_REMATCH[1]}.${BASH_REMATCH[2]}" >>"${GITHUB_OUTPUT}"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Resolve release candidate
+        id: commit
+        env:
+          RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet --no-tags origin "refs/heads/${RELEASE_BRANCH}"
+          release_commit=$(git rev-parse "FETCH_HEAD^{commit}")
+
+          if ! tag_ref=$(git ls-remote --refs --tags origin "refs/tags/${RELEASE_VERSION}"); then
+            echo "Could not determine whether tag ${RELEASE_VERSION} exists." >&2
+            exit 1
+          fi
+          if [[ -n "${tag_ref}" ]]; then
+            git fetch --quiet --force origin \
+              "refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}"
+            release_commit=$(git rev-parse "refs/tags/${RELEASE_VERSION}^{commit}")
+            echo "tag_exists=true" >>"${GITHUB_OUTPUT}"
+          else
+            echo "tag_exists=false" >>"${GITHUB_OUTPUT}"
+          fi
+
+          echo "sha=${release_commit}" >>"${GITHUB_OUTPUT}"
+
+      - name: Validate release version policy
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_COMMIT: ${{ steps.commit.outputs.sha }}
+          RELEASE_TAG_EXISTS: ${{ steps.commit.outputs.tag_exists }}
+        run: |
+          set -euo pipefail
+          validator_args=("${RELEASE_VERSION}" either)
+          if [[ ${RELEASE_TAG_EXISTS} != true ]]; then
+            validator_args+=("${RELEASE_COMMIT}")
+          fi
+          scripts/ci/validate-release-version.sh "${validator_args[@]}"
+
+      - name: Validate release provenance
+        id: provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_COMMIT: ${{ steps.commit.outputs.sha }}
+          RELEASE_TAG_EXISTS: ${{ steps.commit.outputs.tag_exists }}
+          TRUSTED_GUARDRAIL_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          validator_args=("${RELEASE_VERSION}" "${RELEASE_COMMIT}")
+          if [[ ${RELEASE_TAG_EXISTS} != true ]]; then
+            validator_args+=("${TRUSTED_GUARDRAIL_COMMIT}")
+          fi
+          scripts/ci/validate-release.sh "${validator_args[@]}"
+
+      - name: Summarize release candidate
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
+          RELEASE_COMMIT: ${{ steps.commit.outputs.sha }}
+          RELEASE_PR: ${{ steps.provenance.outputs.release_pr }}
+          RELEASE_TAG_EXISTS: ${{ steps.commit.outputs.tag_exists }}
+        run: |
+          {
+            echo "### Validated release candidate"
+            echo
+            echo "- Version: ${RELEASE_VERSION}"
+            echo "- Branch: ${RELEASE_BRANCH}"
+            echo "- Commit: ${RELEASE_COMMIT}"
+            echo "- Preparation pull request: #${RELEASE_PR}"
+            echo "- Tag already exists at this commit: ${RELEASE_TAG_EXISTS}"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+  create-release-tag:
+    needs: preflight
+    environment: prod
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            *.githubusercontent.com:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Recheck release version policy
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
+          RELEASE_COMMIT: ${{ needs.preflight.outputs.release_commit }}
+          RELEASE_TAG_EXISTED: ${{ needs.preflight.outputs.release_tag_exists }}
+        run: |
+          set -euo pipefail
+          validator_args=("${RELEASE_VERSION}" either)
+          if [[ ${RELEASE_TAG_EXISTED} != true ]]; then
+            validator_args+=("${RELEASE_COMMIT}")
+          fi
+          scripts/ci/validate-release-version.sh "${validator_args[@]}"
+
+      - name: Recheck release state
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
+          RELEASE_BRANCH: ${{ needs.preflight.outputs.release_branch }}
+          RELEASE_COMMIT: ${{ needs.preflight.outputs.release_commit }}
+          RELEASE_TAG_EXISTED: ${{ needs.preflight.outputs.release_tag_exists }}
+          TRUSTED_GUARDRAIL_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${RELEASE_TAG_EXISTED}" != "true" ]]; then
+            current_main_commit=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+              --jq '.object.sha')
+            if [[ "${current_main_commit}" != "${TRUSTED_GUARDRAIL_COMMIT}" ]]; then
+              echo "main advanced from ${TRUSTED_GUARDRAIL_COMMIT} to ${current_main_commit}; rerun Publish release." >&2
+              exit 1
+            fi
+          fi
+
+          current_release_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/${RELEASE_BRANCH}" \
+            --jq '.object.sha')
+          if [[ "${RELEASE_TAG_EXISTED}" != "true" && "${current_release_commit}" != "${RELEASE_COMMIT}" ]]; then
+            echo "${RELEASE_BRANCH} advanced from ${RELEASE_COMMIT} to ${current_release_commit}; rerun Publish release." >&2
+            exit 1
+          fi
+
+          if ! tag_ref=$(git ls-remote --refs --tags origin "refs/tags/${RELEASE_VERSION}"); then
+            echo "Could not recheck tag ${RELEASE_VERSION}." >&2
+            exit 1
+          fi
+          if [[ -n "${tag_ref}" ]]; then
+            git fetch --quiet --force origin \
+              "refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}"
+            existing_tag_commit=$(git rev-parse "refs/tags/${RELEASE_VERSION}^{commit}")
+            if [[ "${existing_tag_commit}" != "${RELEASE_COMMIT}" ]]; then
+              echo "Tag ${RELEASE_VERSION} points to ${existing_tag_commit}, not ${RELEASE_COMMIT}; tags are immutable." >&2
+              exit 1
+            fi
+            echo "tag_exists=true" >>"${GITHUB_OUTPUT}"
+          else
+            if [[ "${RELEASE_TAG_EXISTED}" == "true" ]]; then
+              echo "Tag ${RELEASE_VERSION} disappeared after preflight; refusing to recreate it." >&2
+              exit 1
+            fi
+            echo "tag_exists=false" >>"${GITHUB_OUTPUT}"
+          fi
+
+      - name: Recheck release provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
+          RELEASE_COMMIT: ${{ needs.preflight.outputs.release_commit }}
+          RELEASE_TAG_EXISTED: ${{ needs.preflight.outputs.release_tag_exists }}
+          TRUSTED_GUARDRAIL_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          validator_args=("${RELEASE_VERSION}" "${RELEASE_COMMIT}")
+          if [[ ${RELEASE_TAG_EXISTED} != true ]]; then
+            validator_args+=("${TRUSTED_GUARDRAIL_COMMIT}")
+          fi
+          scripts/ci/validate-release.sh "${validator_args[@]}"
+
+      - name: Create release GitHub App token
+        if: steps.state.outputs.tag_exists != 'true'
+        id: release-app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Create protected tag
+        if: steps.state.outputs.tag_exists != 'true'
+        env:
+          GH_TOKEN: ${{ steps.release-app.outputs.token }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
+          RELEASE_BRANCH: ${{ needs.preflight.outputs.release_branch }}
+          RELEASE_COMMIT: ${{ needs.preflight.outputs.release_commit }}
+          TRUSTED_GUARDRAIL_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          current_main_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')
+          if [[ "${current_main_commit}" != "${TRUSTED_GUARDRAIL_COMMIT}" ]]; then
+            echo "main advanced from ${TRUSTED_GUARDRAIL_COMMIT} to ${current_main_commit}; rerun Publish release." >&2
+            exit 1
+          fi
+
+          current_release_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/${RELEASE_BRANCH}" \
+            --jq '.object.sha')
+          if [[ "${current_release_commit}" != "${RELEASE_COMMIT}" ]]; then
+            echo "${RELEASE_BRANCH} advanced from ${RELEASE_COMMIT} to ${current_release_commit}; rerun Publish release." >&2
+            exit 1
+          fi
+
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            --raw-field "ref=refs/tags/${RELEASE_VERSION}" \
+            --raw-field "sha=${RELEASE_COMMIT}"
+          printf 'Created protected tag %s at %s.\n' \
+            "${RELEASE_VERSION}" "${RELEASE_COMMIT}" >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Summarize existing protected tag
+        if: steps.state.outputs.tag_exists == 'true'
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
+          RELEASE_COMMIT: ${{ needs.preflight.outputs.release_commit }}
+        run: |
+          printf 'Protected tag %s already exists at %s; no tag credential was created.\n' \
+            "${RELEASE_VERSION}" "${RELEASE_COMMIT}" >>"${GITHUB_STEP_SUMMARY}"
+
+  plan-version-sync:
+    needs:
+      - preflight
+      - create-release-tag
+    permissions:
+      contents: read
+    outputs:
+      needed: ${{ steps.sync.outputs.needed }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            *.githubusercontent.com:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Determine whether version sync is needed
+        id: sync
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
+          SYNC_BRANCH: sync-released-version-to-main
+          TRUSTED_MAIN_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          manifest_dir=$(mktemp -d)
+          trap 'rm -rf "${manifest_dir}"' EXIT
+
+          git fetch --quiet --no-tags origin refs/heads/main
+          main_commit=$(git rev-parse 'FETCH_HEAD^{commit}')
+          if [[ "${main_commit}" != "${TRUSTED_MAIN_COMMIT}" ]]; then
+            echo "main advanced from ${TRUSTED_MAIN_COMMIT} to ${main_commit}; rerun Publish release." >&2
+            exit 1
+          fi
+          git show "${main_commit}:Makefile" >"${manifest_dir}/main-Makefile"
+          git show "${main_commit}:charts/aikit/Chart.yaml" >"${manifest_dir}/main-Chart.yaml"
+          planner_arguments=(
+            "${RELEASE_VERSION}"
+            "${manifest_dir}/main-Makefile"
+            "${manifest_dir}/main-Chart.yaml"
+          )
+
+          if ! sync_ref=$(git ls-remote --refs origin "refs/heads/${SYNC_BRANCH}"); then
+            echo "Could not inspect ${SYNC_BRANCH}." >&2
+            exit 1
+          fi
+          if [[ -n "${sync_ref}" ]]; then
+            git fetch --quiet --no-tags origin "refs/heads/${SYNC_BRANCH}"
+            sync_commit=$(git rev-parse 'FETCH_HEAD^{commit}')
+            git show "${sync_commit}:Makefile" >"${manifest_dir}/sync-Makefile"
+            git show "${sync_commit}:charts/aikit/Chart.yaml" >"${manifest_dir}/sync-Chart.yaml"
+            planner_arguments+=(
+              "${manifest_dir}/sync-Makefile"
+              "${manifest_dir}/sync-Chart.yaml"
+            )
+          fi
+
+          scripts/ci/plan-release-sync.sh "${planner_arguments[@]}"
+
+  sync-released-version:
+    needs:
+      - preflight
+      - create-release-tag
+      - plan-version-sync
+    if: needs.plan-version-sync.outputs.needed == 'true'
+    environment: release-automation
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            *.githubusercontent.com:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prepare monotonic version sync
+        id: sync
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
+          SYNC_BRANCH: sync-released-version-to-main
+          TRUSTED_MAIN_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          manifest_dir=$(mktemp -d)
+          trap 'rm -rf "${manifest_dir}"' EXIT
+
+          git fetch --quiet --no-tags origin refs/heads/main
+          main_commit=$(git rev-parse 'FETCH_HEAD^{commit}')
+          if [[ "${main_commit}" != "${TRUSTED_MAIN_COMMIT}" ]]; then
+            echo "main advanced from ${TRUSTED_MAIN_COMMIT} to ${main_commit}; rerun Publish release." >&2
+            exit 1
+          fi
+          git show "${main_commit}:Makefile" >"${manifest_dir}/main-Makefile"
+          git show "${main_commit}:charts/aikit/Chart.yaml" >"${manifest_dir}/main-Chart.yaml"
+          planner_arguments=(
+            "${RELEASE_VERSION}"
+            "${manifest_dir}/main-Makefile"
+            "${manifest_dir}/main-Chart.yaml"
+          )
+
+          sync_commit=
+          if ! sync_ref=$(git ls-remote --refs origin "refs/heads/${SYNC_BRANCH}"); then
+            echo "Could not inspect ${SYNC_BRANCH}." >&2
+            exit 1
+          fi
+          if [[ -n "${sync_ref}" ]]; then
+            git fetch --quiet --no-tags origin "refs/heads/${SYNC_BRANCH}"
+            sync_commit=$(git rev-parse 'FETCH_HEAD^{commit}')
+            git show "${sync_commit}:Makefile" >"${manifest_dir}/sync-Makefile"
+            git show "${sync_commit}:charts/aikit/Chart.yaml" >"${manifest_dir}/sync-Chart.yaml"
+            planner_arguments+=(
+              "${manifest_dir}/sync-Makefile"
+              "${manifest_dir}/sync-Chart.yaml"
+            )
+          fi
+
+          planner_output=$(mktemp)
+          GITHUB_OUTPUT="${planner_output}" \
+            scripts/ci/plan-release-sync.sh "${planner_arguments[@]}" >/dev/null
+          action=$(awk -F= '$1 == "action" { print $2 }' "${planner_output}")
+          needed=$(awk -F= '$1 == "needed" { print $2 }' "${planner_output}")
+          target_version=$(awk -F= '$1 == "target_version" { print $2 }' "${planner_output}")
+          if ! [[ ${action} =~ ^(none|ensure|update)$ ]] || \
+            ! [[ ${needed} =~ ^(true|false)$ ]] || \
+            ! [[ ${target_version} =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Release sync planner returned invalid output." >&2
+            exit 1
+          fi
+
+          {
+            echo "action=${action}"
+            echo "base_commit=${main_commit}"
+            echo "expected_sync_commit=${sync_commit}"
+            echo "needed=${needed}"
+            echo "target_version=${target_version}"
+          } >>"${GITHUB_OUTPUT}"
+
+          if [[ ${action} == none ]]; then
+            echo "Main or the pending sync target is already on the ${target_version%.*} release line." >>"${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          if [[ ${action} == ensure ]]; then
+            if [[ -z ${sync_commit} ]]; then
+              echo "Planner requested an existing sync target, but ${SYNC_BRANCH} does not exist." >&2
+              exit 1
+            fi
+            echo "sync_commit=${sync_commit}" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          sync_worktree=$(mktemp -d "${RUNNER_TEMP}/release-sync.XXXXXX")
+          git worktree add --quiet --detach "${sync_worktree}" "${main_commit}"
+          sed -i -E \
+            "s|^[[:space:]]*VERSION[[:space:]]*:=[[:space:]]*.*$|VERSION := ${target_version}|" \
+            "${sync_worktree}/Makefile"
+          sed -i -E \
+            "s|^version:[[:space:]]*.*$|version: ${target_version#v}|" \
+            "${sync_worktree}/charts/aikit/Chart.yaml"
+          sed -i -E \
+            "s|^appVersion:[[:space:]]*.*$|appVersion: ${target_version}|" \
+            "${sync_worktree}/charts/aikit/Chart.yaml"
+
+          if [[ $(grep -cxF "VERSION := ${target_version}" "${sync_worktree}/Makefile") -ne 1 ]] || \
+            [[ $(grep -cxF "version: ${target_version#v}" "${sync_worktree}/charts/aikit/Chart.yaml") -ne 1 ]] || \
+            [[ $(grep -cxF "appVersion: ${target_version}" "${sync_worktree}/charts/aikit/Chart.yaml") -ne 1 ]]; then
+            echo "Could not update every version manifest to ${target_version}." >&2
+            exit 1
+          fi
+
+          git -C "${sync_worktree}" diff --check
+          git -C "${sync_worktree}" config user.name github-actions[bot]
+          git -C "${sync_worktree}" config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git -C "${sync_worktree}" add Makefile charts/aikit/Chart.yaml
+          git -C "${sync_worktree}" commit --quiet --signoff \
+            -m "chore: sync ${target_version} version to main"
+          echo "sync_commit=$(git -C "${sync_worktree}" rev-parse HEAD)" >>"${GITHUB_OUTPUT}"
+
+      - name: Create release-automation GitHub App token
+        if: steps.sync.outputs.needed == 'true'
+        id: sync-app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Push canonical sync target and create pull request
+        if: steps.sync.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.sync-app.outputs.token }}
+          ACTION: ${{ steps.sync.outputs.action }}
+          BASE_COMMIT: ${{ steps.sync.outputs.base_commit }}
+          EXPECTED_SYNC_COMMIT: ${{ steps.sync.outputs.expected_sync_commit }}
+          SYNC_BRANCH: sync-released-version-to-main
+          SYNC_COMMIT: ${{ steps.sync.outputs.sync_commit }}
+          TARGET_VERSION: ${{ steps.sync.outputs.target_version }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+
+          read_remote_refs() {
+            local remote_refs
+            if ! remote_refs=$(git ls-remote --refs origin \
+              refs/heads/main "refs/heads/${SYNC_BRANCH}"); then
+              echo "Could not recheck main and ${SYNC_BRANCH}." >&2
+              exit 1
+            fi
+
+            current_main_commit=$(awk '$2 == "refs/heads/main" { print $1 }' <<<"${remote_refs}")
+            current_sync_commit=$(awk -v branch="refs/heads/${SYNC_BRANCH}" '$2 == branch { print $1 }' <<<"${remote_refs}")
+            if ! [[ ${current_main_commit} =~ ^[0-9a-f]{40}$ ]] || \
+              { [[ -n ${current_sync_commit} ]] && ! [[ ${current_sync_commit} =~ ^[0-9a-f]{40}$ ]]; }; then
+              echo "Remote branch state was missing or invalid." >&2
+              exit 1
+            fi
+          }
+
+          read_remote_refs
+          if [[ "${current_main_commit}" != "${BASE_COMMIT}" ]]; then
+            echo "main advanced from ${BASE_COMMIT} to ${current_main_commit}; rerun Publish release." >&2
+            exit 1
+          fi
+          if [[ "${current_sync_commit}" != "${EXPECTED_SYNC_COMMIT}" ]]; then
+            echo "${SYNC_BRANCH} changed from ${EXPECTED_SYNC_COMMIT:-absent} to ${current_sync_commit:-absent}; rerun Publish release." >&2
+            exit 1
+          fi
+
+          if [[ ${ACTION} == update ]]; then
+            git push origin "${SYNC_COMMIT}:refs/heads/${SYNC_BRANCH}" \
+              "--force-with-lease=refs/heads/${SYNC_BRANCH}:${EXPECTED_SYNC_COMMIT}"
+          fi
+
+          read_remote_refs
+          if [[ "${current_main_commit}" != "${BASE_COMMIT}" ]]; then
+            echo "main advanced while ${SYNC_BRANCH} was being updated; rerun Publish release." >&2
+            exit 1
+          fi
+          if [[ "${current_sync_commit}" != "${SYNC_COMMIT}" ]]; then
+            echo "${SYNC_BRANCH} does not point to the prepared commit ${SYNC_COMMIT}." >&2
+            exit 1
+          fi
+
+          repository_owner=${GITHUB_REPOSITORY%%/*}
+          if ! pull_numbers=$(gh api --method GET --paginate \
+            "repos/${GITHUB_REPOSITORY}/pulls" \
+            -f state=open \
+            -f base=main \
+            -f "head=${repository_owner}:${SYNC_BRANCH}" \
+            -f per_page=100 \
+            --jq '.[].number'); then
+            echo "Could not inspect existing version-sync pull requests." >&2
+            exit 1
+          fi
+          pull_count=$(awk 'NF { count++ } END { print count + 0 }' <<<"${pull_numbers}")
+          if ((pull_count > 1)); then
+            echo "Found multiple open pull requests for ${SYNC_BRANCH}." >&2
+            exit 1
+          fi
+
+          title="chore: sync ${TARGET_VERSION} version to main"
+          body="Synchronizes the version manifests on main after the protected ${TARGET_VERSION} release."
+          if ((pull_count == 1)); then
+            pull_number=$pull_numbers
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pull_number}" \
+              -f "title=${title}" \
+              -f "body=${body}" >/dev/null
+            pull_url="https://github.com/${GITHUB_REPOSITORY}/pull/${pull_number}"
+          else
+            pull_details=$(gh api --method POST "repos/${GITHUB_REPOSITORY}/pulls" \
+              -f "title=${title}" \
+              -f "body=${body}" \
+              -f "head=${SYNC_BRANCH}" \
+              -f base=main \
+              --jq '[.number, .html_url] | @tsv')
+            IFS=$'\t' read -r pull_number pull_url <<<"${pull_details}"
+          fi
+
+          printf 'Version-sync pull request: %s\n' "${pull_url}" >>"${GITHUB_STEP_SUMMARY}"

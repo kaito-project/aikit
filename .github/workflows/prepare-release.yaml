@@ -1,0 +1,216 @@
+name: Prepare release
+run-name: Prepare ${{ inputs.release_version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Stable version to prepare (vX.Y.Z)'
+        required: true
+        type: string
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+  queue: max
+
+permissions:
+  contents: read
+
+jobs:
+  create-release-pull-request:
+    environment: release-automation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            *.githubusercontent.com:443
+
+      - name: Validate release request
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "Prepare release must be run from main, not ${GITHUB_REF}." >&2
+            exit 1
+          fi
+          if ! [[ "${RELEASE_VERSION}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "release_version must use stable semantic version form vX.Y.Z." >&2
+            exit 1
+          fi
+
+          echo "NEWVERSION=${RELEASE_VERSION}" >>"${GITHUB_ENV}"
+          echo "TARGET_BRANCH=release-${BASH_REMATCH[1]}.${BASH_REMATCH[2]}" >>"${GITHUB_ENV}"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Stage trusted release version validator
+        run: |
+          set -euo pipefail
+          install -m 0755 \
+            scripts/ci/validate-release-version.sh \
+            "${RUNNER_TEMP}/validate-release-version.sh"
+          echo "TRUSTED_VERSION_VALIDATOR=${RUNNER_TEMP}/validate-release-version.sh" >>"${GITHUB_ENV}"
+
+      - name: Validate release version policy
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: '"${TRUSTED_VERSION_VALIDATOR}" "${RELEASE_VERSION}" new'
+
+      - name: Prepare release manifests
+        id: manifests
+        run: |
+          set -euo pipefail
+          if ! target_ref=$(git ls-remote --refs origin "refs/heads/${TARGET_BRANCH}"); then
+            echo "Could not inspect ${TARGET_BRANCH}." >&2
+            exit 1
+          fi
+
+          branch_exists=false
+          base_commit=$(git rev-parse 'HEAD^{commit}')
+          if [[ -n "${target_ref}" ]]; then
+            expected_base=$(awk '$2 == "refs/heads/'"${TARGET_BRANCH}"'" { print $1 }' <<<"${target_ref}")
+            if ! [[ ${expected_base} =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Remote branch ${TARGET_BRANCH} returned an invalid commit." >&2
+              exit 1
+            fi
+            git fetch --quiet --no-tags origin "refs/heads/${TARGET_BRANCH}"
+            base_commit=$(git rev-parse 'FETCH_HEAD^{commit}')
+            if [[ ${base_commit} != "${expected_base}" ]]; then
+              echo "${TARGET_BRANCH} advanced while it was being fetched; rerun Prepare release." >&2
+              exit 1
+            fi
+            branch_exists=true
+          fi
+
+          release_branch_commit=missing
+          if [[ ${branch_exists} == true ]]; then
+            release_branch_commit=${base_commit}
+          fi
+          "${TRUSTED_VERSION_VALIDATOR}" \
+            "${NEWVERSION}" new "${release_branch_commit}"
+
+          git checkout --quiet --detach "${base_commit}"
+          if [[ ${branch_exists} != true ]]; then
+            policy_output=$(mktemp)
+            trap 'rm -f "${policy_output}"' EXIT
+            GITHUB_OUTPUT="${policy_output}" \
+              scripts/ci/plan-release-sync.sh "${NEWVERSION}" >/dev/null
+            main_version=$(awk -F= '$1 == "main_version" { print $2 }' "${policy_output}")
+            release_line_comparison=$(awk -F= '$1 == "release_line_comparison" { print $2 }' "${policy_output}")
+            if [[ -z ${main_version} || ! ${release_line_comparison} =~ ^(-1|0|1)$ ]]; then
+              echo "Release line validation returned invalid output." >&2
+              exit 1
+            fi
+            if [[ ${release_line_comparison} == -1 ]]; then
+              echo "${TARGET_BRANCH} does not exist and ${NEWVERSION} is older than main at ${main_version}." >&2
+              echo "Restore the historical release branch instead of creating it from newer main code." >&2
+              exit 1
+            fi
+          fi
+
+          for manifest in Makefile charts/aikit/Chart.yaml; do
+            if ! git ls-files --error-unmatch -- "${manifest}" >/dev/null 2>&1 || \
+              [[ ! -f ${manifest} || -L ${manifest} ]]; then
+              echo "${manifest} must be a tracked regular file on ${TARGET_BRANCH}." >&2
+              exit 1
+            fi
+          done
+
+          makefile_version_count=$(awk '/^[[:space:]]*VERSION[[:space:]]*:=/ { count++ } END { print count + 0 }' Makefile)
+          chart_version_count=$(awk '/^version:[[:space:]]+/ { count++ } END { print count + 0 }' charts/aikit/Chart.yaml)
+          chart_app_version_count=$(awk '/^appVersion:[[:space:]]+/ { count++ } END { print count + 0 }' charts/aikit/Chart.yaml)
+          if [[ ${makefile_version_count} -ne 1 || ${chart_version_count} -ne 1 || ${chart_app_version_count} -ne 1 ]]; then
+            echo "Release manifests must contain exactly one VERSION, version, and appVersion field." >&2
+            exit 1
+          fi
+
+          sed -i -E \
+            "s|^[[:space:]]*VERSION[[:space:]]*:=[[:space:]]*.*$|VERSION := ${NEWVERSION}|" \
+            Makefile
+          sed -i -E \
+            "s|^version:[[:space:]]+.*$|version: ${NEWVERSION#v}|" \
+            charts/aikit/Chart.yaml
+          sed -i -E \
+            "s|^appVersion:[[:space:]]+.*$|appVersion: ${NEWVERSION}|" \
+            charts/aikit/Chart.yaml
+
+          if [[ $(grep -cxF "VERSION := ${NEWVERSION}" Makefile) -ne 1 ]] || \
+            [[ $(grep -cxF "version: ${NEWVERSION#v}" charts/aikit/Chart.yaml) -ne 1 ]] || \
+            [[ $(grep -cxF "appVersion: ${NEWVERSION}" charts/aikit/Chart.yaml) -ne 1 ]]; then
+            echo "Could not update every release manifest to ${NEWVERSION}." >&2
+            exit 1
+          fi
+
+          changed_paths=$(git diff --name-only | LC_ALL=C sort)
+          if [[ ${changed_paths} != $'Makefile\ncharts/aikit/Chart.yaml' ]]; then
+            echo "Preparation must change exactly Makefile and charts/aikit/Chart.yaml; changed paths:" >&2
+            printf '%s\n' "${changed_paths:-none}" >&2
+            exit 1
+          fi
+          git diff --check
+
+          {
+            echo "base_commit=${base_commit}"
+            echo "branch_exists=${branch_exists}"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Create release-automation GitHub App token
+        id: release-automation-app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Ensure release branch is unchanged
+        env:
+          BASE_COMMIT: ${{ steps.manifests.outputs.base_commit }}
+          BRANCH_EXISTS: ${{ steps.manifests.outputs.branch_exists }}
+          GH_TOKEN: ${{ steps.release-automation-app.outputs.token }}
+        run: |
+          set -euo pipefail
+          if ! target_ref=$(git ls-remote --refs origin "refs/heads/${TARGET_BRANCH}"); then
+            echo "Could not recheck ${TARGET_BRANCH}." >&2
+            exit 1
+          fi
+          current_commit=$(awk '$2 == "refs/heads/'"${TARGET_BRANCH}"'" { print $1 }' <<<"${target_ref}")
+
+          if [[ ${BRANCH_EXISTS} == true ]]; then
+            if [[ ${current_commit} != "${BASE_COMMIT}" ]]; then
+              echo "${TARGET_BRANCH} advanced from ${BASE_COMMIT} to ${current_commit:-absent}; rerun Prepare release." >&2
+              exit 1
+            fi
+            "${TRUSTED_VERSION_VALIDATOR}" "${NEWVERSION}" new "${BASE_COMMIT}"
+          else
+            if [[ -n ${current_commit} ]]; then
+              echo "${TARGET_BRANCH} was created while this workflow was preparing it; rerun Prepare release." >&2
+              exit 1
+            fi
+            "${TRUSTED_VERSION_VALIDATOR}" "${NEWVERSION}" new missing
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              --raw-field "ref=refs/heads/${TARGET_BRANCH}" \
+              --raw-field "sha=${BASE_COMMIT}" >/dev/null
+          fi
+
+      - name: Create release pull request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.release-automation-app.outputs.token }}
+          commit-message: "chore: Prepare ${{ env.NEWVERSION }} release"
+          title: "chore: Prepare ${{ env.NEWVERSION }} release"
+          branch: "prepare-${{ env.NEWVERSION }}"
+          base: "${{ env.TARGET_BRANCH }}"
+          signoff: true
+          labels: release-pr

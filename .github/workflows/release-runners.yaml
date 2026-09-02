@@ -1,16 +1,53 @@
-name: release-runners
+name: Release runner images
 
 on:
   push:
     tags:
       - v*
-  workflow_dispatch:
+
+concurrency:
+  group: release-runner-images
+  cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read
 
 jobs:
+  preflight:
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            *.githubusercontent.com:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Validate release version policy
+        run: scripts/ci/validate-release-version.sh "${GITHUB_REF_NAME}" existing
+
+      - name: Validate release provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/validate-release.sh "${GITHUB_REF_NAME}" "$(git rev-parse "${GITHUB_REF}^{commit}")"
+
   release-runners:
+    name: release-runners (${{ matrix.runner }})
+    needs: preflight
     permissions:
       contents: read
       packages: write
@@ -92,14 +129,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - id: docker_meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ghcr.io/kaito-project/aikit/runners/${{ matrix.runner }}
-          tags: |
-            type=semver,pattern={{raw}}
-            type=raw,value=latest
-
       - name: Build and push aikit frontend
         run: |
           docker buildx build . \
@@ -133,29 +162,23 @@ jobs:
       - name: Sign the validated image with GitHub OIDC Token
         env:
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
-        run: cosign sign --yes "ghcr.io/kaito-project/aikit/runners/${{ matrix.runner }}@${DIGEST}"
+        run: |
+          cosign sign --yes \
+            -a "release-artifact=${{ matrix.runner }}" \
+            -a "release-commit=${GITHUB_SHA}" \
+            -a "release-run-attempt=${GITHUB_RUN_ATTEMPT}" \
+            -a "release-run-id=${GITHUB_RUN_ID}" \
+            "ghcr.io/kaito-project/aikit/runners/${{ matrix.runner }}@${DIGEST}"
 
-      - name: Publish release tags
+      - name: Verify candidate image signature
         env:
           CANDIDATE_IMAGE: ghcr.io/kaito-project/aikit/runners/${{ matrix.runner }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
-          IMAGE_TAGS: ${{ steps.docker_meta.outputs.tags }}
         run: |
-          candidate_ref="${CANDIDATE_IMAGE}@${DIGEST}"
-          while IFS= read -r tag; do
-            if [[ -n "$tag" ]]; then
-              docker buildx imagetools create --prefer-index=false --tag "$tag" "$candidate_ref"
-            fi
-          done <<< "$IMAGE_TAGS"
-
-      - name: Verify published image signatures
-        env:
-          IMAGE_TAGS: ${{ steps.docker_meta.outputs.tags }}
-        run: |
-          while IFS= read -r tag; do
-            if [[ -n "$tag" ]]; then
-              cosign verify "$tag" \
-                --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-                --certificate-identity "https://github.com/kaito-project/aikit/.github/workflows/release-runners.yaml@${GITHUB_REF}"
-            fi
-          done <<< "$IMAGE_TAGS"
+          cosign verify "${CANDIDATE_IMAGE}@${DIGEST}" \
+            -a "release-artifact=${{ matrix.runner }}" \
+            -a "release-commit=${GITHUB_SHA}" \
+            -a "release-run-attempt=${GITHUB_RUN_ATTEMPT}" \
+            -a "release-run-id=${GITHUB_RUN_ID}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "https://github.com/kaito-project/aikit/.github/workflows/release-runners.yaml@${GITHUB_REF}"
