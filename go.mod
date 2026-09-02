@@ -3,7 +3,7 @@ module github.com/kaito-project/aikit
 go 1.26.3
 
 require (
-	github.com/containerd/platforms v1.0.0-rc.4
+	github.com/containerd/platforms v1.0.0-rc.5
 	github.com/moby/buildkit v0.32.2
 	github.com/modelpack/model-spec v0.0.7
 	github.com/opencontainers/go-digest v1.0.0
