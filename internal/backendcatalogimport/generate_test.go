@@ -130,7 +130,7 @@ func TestGenerateDeterministicCatalog(t *testing.T) {
 		t.Fatalf("NVIDIA fallbacks = %#v, want %#v", nvidia.Fallbacks, amd64CPU.Backend)
 	}
 	vulkan := findGeneratedEntry(t, first, runnerLlamaCpp, targetVulkan, Platform{OS: platformLinux, Architecture: architectureARM64})
-	if vulkan.Version != legacyLocalAIVersion || vulkan.SourceRef != reviewedSourceVulkanLLM ||
+	if vulkan.Version != LegacyLocalAIVersion || vulkan.SourceRef != reviewedSourceVulkanLLM ||
 		vulkan.Backend.InstallName != backendInstallVulkanLLM || vulkan.Status != statusExperimental || vulkan.RunnerProfile != runnerUnsupported {
 		t.Fatalf("Vulkan legacy compatibility entry = %#v", vulkan)
 	}
@@ -141,8 +141,8 @@ func TestGenerateDeterministicCatalog(t *testing.T) {
 
 func TestGenerateAppliesReviewedOverlayToLegacyDiffusersArtifact(t *testing.T) {
 	const (
-		diffusersRef = "quay.io/go-skynet/local-ai-backends:v3.12.1-gpu-nvidia-cuda-12-diffusers"
-		legacyCore   = "registry.example/core:v3.12.1-amd64"
+		diffusersRef = "quay.io/go-skynet/local-ai-backends:" + LegacyLocalAIVersion + "-gpu-nvidia-cuda-12-diffusers"
+		legacyCore   = "registry.example/core:" + LegacyLocalAIVersion + "-amd64"
 	)
 	source := sourceWithDefaultFixture(t, `- name: diffusers
   capabilities:
@@ -168,7 +168,7 @@ func TestGenerateAppliesReviewedOverlayToLegacyDiffusersArtifact(t *testing.T) {
 	}
 
 	diffusers := findGeneratedEntry(t, catalog, familyDiffusers, selectorNVIDIA, linuxPlatform(architectureAMD64))
-	if diffusers.Version != legacyLocalAIVersion || diffusers.SourceRef != diffusersRef || diffusers.Status != statusSupported ||
+	if diffusers.Version != LegacyLocalAIVersion || diffusers.SourceRef != diffusersRef || diffusers.Status != statusSupported ||
 		diffusers.RunnerProfile != runnerHFConfig || diffusers.RuntimeBase.Ref != "docker.io/library/ubuntu@"+fixtureUbuntu22AMD64 {
 		t.Fatalf("Diffusers legacy compatibility entry = %#v", diffusers)
 	}
@@ -200,7 +200,7 @@ func TestGenerateRejectsReviewedPolicyMappingDrift(t *testing.T) {
 - name: cpu-llama-cpp
   uri: quay.io/go-skynet/local-ai-backends:latest-cpu-repacked-llama-cpp
 `,
-			sourceRef: "quay.io/go-skynet/local-ai-backends:v4.9.0-cpu-repacked-llama-cpp",
+			sourceRef: "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-cpu-repacked-llama-cpp",
 			wantErr:   "reviewed policy source reference drift",
 		},
 	}
@@ -229,7 +229,7 @@ func TestGenerateRejectsReviewedPolicyMappingDrift(t *testing.T) {
 func TestReviewedPolicyRequirementsApplyOnlyToExactPinnedSource(t *testing.T) {
 	requirements := localAIReviewedPolicyRequirements()
 	exact := GenerateOptions{
-		Source:  LocalAIV490Source,
+		Source:  LocalAISource,
 		Version: LocalAIVersion,
 	}
 	if !requirements.applies(exact) {
@@ -272,7 +272,7 @@ func TestGenerateRequiresEveryApplicableReviewedPolicyOverlay(t *testing.T) {
   uri: quay.io/go-skynet/local-ai-backends:latest-gpu-nvidia-cuda-12-vllm
 `
 	vllmKey := reviewedPolicyKey{
-		Version:  reviewedLocalAIVersion,
+		Version:  LocalAIVersion,
 		Family:   familyVLLM,
 		Selector: selectorNVIDIA,
 		Platform: linuxPlatform(architectureAMD64),
@@ -314,7 +314,7 @@ func TestGenerateRequiresEveryApplicableReviewedPolicyOverlay(t *testing.T) {
 				Digest:   fixtureDigestA,
 				Platform: linuxPlatform(architectureAMD64),
 			}},
-			wantErr: "reviewed policy overlay v4.9.0/vllm/nvidia on linux/amd64/ did not produce its expected catalog entry",
+			wantErr: "reviewed policy overlay " + LocalAIVersion + "/vllm/nvidia on linux/amd64/ did not produce its expected catalog entry",
 		},
 		{
 			name:   "missing non-default vLLM platform",
@@ -323,7 +323,7 @@ func TestGenerateRequiresEveryApplicableReviewedPolicyOverlay(t *testing.T) {
 				Digest:   fixtureDigestA,
 				Platform: linuxPlatform(architectureARM64),
 			}},
-			wantErr: "reviewed policy overlay v4.9.0/vllm/nvidia on linux/amd64/ did not produce its expected catalog entry",
+			wantErr: "reviewed policy overlay " + LocalAIVersion + "/vllm/nvidia on linux/amd64/ did not produce its expected catalog entry",
 		},
 	}
 
@@ -342,7 +342,7 @@ func TestGenerateRequiresEveryApplicableReviewedPolicyOverlay(t *testing.T) {
 				},
 			}, reviewedPolicyRequirements{
 				Source:   pin,
-				Version:  reviewedLocalAIVersion,
+				Version:  LocalAIVersion,
 				Overlays: []reviewedPolicyOverlay{vllmOverlay},
 			})
 			if test.wantErr == "" {
@@ -697,17 +697,17 @@ func TestPolicyInferencePreservesAcceleratorSemantics(t *testing.T) {
 }
 
 func TestStableVersionReference(t *testing.T) {
-	got, err := stableVersionReference("quay.io/example/backend:latest-gpu-demo", "v4.9.0")
+	got, err := stableVersionReference("quay.io/example/backend:latest-gpu-demo", LocalAIVersion)
 	if err != nil {
 		t.Fatalf("stableVersionReference() error = %v", err)
 	}
-	if want := "quay.io/example/backend:v4.9.0-gpu-demo"; got != want {
+	if want := "quay.io/example/backend:" + LocalAIVersion + "-gpu-demo"; got != want {
 		t.Fatalf("stableVersionReference() = %q, want %q", got, want)
 	}
-	if _, err := stableVersionReference("quay.io/example/backend:master-gpu-demo", "v4.9.0"); err == nil {
+	if _, err := stableVersionReference("quay.io/example/backend:master-gpu-demo", LocalAIVersion); err == nil {
 		t.Fatal("stableVersionReference() accepted a development tag")
 	}
-	if _, err := stableVersionReference("quay.io/example/backend", "v4.9.0"); err == nil {
+	if _, err := stableVersionReference("quay.io/example/backend", LocalAIVersion); err == nil {
 		t.Fatal("stableVersionReference() accepted a reference without a tag")
 	}
 }
@@ -756,11 +756,11 @@ func TestGenerateAcceptsMissingWorkloadsAndPlatformlessSpecializedCore(t *testin
 	resolver := scriptedResolver{
 		base: readSnapshot(t, "testdata/resolutions.json"),
 		manifests: staticResolver{
-			"registry.example/repo:v4.9.0-cpu-demo": {{
+			"registry.example/repo:" + LocalAIVersion + "-cpu-demo": {{
 				Digest:   fixtureDigestA,
 				Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
 			}},
-			"registry.example/core:v4.9.0-amd64": {{Digest: fixtureDigestB}},
+			"registry.example/core:" + LocalAIVersion + "-amd64": {{Digest: fixtureDigestB}},
 		},
 	}
 	catalog, err := Generate(context.Background(), source, GenerateOptions{
@@ -787,9 +787,9 @@ func TestGenerateAcceptsMissingWorkloadsAndPlatformlessSpecializedCore(t *testin
 
 func TestGenerateAppliesReviewedUnavailableSourcePolicyStrictly(t *testing.T) {
 	const (
-		availableRef = "registry.example/repo:v4.9.0-cpu-demo"
-		missingRef   = "quay.io/go-skynet/local-ai-backends:v4.9.0-gpu-rocm-hipblas-turboquant"
-		coreRef      = "registry.example/core:v4.9.0-amd64"
+		availableRef = "registry.example/repo:" + LocalAIVersion + "-cpu-demo"
+		missingRef   = "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-gpu-rocm-hipblas-turboquant"
+		coreRef      = "registry.example/core:" + LocalAIVersion + "-amd64"
 	)
 	source := sourceWithDefaultFixture(t, `- name: demo
   capabilities:
@@ -907,11 +907,11 @@ func TestGenerateExcludesNonLinuxManifests(t *testing.T) {
 	resolver := scriptedResolver{
 		base: readSnapshot(t, "testdata/resolutions.json"),
 		manifests: staticResolver{
-			"registry.example/repo:v4.9.0-cpu-demo": {{
+			"registry.example/repo:" + LocalAIVersion + "-cpu-demo": {{
 				Digest:   fixtureDigestA,
 				Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
 			}},
-			"registry.example/repo:v4.9.0-metal-darwin-arm64-demo": {{
+			"registry.example/repo:" + LocalAIVersion + "-metal-darwin-arm64-demo": {{
 				Digest:   fixtureDigestB,
 				Platform: Platform{OS: "darwin", Architecture: architectureARM64},
 			}},
@@ -1021,7 +1021,7 @@ func (resolver versionAliasResolver) Resolve(ctx context.Context, reference stri
 		return manifests, nil
 	}
 
-	return resolver.Base.Resolve(ctx, strings.Replace(reference, resolver.From, legacyLocalAIVersion, 1))
+	return resolver.Base.Resolve(ctx, strings.Replace(reference, resolver.From, LegacyLocalAIVersion, 1))
 }
 
 func readFixture(t *testing.T, path string) []byte {

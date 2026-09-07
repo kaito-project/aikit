@@ -14,9 +14,9 @@ func TestCompatibilityArtifactVersions(t *testing.T) {
 		selector string
 		want     string
 	}{
-		{name: "Diffusers default CUDA", version: LocalAIVersion, family: familyDiffusers, selector: selectorNVIDIA, want: legacyLocalAIVersion},
+		{name: "Diffusers default CUDA", version: LocalAIVersion, family: familyDiffusers, selector: selectorNVIDIA, want: LegacyLocalAIVersion},
 		{name: "Diffusers explicit CUDA 12", version: LocalAIVersion, family: familyDiffusers, selector: selectorNVIDIACUDA12, want: LocalAIVersion},
-		{name: "Apple Silicon Vulkan", version: LocalAIVersion, family: runnerLlamaCpp, selector: targetVulkan, want: legacyLocalAIVersion},
+		{name: "Apple Silicon Vulkan", version: LocalAIVersion, family: runnerLlamaCpp, selector: targetVulkan, want: LegacyLocalAIVersion},
 		{name: "vLLM default CUDA", version: LocalAIVersion, family: familyVLLM, selector: selectorNVIDIA, want: LocalAIVersion},
 		{name: "different imported release", version: fixtureFutureVersion, family: familyDiffusers, selector: selectorNVIDIA, want: fixtureFutureVersion},
 	}
@@ -30,14 +30,14 @@ func TestCompatibilityArtifactVersions(t *testing.T) {
 	}
 
 	const template = "registry.example/localai:" + LocalAIVersion + "-{architecture}"
-	got, err := coreReferenceTemplateForVersion(template, LocalAIVersion, legacyLocalAIVersion)
+	got, err := coreReferenceTemplateForVersion(template, LocalAIVersion, LegacyLocalAIVersion)
 	if err != nil {
 		t.Fatalf("coreReferenceTemplateForVersion() error = %v", err)
 	}
-	if want := "registry.example/localai:" + legacyLocalAIVersion + "-{architecture}"; got != want {
+	if want := "registry.example/localai:" + LegacyLocalAIVersion + "-{architecture}"; got != want {
 		t.Errorf("coreReferenceTemplateForVersion() = %q, want %q", got, want)
 	}
-	if _, err := coreReferenceTemplateForVersion("registry.example/localai:stable-{architecture}", LocalAIVersion, legacyLocalAIVersion); err == nil ||
+	if _, err := coreReferenceTemplateForVersion("registry.example/localai:stable-{architecture}", LocalAIVersion, LegacyLocalAIVersion); err == nil ||
 		!strings.Contains(err.Error(), "must contain imported version") {
 		t.Fatalf("coreReferenceTemplateForVersion() error = %v, want missing imported version", err)
 	}
@@ -115,7 +115,7 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			environment:       cuda12Environment,
 			runner:            runnerLlamaCpp,
 			fallbacks:         1,
-			sourceRef:         "quay.io/go-skynet/local-ai-backends:v4.9.0-gpu-nvidia-cuda-12-llama-cpp",
+			sourceRef:         "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-gpu-nvidia-cuda-12-llama-cpp",
 		},
 		{
 			name:            "llama ROCm",
@@ -131,7 +131,7 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			runner:          runnerLlamaCpp,
 			installName:     "hipblas-llama-cpp",
 			fallbacks:       1,
-			sourceRef:       "quay.io/go-skynet/local-ai-backends:v4.9.0-gpu-rocm-hipblas-llama-cpp",
+			sourceRef:       "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-gpu-rocm-hipblas-llama-cpp",
 		},
 		{
 			name:         "llama Vulkan",
@@ -214,7 +214,7 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			runtimeBase:  ubuntu22RuntimeBase,
 			environment:  cuda12Environment,
 			runner:       runnerHFConfig,
-			sourceRef:    "quay.io/go-skynet/local-ai-backends:v3.12.1-gpu-nvidia-cuda-12-diffusers",
+			sourceRef:    "quay.io/go-skynet/local-ai-backends:" + LegacyLocalAIVersion + "-gpu-nvidia-cuda-12-diffusers",
 		},
 		{
 			name:           "vllm CUDA",
@@ -227,7 +227,7 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			systemPackages: []string{systemPackageGCC, systemPackageLibcDev},
 			environment:    append(cuda12Environment, vllmNativeSampler),
 			runner:         runnerHFConfig,
-			sourceRef:      "quay.io/go-skynet/local-ai-backends:v4.9.0-gpu-nvidia-cuda-12-vllm",
+			sourceRef:      "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-gpu-nvidia-cuda-12-vllm",
 		},
 		{
 			name:           "vllm explicit CUDA 12 keeps native sampler",
@@ -459,7 +459,7 @@ func TestReviewedPolicyOverlayDriftFailsClosed(t *testing.T) {
 			Family:          cpuOverlay.Key.Family,
 			Selector:        cpuOverlay.Key.Selector,
 			Target:          cpuOverlay.Target,
-			SourceRef:       "quay.io/go-skynet/local-ai-backends:v4.9.0-cpu-repacked-llama-cpp",
+			SourceRef:       "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-cpu-repacked-llama-cpp",
 			Platform:        cpuOverlay.Key.Platform,
 		})
 		if err == nil || !strings.Contains(err.Error(), "reviewed policy source reference drift") {
@@ -646,7 +646,7 @@ func TestGenericL4TProfileFollowsArtifactCUDA(t *testing.T) {
 		Family:          familyVLLMCpp,
 		Selector:        selectorNVIDIAL4T,
 		Target:          "nvidia-l4t-arm64-vllm-cpp",
-		SourceRef:       "quay.io/go-skynet/local-ai-backends:v4.9.0-nvidia-l4t-cuda-13-arm64-vllm-cpp",
+		SourceRef:       "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-nvidia-l4t-cuda-13-arm64-vllm-cpp",
 		Platform:        Platform{OS: platformLinux, Architecture: architectureARM64},
 	})
 	if err != nil {
