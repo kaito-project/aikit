@@ -1,0 +1,1551 @@
+name: Reconcile release latest
+
+on:
+  workflow_run:
+    workflows:
+      - Release artifacts
+      - Release runner images
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      app_version:
+        description: Optional app, Helm, and GitHub Release version to recover before reconciling latest.
+        required: false
+        type: string
+      runner_version:
+        description: Optional runner image version to recover before reconciling latest.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  promote-app-version:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (
+        (
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.name == 'Release artifacts' &&
+          github.event.workflow_run.conclusion == 'success'
+        ) ||
+        (github.event_name == 'workflow_dispatch' && inputs.app_version != '')
+      )
+    environment: release-automation
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    concurrency:
+      group: release-artifacts
+      cancel-in-progress: false
+      queue: max
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
+      run_attempt: ${{ steps.release.outputs.run_attempt }}
+      run_id: ${{ steps.release.outputs.run_id }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            ghcr.io:443
+            github.com:443
+            *.githubusercontent.com:443
+            rekor.sigstore.dev:443
+            storage.googleapis.com:443
+            tuf-repo-cdn.sigstore.dev:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Validate the exact successful app release attempt
+        id: release
+        env:
+          EXPECTED_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          EXPECTED_RUN_ID: ${{ github.event.workflow_run.id }}
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_VERSION: ${{ inputs.app_version }}
+        run: |
+          set -euo pipefail
+          attempt_json=$(mktemp)
+          remote_tags=$(mktemp)
+          runs_json=$(mktemp)
+          selector_output=$(mktemp)
+          trap 'rm -f "${attempt_json}" "${remote_tags}" "${runs_json}" "${selector_output}"' EXIT
+
+          expected_version=${RECOVERY_VERSION}
+          expected_commit=
+          if [[ -n ${EXPECTED_RUN_ID} || -n ${EXPECTED_RUN_ATTEMPT} ]]; then
+            if ! [[ ${EXPECTED_RUN_ID} =~ ^[1-9][0-9]*$ && \
+              ${EXPECTED_RUN_ATTEMPT} =~ ^[1-9][0-9]{0,3}$ ]]; then
+              echo "Workflow event contained invalid attempt coordinates." >&2
+              exit 1
+            fi
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${EXPECTED_RUN_ID}/attempts/${EXPECTED_RUN_ATTEMPT}" \
+              >"${attempt_json}"
+            if ! jq -e \
+              --arg repository "${GITHUB_REPOSITORY}" \
+              --argjson run_attempt "${EXPECTED_RUN_ATTEMPT}" \
+              --argjson run_id "${EXPECTED_RUN_ID}" '
+                type == "object" and
+                .id == $run_id and
+                .run_attempt == $run_attempt and
+                .path == ".github/workflows/release.yaml" and
+                .event == "push" and
+                .status == "completed" and
+                .conclusion == "success" and
+                .head_repository.full_name == $repository and
+                (.head_branch | type == "string") and
+                (.head_branch | test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")) and
+                (.head_sha | type == "string") and
+                (.head_sha | test("^[0-9a-f]{40}$"))
+              ' "${attempt_json}" >/dev/null; then
+              echo "GitHub returned invalid metadata for the triggering release attempt." >&2
+              exit 1
+            fi
+            expected_version=$(jq -r '.head_branch' "${attempt_json}")
+            expected_commit=$(jq -r '.head_sha' "${attempt_json}")
+            scripts/ci/collect-release-attempts.sh \
+              "${GITHUB_REPOSITORY}" .github/workflows/release.yaml "${runs_json}" \
+              "${EXPECTED_RUN_ID}" "${EXPECTED_RUN_ATTEMPT}"
+          else
+            if ! [[ ${expected_version} =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "Manual app recovery requires a stable vX.Y.Z version." >&2
+              exit 1
+            fi
+            scripts/ci/collect-release-attempts.sh \
+              "${GITHUB_REPOSITORY}" .github/workflows/release.yaml "${runs_json}"
+          fi
+
+          git ls-remote --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
+            >"${remote_tags}"
+          GITHUB_OUTPUT="${selector_output}" scripts/ci/select-latest-release.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release.yaml \
+            "${runs_json}" "${remote_tags}" "${expected_version}"
+
+          for expected_output in \
+            found=true \
+            "version=${expected_version}"; do
+            if ! grep -Fxq -- "${expected_output}" "${selector_output}"; then
+              echo "Selected app release is not bound to a successful publisher run and version tag." >&2
+              exit 1
+            fi
+          done
+          if [[ -n ${expected_commit} ]] && \
+            ! grep -Fxq -- "commit=${expected_commit}" "${selector_output}"; then
+            echo "Triggering app release commit is no longer bound to its version tag." >&2
+            exit 1
+          fi
+          cat "${selector_output}" >>"${GITHUB_OUTPUT}"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Login to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify the exact app release candidate
+        id: image
+        env:
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          RUN_ATTEMPT: ${{ steps.release.outputs.run_attempt }}
+          RUN_ID: ${{ steps.release.outputs.run_id }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          image=ghcr.io/kaito-project/aikit/aikit
+          candidate="${image}:candidate-${RUN_ID}-${RUN_ATTEMPT}"
+          digest=$(docker buildx imagetools inspect "${candidate}" \
+            --format '{{json .Manifest.Digest}}' | jq -er 'select(type == "string")')
+          if ! [[ ${digest} =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Registry returned an invalid digest for ${candidate}." >&2
+            exit 1
+          fi
+
+          cosign verify "${image}@${digest}" \
+            -a release-artifact=aikit \
+            -a "release-commit=${RELEASE_COMMIT}" \
+            -a "release-run-attempt=${RUN_ATTEMPT}" \
+            -a "release-run-id=${RUN_ID}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity \
+              "https://github.com/kaito-project/aikit/.github/workflows/release.yaml@refs/tags/${VERSION}"
+          echo "digest=${digest}" >>"${GITHUB_OUTPUT}"
+
+      - name: Publish the immutable app version
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USERNAME: ${{ github.actor }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          RUN_ATTEMPT: ${{ steps.release.outputs.run_attempt }}
+          RUN_ID: ${{ steps.release.outputs.run_id }}
+          TRUSTED_COMMIT: ${{ github.sha }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          image=ghcr.io/kaito-project/aikit/aikit
+          current_main_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')
+          if [[ ${current_main_commit} != "${TRUSTED_COMMIT}" ]]; then
+            echo "main advanced from ${TRUSTED_COMMIT} to ${current_main_commit}; rerun reconciliation." >&2
+            exit 1
+          fi
+
+          remote_tags=$(mktemp)
+          runs_json=$(mktemp)
+          selector_output=$(mktemp)
+          trap 'rm -f "${remote_tags}" "${runs_json}" "${selector_output}"' EXIT
+          scripts/ci/collect-release-attempts.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release.yaml "${runs_json}" \
+            "${RUN_ID}" "${RUN_ATTEMPT}"
+          git ls-remote --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
+            >"${remote_tags}"
+          GITHUB_OUTPUT="${selector_output}" scripts/ci/select-latest-release.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release.yaml \
+            "${runs_json}" "${remote_tags}" "${VERSION}" >/dev/null
+          for expected_output in \
+            found=true \
+            "version=${VERSION}" \
+            "commit=${RELEASE_COMMIT}" \
+            "run_id=${RUN_ID}" \
+            "run_attempt=${RUN_ATTEMPT}"; do
+            if ! grep -Fxq -- "${expected_output}" "${selector_output}"; then
+              echo "Selected app release attempt or version tag changed before promotion." >&2
+              exit 1
+            fi
+          done
+
+          existing_digest=$(scripts/ci/resolve-ghcr-tag-digest.sh \
+            kaito-project/aikit/aikit "${VERSION}")
+          if [[ ${existing_digest} == "${DIGEST}" ]]; then
+            echo "Immutable tag ${image}:${VERSION} already points to ${DIGEST}." >>"${GITHUB_STEP_SUMMARY}"
+          elif [[ ${existing_digest} == absent ]]; then
+            docker buildx imagetools create --prefer-index=false \
+              --tag "${image}:${VERSION}" \
+              "${image}@${DIGEST}"
+          else
+            echo "Immutable tag ${image}:${VERSION} already points to ${existing_digest}, not ${DIGEST}." >&2
+            exit 1
+          fi
+
+          published_digest=$(scripts/ci/resolve-ghcr-tag-digest.sh \
+            kaito-project/aikit/aikit "${VERSION}")
+          if [[ ${published_digest} != "${DIGEST}" ]]; then
+            echo "Immutable tag ${image}:${VERSION} resolved to ${published_digest}, not ${DIGEST}." >&2
+            exit 1
+          fi
+          cosign verify "${image}:${VERSION}" \
+            -a release-artifact=aikit \
+            -a "release-commit=${RELEASE_COMMIT}" \
+            -a "release-run-attempt=${RUN_ATTEMPT}" \
+            -a "release-run-id=${RUN_ID}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity \
+              "https://github.com/kaito-project/aikit/.github/workflows/release.yaml@refs/tags/${VERSION}"
+          echo "Published immutable app image ${image}:${VERSION}." >>"${GITHUB_STEP_SUMMARY}"
+
+  publish-app-release:
+    needs: promote-app-version
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (
+        (
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.name == 'Release artifacts' &&
+          github.event.workflow_run.conclusion == 'success'
+        ) ||
+        (github.event_name == 'workflow_dispatch' && inputs.app_version != '')
+      ) &&
+      needs.promote-app-version.result == 'success'
+    environment: release-automation
+    permissions:
+      actions: read
+      contents: write
+    concurrency:
+      group: release-artifacts
+      cancel-in-progress: false
+      queue: max
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            get.helm.sh:443
+            github.com:443
+            *.githubusercontent.com:443
+            *.blob.core.windows.net:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Select the exact Helm chart artifact
+        id: chart-artifact
+        env:
+          RELEASE_COMMIT: ${{ needs.promote-app-version.outputs.commit }}
+          RUN_ATTEMPT: ${{ needs.promote-app-version.outputs.run_attempt }}
+          RUN_ID: ${{ needs.promote-app-version.outputs.run_id }}
+          VERSION: ${{ needs.promote-app-version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! [[ ${RUN_ID} =~ ^[1-9][0-9]*$ && \
+            ${RUN_ATTEMPT} =~ ^[1-9][0-9]{0,3}$ && \
+            ${RELEASE_COMMIT} =~ ^[0-9a-f]{40}$ && \
+            ${VERSION} =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Image promotion returned invalid release coordinates." >&2
+            exit 1
+          fi
+
+          artifacts_json=$(mktemp)
+          remote_tags=$(mktemp)
+          runs_json=$(mktemp)
+          selector_output=$(mktemp)
+          trap 'rm -f "${artifacts_json}" "${remote_tags}" "${runs_json}" "${selector_output}"' EXIT
+
+          scripts/ci/collect-release-attempts.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release.yaml "${runs_json}" \
+            "${RUN_ID}" "${RUN_ATTEMPT}"
+          git ls-remote --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
+            >"${remote_tags}"
+          GITHUB_OUTPUT="${selector_output}" scripts/ci/select-latest-release.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release.yaml \
+            "${runs_json}" "${remote_tags}" "${VERSION}" >/dev/null
+          for expected_output in \
+            found=true \
+            "version=${VERSION}" \
+            "commit=${RELEASE_COMMIT}" \
+            "run_id=${RUN_ID}" \
+            "run_attempt=${RUN_ATTEMPT}"; do
+            if ! grep -Fxq -- "${expected_output}" "${selector_output}"; then
+              echo "Selected app release changed before chart publication." >&2
+              exit 1
+            fi
+          done
+
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            >"${artifacts_json}"
+          artifact_name="helm-chart-${RUN_ID}-${RUN_ATTEMPT}"
+          if ! artifact_id=$(jq -er \
+            --arg artifact_name "${artifact_name}" \
+            --arg release_commit "${RELEASE_COMMIT}" \
+            --argjson run_id "${RUN_ID}" '
+              if type != "array" or any(.[]; type != "object" or (.artifacts | type != "array")) then
+                error("malformed artifact pages")
+              else
+                [.[].artifacts[] | select(.name == $artifact_name)] as $matches |
+                if ($matches | length) != 1 then
+                  error("expected exactly one chart artifact")
+                else
+                  $matches[0] |
+                  select(
+                    (.id | type == "number") and .id > 0 and
+                    (.size_in_bytes | type == "number") and .size_in_bytes > 0 and
+                    .expired == false and
+                    (.digest | type == "string") and
+                    (.digest | test("^sha256:[0-9a-f]{64}$")) and
+                    .workflow_run.id == $run_id and
+                    .workflow_run.head_sha == $release_commit
+                  ) |
+                  .id
+                end
+              end
+            ' "${artifacts_json}"); then
+            echo "GitHub did not return one valid ${artifact_name} artifact." >&2
+            exit 1
+          fi
+          echo "id=${artifact_id}" >>"${GITHUB_OUTPUT}"
+
+      - name: Download the exact Helm chart artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v5
+        with:
+          artifact-ids: ${{ steps.chart-artifact.outputs.id }}
+          path: ${{ runner.temp }}/helm-chart
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.promote-app-version.outputs.run_id }}
+          digest-mismatch: error
+
+      - name: Validate the Helm chart candidate
+        id: chart
+        env:
+          HELM_ARCHIVE_SHA256: bf56beb418bb529b5e0d6d43d56654c5a03f89c98400b409d1013a33d9586474
+          HELM_VERSION: v3.10.0
+          VERSION: ${{ needs.promote-app-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          helm_archive="${RUNNER_TEMP}/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl --fail --location --silent --show-error \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
+            --output "${helm_archive}"
+          downloaded_sha256=$(sha256sum "${helm_archive}" | awk '{print $1}')
+          if [[ ${downloaded_sha256} != "${HELM_ARCHIVE_SHA256}" ]]; then
+            echo "Helm archive digest ${downloaded_sha256} did not match the pinned digest." >&2
+            exit 1
+          fi
+          helm_dir="${RUNNER_TEMP}/helm-${HELM_VERSION}"
+          mkdir "${helm_dir}"
+          tar -xzf "${helm_archive}" -C "${helm_dir}" linux-amd64/helm
+          helm_bin="${helm_dir}/linux-amd64/helm"
+          if [[ ! -x ${helm_bin} ]]; then
+            echo "Verified Helm archive did not contain an executable Helm binary." >&2
+            exit 1
+          fi
+
+          chart_version=${VERSION#v}
+          chart_dir="${RUNNER_TEMP}/helm-chart"
+          chart_package="${chart_dir}/aikit-${chart_version}.tgz"
+          mapfile -d '' artifact_entries < <(find "${chart_dir}" -mindepth 1 -maxdepth 1 -print0)
+          if [[ ${#artifact_entries[@]} -ne 1 || \
+            ${artifact_entries[0]} != "${chart_package}" || \
+            ! -f ${chart_package} || -L ${chart_package} ]]; then
+            echo "Downloaded artifact must contain only ${chart_package}." >&2
+            exit 1
+          fi
+
+          metadata=$("${helm_bin}" show chart "${chart_package}")
+          for expected_line in \
+            'name: aikit' \
+            "version: ${chart_version}" \
+            "appVersion: ${VERSION}"; do
+            if [[ $(grep -Fxc -- "${expected_line}" <<<"${metadata}") -ne 1 ]]; then
+              echo "Downloaded chart metadata does not contain exactly one ${expected_line}." >&2
+              exit 1
+            fi
+          done
+          {
+            echo "helm=${helm_bin}"
+            echo "package=${chart_package}"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Inspect existing GitHub release
+        id: github-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.promote-app-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          release_json=$(mktemp)
+          trap 'rm -f "${release_json}"' EXIT
+          if ! http_status=$(curl --silent --show-error \
+            --output "${release_json}" \
+            --write-out '%{http_code}' \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}"); then
+            echo "Could not inspect GitHub release ${VERSION}." >&2
+            exit 1
+          fi
+
+          case ${http_status} in
+            200)
+              if ! jq -e --arg version "${VERSION}" '
+                type == "object" and
+                .tag_name == $version and
+                .draft == false and
+                .prerelease == false and
+                (.published_at | type == "string") and
+                (.id | type == "number")
+              ' "${release_json}" >/dev/null; then
+                echo "Existing GitHub release ${VERSION} is not a published stable release." >&2
+                exit 1
+              fi
+              echo "exists=true" >>"${GITHUB_OUTPUT}"
+              ;;
+            404)
+              echo "exists=false" >>"${GITHUB_OUTPUT}"
+              ;;
+            *)
+              echo "GitHub release lookup for ${VERSION} returned HTTP ${http_status}." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Publish Helm chart
+        env:
+          CHART_PACKAGE: ${{ steps.chart.outputs.package }}
+          GH_TOKEN: ${{ github.token }}
+          HELM_BIN: ${{ steps.chart.outputs.helm }}
+          RELEASE_COMMIT: ${{ needs.promote-app-version.outputs.commit }}
+          RUN_ATTEMPT: ${{ needs.promote-app-version.outputs.run_attempt }}
+          RUN_ID: ${{ needs.promote-app-version.outputs.run_id }}
+          TRUSTED_COMMIT: ${{ github.sha }}
+          VERSION: ${{ needs.promote-app-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          current_main_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')
+          if [[ ${current_main_commit} != "${TRUSTED_COMMIT}" ]]; then
+            echo "main advanced from ${TRUSTED_COMMIT} to ${current_main_commit}; rerun reconciliation." >&2
+            exit 1
+          fi
+
+          remote_tags=$(mktemp)
+          runs_json=$(mktemp)
+          selector_output=$(mktemp)
+          trap 'rm -f "${remote_tags}" "${runs_json}" "${selector_output}"' EXIT
+          scripts/ci/collect-release-attempts.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release.yaml "${runs_json}" \
+            "${RUN_ID}" "${RUN_ATTEMPT}"
+          git ls-remote --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
+            >"${remote_tags}"
+          GITHUB_OUTPUT="${selector_output}" scripts/ci/select-latest-release.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release.yaml \
+            "${runs_json}" "${remote_tags}" "${VERSION}" >/dev/null
+          for expected_output in \
+            found=true \
+            "version=${VERSION}" \
+            "commit=${RELEASE_COMMIT}" \
+            "run_id=${RUN_ID}" \
+            "run_attempt=${RUN_ATTEMPT}"; do
+            if ! grep -Fxq -- "${expected_output}" "${selector_output}"; then
+              echo "Selected app release changed before Helm publication." >&2
+              exit 1
+            fi
+          done
+
+          chart_version=${VERSION#v}
+          package_path="charts/aikit-${chart_version}.tgz"
+          index_path=charts/index.yaml
+          candidate_blob=$(git hash-object "${CHART_PACKAGE}")
+          package_sha256=$(sha256sum "${CHART_PACKAGE}" | awk '{print $1}')
+
+          base_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/gh-pages" \
+            --jq '.object.sha')
+          base_tree=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/commits/${base_commit}" \
+            --jq '.tree.sha')
+          tree_json=$(mktemp)
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/git/trees/${base_tree}?recursive=1" \
+            >"${tree_json}"
+          if ! jq -e '
+            type == "object" and
+            .truncated == false and
+            (.tree | type == "array")
+          ' "${tree_json}" >/dev/null; then
+            echo "GitHub returned a truncated or malformed gh-pages tree." >&2
+            exit 1
+          fi
+
+          for target_path in "${package_path}" "${index_path}"; do
+            target_count=$(jq --arg path "${target_path}" \
+              '[.tree[] | select(.path == $path)] | length' "${tree_json}")
+            if [[ ${target_count} -gt 1 ]]; then
+              echo "gh-pages contains duplicate ${target_path} entries." >&2
+              exit 1
+            fi
+          done
+
+          existing_package=$(jq -c --arg path "${package_path}" \
+            '[.tree[] | select(.path == $path)][0] // null' "${tree_json}")
+          if [[ ${existing_package} != null ]]; then
+            if ! jq -e \
+              --arg candidate_blob "${candidate_blob}" '
+                .mode == "100644" and
+                .type == "blob" and
+                .sha == $candidate_blob
+              ' <<<"${existing_package}" >/dev/null; then
+              echo "Immutable Helm package ${package_path} already exists with different bytes or type." >&2
+              exit 1
+            fi
+          fi
+
+          publish_dir="${RUNNER_TEMP}/helm-publish"
+          mkdir "${publish_dir}"
+          cp "${CHART_PACKAGE}" "${publish_dir}/aikit-${chart_version}.tgz"
+          existing_index=$(jq -c --arg path "${index_path}" \
+            '[.tree[] | select(.path == $path)][0] // null' "${tree_json}")
+          if [[ ${existing_index} == null ]]; then
+            "${HELM_BIN}" repo index "${publish_dir}" \
+              --url https://kaito-project.github.io/aikit/charts
+          else
+            if ! jq -e '.mode == "100644" and .type == "blob" and (.sha | type == "string")' \
+              <<<"${existing_index}" >/dev/null; then
+              echo "Existing ${index_path} is not a regular blob." >&2
+              exit 1
+            fi
+            index_blob=$(jq -r '.sha' <<<"${existing_index}")
+            index_blob_json=$(mktemp)
+            gh api "repos/${GITHUB_REPOSITORY}/git/blobs/${index_blob}" >"${index_blob_json}"
+            if ! jq -e '.encoding == "base64" and (.content | type == "string")' \
+              "${index_blob_json}" >/dev/null; then
+              echo "GitHub returned malformed ${index_path} content." >&2
+              exit 1
+            fi
+            jq -r '.content' "${index_blob_json}" | tr -d '\n' | \
+              base64 --decode >"${RUNNER_TEMP}/existing-index.yaml"
+            "${HELM_BIN}" repo index "${publish_dir}" \
+              --url https://kaito-project.github.io/aikit/charts \
+              --merge "${RUNNER_TEMP}/existing-index.yaml"
+          fi
+          if ! grep -Fq -- "digest: ${package_sha256}" "${publish_dir}/index.yaml" || \
+            ! grep -Fq -- "aikit-${chart_version}.tgz" "${publish_dir}/index.yaml"; then
+            echo "Generated Helm index does not reference the exact chart package." >&2
+            exit 1
+          fi
+
+          create_blob() {
+            local file=$1
+            local encoded payload sha
+            encoded=$(base64 <"${file}" | tr -d '\n')
+            payload=$(mktemp)
+            jq -n --arg content "${encoded}" \
+              '{content: $content, encoding: "base64"}' >"${payload}"
+            sha=$(gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/git/blobs" \
+              --input "${payload}" --jq '.sha')
+            if [[ ${sha} != "$(git hash-object "${file}")" ]]; then
+              echo "GitHub created an unexpected blob for ${file}." >&2
+              exit 1
+            fi
+            printf '%s\n' "${sha}"
+          }
+
+          package_blob=$(create_blob "${CHART_PACKAGE}")
+          index_blob=$(create_blob "${publish_dir}/index.yaml")
+          tree_payload=$(mktemp)
+          jq -n \
+            --arg base_tree "${base_tree}" \
+            --arg index_path "${index_path}" \
+            --arg index_blob "${index_blob}" \
+            --arg package_path "${package_path}" \
+            --arg package_blob "${package_blob}" '
+              {
+                base_tree: $base_tree,
+                tree: [
+                  {path: $package_path, mode: "100644", type: "blob", sha: $package_blob},
+                  {path: $index_path, mode: "100644", type: "blob", sha: $index_blob}
+                ]
+              }
+            ' >"${tree_payload}"
+          new_tree=$(gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/git/trees" \
+            --input "${tree_payload}" --jq '.sha')
+          commit_payload=$(mktemp)
+          jq -n \
+            --arg message "Publish Helm chart ${VERSION}" \
+            --arg parent "${base_commit}" \
+            --arg tree "${new_tree}" \
+            '{message: $message, tree: $tree, parents: [$parent]}' \
+            >"${commit_payload}"
+          new_commit=$(gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/git/commits" \
+            --input "${commit_payload}" --jq '.sha')
+
+          current_main_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')
+          if [[ ${current_main_commit} != "${TRUSTED_COMMIT}" ]]; then
+            echo "main advanced from ${TRUSTED_COMMIT} to ${current_main_commit}; rerun reconciliation." >&2
+            exit 1
+          fi
+          git fetch --quiet --force --no-tags origin \
+            "refs/tags/${VERSION}:refs/tags/${VERSION}"
+          tag_commit=$(git rev-parse "refs/tags/${VERSION}^{commit}")
+          if [[ ${tag_commit} != "${RELEASE_COMMIT}" ]]; then
+            echo "Tag ${VERSION} moved from ${RELEASE_COMMIT} to ${tag_commit}." >&2
+            exit 1
+          fi
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/git/refs/heads/gh-pages" \
+            -f sha="${new_commit}" -F force=false >/dev/null
+          published_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/gh-pages" \
+            --jq '.object.sha')
+          if [[ ${published_commit} != "${new_commit}" ]]; then
+            echo "gh-pages advanced to ${published_commit}, not ${new_commit}." >&2
+            exit 1
+          fi
+          echo "Published immutable Helm chart ${package_path}." >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Publish stable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.promote-app-version.outputs.commit }}
+          RELEASE_EXISTS: ${{ steps.github-release.outputs.exists }}
+          TRUSTED_COMMIT: ${{ github.sha }}
+          VERSION: ${{ needs.promote-app-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          current_main_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')
+          if [[ ${current_main_commit} != "${TRUSTED_COMMIT}" ]]; then
+            echo "main advanced from ${TRUSTED_COMMIT} to ${current_main_commit}; rerun reconciliation." >&2
+            exit 1
+          fi
+          git fetch --quiet --force --no-tags origin \
+            "refs/tags/${VERSION}:refs/tags/${VERSION}"
+          tag_commit=$(git rev-parse "refs/tags/${VERSION}^{commit}")
+          if [[ ${tag_commit} != "${RELEASE_COMMIT}" ]]; then
+            echo "Tag ${VERSION} moved from ${RELEASE_COMMIT} to ${tag_commit}." >&2
+            exit 1
+          fi
+
+          if [[ ${RELEASE_EXISTS} != true ]]; then
+            gh release create "${VERSION}" \
+              --verify-tag \
+              --generate-notes \
+              --title "${VERSION}" \
+              --latest=false
+          fi
+          release_json=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}")
+          if ! jq -e --arg version "${VERSION}" '
+            type == "object" and
+            .tag_name == $version and
+            .draft == false and
+            .prerelease == false and
+            (.published_at | type == "string") and
+            (.id | type == "number")
+          ' <<<"${release_json}" >/dev/null; then
+            echo "GitHub release ${VERSION} is not a published stable release." >&2
+            exit 1
+          fi
+          echo "Published stable GitHub release ${VERSION}; latest reconciliation runs separately." \
+            >>"${GITHUB_STEP_SUMMARY}"
+
+  reconcile-app:
+    needs:
+      - promote-app-version
+      - publish-app-release
+    if: >-
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.name == 'Release artifacts')
+    environment: release-automation
+    permissions:
+      actions: read
+      contents: write
+      packages: write
+    concurrency:
+      group: release-artifacts
+      cancel-in-progress: false
+      queue: max
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            ghcr.io:443
+            github.com:443
+            *.githubusercontent.com:443
+            rekor.sigstore.dev:443
+            storage.googleapis.com:443
+            tuf-repo-cdn.sigstore.dev:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Select latest successful app release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          runs_json=$(mktemp)
+          remote_tags=$(mktemp)
+          trap 'rm -f "${runs_json}" "${remote_tags}"' EXIT
+
+          scripts/ci/collect-release-attempts.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release.yaml "${runs_json}"
+          git ls-remote --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
+            >"${remote_tags}"
+          scripts/ci/select-latest-release.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release.yaml \
+            "${runs_json}" "${remote_tags}"
+
+      - name: Install Cosign
+        if: steps.release.outputs.found == 'true'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Set up Docker Buildx
+        if: steps.release.outputs.found == 'true'
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Login to GHCR
+        if: steps.release.outputs.found == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify app release is ready
+        if: steps.release.outputs.found == 'true'
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          RUN_ATTEMPT: ${{ steps.release.outputs.run_attempt }}
+          RUN_ID: ${{ steps.release.outputs.run_id }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          image=ghcr.io/kaito-project/aikit/aikit
+          candidate="${image}:candidate-${RUN_ID}-${RUN_ATTEMPT}"
+          digest=$(docker buildx imagetools inspect "${candidate}" \
+            --format '{{json .Manifest.Digest}}' | jq -er 'select(type == "string")')
+          if ! [[ ${digest} =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Registry returned an invalid digest for ${candidate}." >&2
+            exit 1
+          fi
+
+          cosign verify "${image}@${digest}" \
+            -a release-artifact=aikit \
+            -a "release-commit=${RELEASE_COMMIT}" \
+            -a "release-run-attempt=${RUN_ATTEMPT}" \
+            -a "release-run-id=${RUN_ID}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity \
+              "https://github.com/kaito-project/aikit/.github/workflows/release.yaml@refs/tags/${VERSION}"
+
+          release_json=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}")
+          release_id=$(jq -er \
+            --arg version "${VERSION}" \
+            'select(.tag_name == $version and .draft == false and .prerelease == false) | .id' \
+            <<<"${release_json}")
+          if ! [[ ${release_id} =~ ^[0-9]+$ ]]; then
+            echo "GitHub returned an invalid stable release for ${VERSION}." >&2
+            exit 1
+          fi
+
+          {
+            echo "digest=${digest}"
+            echo "release_id=${release_id}"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Check durable app release floors
+        if: steps.release.outputs.found == 'true'
+        id: floors
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USERNAME: ${{ github.actor }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          github_floor_output=$(mktemp)
+          latest_release_json=$(mktemp)
+          registry_floor_output=$(mktemp)
+          remote_tags=$(mktemp)
+          trap 'rm -f "${github_floor_output}" "${latest_release_json}" "${registry_floor_output}" "${remote_tags}"' EXIT
+
+          git ls-remote --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
+            >"${remote_tags}"
+          GITHUB_OUTPUT="${registry_floor_output}" scripts/ci/check-release-alias-floor.sh \
+            kaito-project/aikit/aikit latest aikit \
+            "${GITHUB_REPOSITORY}" .github/workflows/release.yaml \
+            https://token.actions.githubusercontent.com "${remote_tags}" "${VERSION}" \
+            >/dev/null
+
+          registry_floor=$(sed -n 's/^version=//p' "${registry_floor_output}")
+          registry_promote=$(sed -n 's/^promote=//p' "${registry_floor_output}")
+          registry_digest=$(sed -n 's/^digest=//p' "${registry_floor_output}")
+          if ! [[ ${registry_floor} =~ ^(none|v[0-9]+\.[0-9]+\.[0-9]+)$ && \
+            ${registry_promote} =~ ^(true|false)$ && \
+            (${registry_digest} == absent || ${registry_digest} =~ ^sha256:[0-9a-f]{64}$) ]]; then
+            echo "Alias-floor checker returned invalid app registry output." >&2
+            exit 1
+          fi
+
+          if ! latest_release_status=$(curl --silent --show-error \
+            --output "${latest_release_json}" \
+            --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest"); then
+            echo "Could not inspect the current GitHub Latest release." >&2
+            exit 1
+          fi
+
+          github_floor=none
+          github_promote=true
+          case ${latest_release_status} in
+            200)
+              github_floor=$(jq -er '
+                select(.draft == false and .prerelease == false) |
+                .tag_name |
+                select(type == "string" and
+                  test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))
+              ' "${latest_release_json}")
+              GITHUB_OUTPUT="${github_floor_output}" scripts/ci/check-release-alias-floor.sh \
+                kaito-project/aikit/aikit "${github_floor}" aikit \
+                "${GITHUB_REPOSITORY}" .github/workflows/release.yaml \
+                https://token.actions.githubusercontent.com "${remote_tags}" "${VERSION}" \
+                >/dev/null
+              github_promote=$(sed -n 's/^promote=//p' "${github_floor_output}")
+              if ! [[ ${github_promote} =~ ^(true|false)$ ]]; then
+                echo "Alias-floor checker returned invalid GitHub Latest output." >&2
+                exit 1
+              fi
+              ;;
+            404)
+              ;;
+            *)
+              echo "GitHub Latest lookup returned HTTP ${latest_release_status}." >&2
+              exit 1
+              ;;
+          esac
+
+          promote=true
+          if [[ ${registry_promote} == false || ${github_promote} == false ]]; then
+            promote=false
+          fi
+          {
+            echo "promote=${promote}"
+            echo "registry_version=${registry_floor}"
+            echo "github_version=${github_floor}"
+          } >>"${GITHUB_OUTPUT}"
+          echo "Durable app release floors: registry=${registry_floor}, GitHub Latest=${github_floor}." \
+            >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Reconcile app and GitHub Latest
+        if: steps.release.outputs.found == 'true' && steps.floors.outputs.promote == 'true'
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USERNAME: ${{ github.actor }}
+          RELEASE_ID: ${{ steps.image.outputs.release_id }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          RUN_ATTEMPT: ${{ steps.release.outputs.run_attempt }}
+          RUN_ID: ${{ steps.release.outputs.run_id }}
+          TRUSTED_COMMIT: ${{ github.sha }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          image=ghcr.io/kaito-project/aikit/aikit
+          current_main_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')
+          if [[ ${current_main_commit} != "${TRUSTED_COMMIT}" ]]; then
+            echo "main advanced from ${TRUSTED_COMMIT} to ${current_main_commit}; rerun reconciliation." >&2
+            exit 1
+          fi
+
+          existing_digest=$(scripts/ci/resolve-ghcr-tag-digest.sh \
+            kaito-project/aikit/aikit "${VERSION}")
+          if [[ ${existing_digest} == absent ]]; then
+            echo "Successful release run did not publish immutable tag ${image}:${VERSION}." >&2
+            exit 1
+          elif [[ ${existing_digest} != "${DIGEST}" ]]; then
+            echo "Immutable tag ${image}:${VERSION} already points to ${existing_digest}, not ${DIGEST}." >&2
+            exit 1
+          fi
+
+          docker buildx imagetools create --prefer-index=false \
+            --tag "${image}:latest" \
+            "${image}@${DIGEST}"
+          for tag in "${VERSION}" latest; do
+            cosign verify "${image}:${tag}" \
+              -a release-artifact=aikit \
+              -a "release-commit=${RELEASE_COMMIT}" \
+              -a "release-run-attempt=${RUN_ATTEMPT}" \
+              -a "release-run-id=${RUN_ID}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity \
+                "https://github.com/kaito-project/aikit/.github/workflows/release.yaml@refs/tags/${VERSION}"
+          done
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+            -f make_latest=true >/dev/null
+          echo "Promoted app and GitHub Latest to ${VERSION}." >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Report preserved newer app release
+        if: steps.release.outputs.found == 'true' && steps.floors.outputs.promote == 'false'
+        env:
+          GITHUB_FLOOR: ${{ steps.floors.outputs.github_version }}
+          REGISTRY_FLOOR: ${{ steps.floors.outputs.registry_version }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          echo "Kept the current app aliases because ${VERSION} is below a durable release floor (registry=${REGISTRY_FLOOR}, GitHub Latest=${GITHUB_FLOOR})." \
+            >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Report no successful app release
+        if: steps.release.outputs.found != 'true'
+        run: echo "No successful stable app release is ready for promotion." >>"${GITHUB_STEP_SUMMARY}"
+
+  promote-runner-version:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (
+        (
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.name == 'Release runner images' &&
+          github.event.workflow_run.conclusion == 'success'
+        ) ||
+        (github.event_name == 'workflow_dispatch' && inputs.runner_version != '')
+      )
+    environment: release-automation
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    concurrency:
+      group: release-runner-images
+      cancel-in-progress: false
+      queue: max
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            ghcr.io:443
+            github.com:443
+            *.githubusercontent.com:443
+            rekor.sigstore.dev:443
+            storage.googleapis.com:443
+            tuf-repo-cdn.sigstore.dev:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Select triggering successful runner release
+        id: release
+        env:
+          EXPECTED_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          EXPECTED_RUN_ID: ${{ github.event.workflow_run.id }}
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_VERSION: ${{ inputs.runner_version }}
+        run: |
+          set -euo pipefail
+          attempt_json=$(mktemp)
+          runs_json=$(mktemp)
+          remote_tags=$(mktemp)
+          selection_output=$(mktemp)
+          trap 'rm -f "${attempt_json}" "${runs_json}" "${remote_tags}" "${selection_output}"' EXIT
+
+          expected_version=${RECOVERY_VERSION}
+          expected_commit=
+          if [[ -n ${EXPECTED_RUN_ID} || -n ${EXPECTED_RUN_ATTEMPT} ]]; then
+            if ! [[ ${EXPECTED_RUN_ID} =~ ^[1-9][0-9]*$ && \
+              ${EXPECTED_RUN_ATTEMPT} =~ ^[1-9][0-9]{0,3}$ ]]; then
+              echo "Workflow event contained invalid attempt coordinates." >&2
+              exit 1
+            fi
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${EXPECTED_RUN_ID}/attempts/${EXPECTED_RUN_ATTEMPT}" \
+              >"${attempt_json}"
+            if ! jq -e \
+              --arg repository "${GITHUB_REPOSITORY}" \
+              --argjson run_attempt "${EXPECTED_RUN_ATTEMPT}" \
+              --argjson run_id "${EXPECTED_RUN_ID}" '
+                type == "object" and
+                .id == $run_id and
+                .run_attempt == $run_attempt and
+                .path == ".github/workflows/release-runners.yaml" and
+                .event == "push" and
+                .status == "completed" and
+                .conclusion == "success" and
+                .head_repository.full_name == $repository and
+                (.head_branch | type == "string") and
+                (.head_branch | test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")) and
+                (.head_sha | type == "string") and
+                (.head_sha | test("^[0-9a-f]{40}$"))
+              ' "${attempt_json}" >/dev/null; then
+              echo "GitHub returned invalid metadata for the triggering runner release attempt." >&2
+              exit 1
+            fi
+            expected_version=$(jq -r '.head_branch' "${attempt_json}")
+            expected_commit=$(jq -r '.head_sha' "${attempt_json}")
+            scripts/ci/collect-release-attempts.sh \
+              "${GITHUB_REPOSITORY}" .github/workflows/release-runners.yaml "${runs_json}" \
+              "${EXPECTED_RUN_ID}" "${EXPECTED_RUN_ATTEMPT}"
+          else
+            if ! [[ ${expected_version} =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "Manual runner recovery requires a stable vX.Y.Z version." >&2
+              exit 1
+            fi
+            scripts/ci/collect-release-attempts.sh \
+              "${GITHUB_REPOSITORY}" .github/workflows/release-runners.yaml "${runs_json}"
+          fi
+
+          git ls-remote --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
+            >"${remote_tags}"
+          GITHUB_OUTPUT="${selection_output}" scripts/ci/select-latest-release.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release-runners.yaml \
+            "${runs_json}" "${remote_tags}" "${expected_version}"
+
+          for expected_output in \
+            found=true \
+            "version=${expected_version}"; do
+            if ! grep -Fxq -- "${expected_output}" "${selection_output}"; then
+              echo "Selected runner release is not bound to a successful publisher run and version tag." >&2
+              exit 1
+            fi
+          done
+          if [[ -n ${expected_commit} ]] && \
+            ! grep -Fxq -- "commit=${expected_commit}" "${selection_output}"; then
+            echo "Triggering runner release commit is no longer bound to its version tag." >&2
+            exit 1
+          fi
+          cat "${selection_output}" >>"${GITHUB_OUTPUT}"
+
+      - name: Select successful runner candidate attempts
+        id: candidates
+        env:
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          RUN_ATTEMPT: ${{ steps.release.outputs.run_attempt }}
+          RUN_ID: ${{ steps.release.outputs.run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! [[ ${RUN_ID} =~ ^[1-9][0-9]*$ && ${RUN_ATTEMPT} =~ ^[1-9][0-9]{0,3}$ ]]; then
+            echo "Release selector returned invalid runner attempt coordinates." >&2
+            exit 1
+          fi
+
+          job_records=$(mktemp)
+          jobs_json=$(mktemp)
+          attempt_jobs=$(mktemp)
+          trap 'rm -f "${job_records}" "${jobs_json}" "${attempt_jobs}"' EXIT
+          : >"${job_records}"
+          attempt=1
+          while ((attempt <= RUN_ATTEMPT)); do
+            gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/attempts/${attempt}/jobs?per_page=100" \
+              >"${attempt_jobs}"
+            if ! jq -e '
+              type == "array" and
+              all(.[]; type == "object" and (.jobs | type == "array"))
+            ' "${attempt_jobs}" >/dev/null; then
+              echo "GitHub returned malformed runner job metadata for attempt ${attempt}." >&2
+              exit 1
+            fi
+            jq -c '.[] | .jobs[]' "${attempt_jobs}" >>"${job_records}"
+            ((attempt += 1))
+          done
+          jq -s '.' "${job_records}" >"${jobs_json}"
+
+          candidate_plan="${RUNNER_TEMP}/runner-candidates"
+          scripts/ci/select-runner-candidates.sh \
+            "${RUN_ID}" "${RUN_ATTEMPT}" "${RELEASE_COMMIT}" "${jobs_json}" \
+            >"${candidate_plan}"
+          echo "plan=${candidate_plan}" >>"${GITHUB_OUTPUT}"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Login to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify every runner candidate
+        id: images
+        env:
+          CANDIDATE_PLAN: ${{ steps.candidates.outputs.plan }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          RUN_ID: ${{ steps.release.outputs.run_id }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          image_plan="${RUNNER_TEMP}/runner-images"
+          : >"${image_plan}"
+          while IFS=$'\t' read -r runner candidate_attempt; do
+            image="ghcr.io/kaito-project/aikit/runners/${runner}"
+            candidate="${image}:candidate-${RUN_ID}-${candidate_attempt}"
+            digest=$(docker buildx imagetools inspect "${candidate}" \
+              --format '{{json .Manifest.Digest}}' | jq -er 'select(type == "string")')
+            if ! [[ ${digest} =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "Registry returned an invalid digest for ${candidate}." >&2
+              exit 1
+            fi
+            cosign verify "${image}@${digest}" \
+              -a "release-artifact=${runner}" \
+              -a "release-commit=${RELEASE_COMMIT}" \
+              -a "release-run-attempt=${candidate_attempt}" \
+              -a "release-run-id=${RUN_ID}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity \
+                "https://github.com/kaito-project/aikit/.github/workflows/release-runners.yaml@refs/tags/${VERSION}"
+            printf '%s\t%s\t%s\n' \
+              "${runner}" "${candidate_attempt}" "${digest}" >>"${image_plan}"
+          done <"${CANDIDATE_PLAN}"
+          echo "plan=${image_plan}" >>"${GITHUB_OUTPUT}"
+
+      - name: Publish immutable runner version tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USERNAME: ${{ github.actor }}
+          IMAGE_PLAN: ${{ steps.images.outputs.plan }}
+          TRUSTED_COMMIT: ${{ github.sha }}
+          VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          RUN_ATTEMPT: ${{ steps.release.outputs.run_attempt }}
+          RUN_ID: ${{ steps.release.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          current_main_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')
+          if [[ ${current_main_commit} != "${TRUSTED_COMMIT}" ]]; then
+            echo "main advanced from ${TRUSTED_COMMIT} to ${current_main_commit}; rerun reconciliation." >&2
+            exit 1
+          fi
+
+          remote_tags=$(mktemp)
+          runs_json=$(mktemp)
+          selector_output=$(mktemp)
+          trap 'rm -f "${remote_tags}" "${runs_json}" "${selector_output}"' EXIT
+          scripts/ci/collect-release-attempts.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release-runners.yaml "${runs_json}" \
+            "${RUN_ID}" "${RUN_ATTEMPT}"
+          git ls-remote --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
+            >"${remote_tags}"
+          GITHUB_OUTPUT="${selector_output}" scripts/ci/select-latest-release.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release-runners.yaml \
+            "${runs_json}" "${remote_tags}" "${VERSION}" >/dev/null
+          for expected_output in \
+            found=true \
+            "version=${VERSION}" \
+            "commit=${RELEASE_COMMIT}" \
+            "run_id=${RUN_ID}" \
+            "run_attempt=${RUN_ATTEMPT}"; do
+            if ! grep -Fxq -- "${expected_output}" "${selector_output}"; then
+              echo "Selected runner release attempt or version tag changed before promotion." >&2
+              exit 1
+            fi
+          done
+
+          while IFS=$'\t' read -r runner _ digest; do
+            image="ghcr.io/kaito-project/aikit/runners/${runner}"
+            existing_digest=$(scripts/ci/resolve-ghcr-tag-digest.sh \
+              "kaito-project/aikit/runners/${runner}" "${VERSION}")
+            if [[ ${existing_digest} != absent && ${existing_digest} != "${digest}" ]]; then
+              echo "Immutable tag ${image}:${VERSION} already points to ${existing_digest}, not ${digest}." >&2
+              exit 1
+            fi
+          done <"${IMAGE_PLAN}"
+
+          while IFS=$'\t' read -r runner candidate_attempt digest; do
+            image="ghcr.io/kaito-project/aikit/runners/${runner}"
+            existing_digest=$(scripts/ci/resolve-ghcr-tag-digest.sh \
+              "kaito-project/aikit/runners/${runner}" "${VERSION}")
+            if [[ ${existing_digest} == absent ]]; then
+              docker buildx imagetools create --prefer-index=false \
+                --tag "${image}:${VERSION}" \
+                "${image}@${digest}"
+            elif [[ ${existing_digest} != "${digest}" ]]; then
+              echo "Immutable tag ${image}:${VERSION} changed during publication." >&2
+              exit 1
+            fi
+            cosign verify "${image}:${VERSION}" \
+              -a "release-artifact=${runner}" \
+              -a "release-commit=${RELEASE_COMMIT}" \
+              -a "release-run-attempt=${candidate_attempt}" \
+              -a "release-run-id=${RUN_ID}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity \
+                "https://github.com/kaito-project/aikit/.github/workflows/release-runners.yaml@refs/tags/${VERSION}"
+          done <"${IMAGE_PLAN}"
+          echo "Published every immutable runner tag for ${VERSION}." >>"${GITHUB_STEP_SUMMARY}"
+
+  reconcile-runners:
+    needs: promote-runner-version
+    if: >-
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.name == 'Release runner images')
+    environment: release-automation
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    concurrency:
+      group: release-runner-images
+      cancel-in-progress: false
+      queue: max
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            ghcr.io:443
+            github.com:443
+            *.githubusercontent.com:443
+            rekor.sigstore.dev:443
+            storage.googleapis.com:443
+            tuf-repo-cdn.sigstore.dev:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Select latest successful runner release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          runs_json=$(mktemp)
+          remote_tags=$(mktemp)
+          trap 'rm -f "${runs_json}" "${remote_tags}"' EXIT
+
+          scripts/ci/collect-release-attempts.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release-runners.yaml "${runs_json}"
+          git ls-remote --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
+            >"${remote_tags}"
+          scripts/ci/select-latest-release.sh \
+            "${GITHUB_REPOSITORY}" .github/workflows/release-runners.yaml \
+            "${runs_json}" "${remote_tags}"
+
+      - name: Select successful runner candidate attempts
+        if: steps.release.outputs.found == 'true'
+        id: candidates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          RUN_ATTEMPT: ${{ steps.release.outputs.run_attempt }}
+          RUN_ID: ${{ steps.release.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          if ! [[ ${RUN_ID} =~ ^[1-9][0-9]*$ && ${RUN_ATTEMPT} =~ ^[1-9][0-9]{0,3}$ ]]; then
+            echo "Release selector returned invalid runner attempt coordinates." >&2
+            exit 1
+          fi
+
+          job_records=$(mktemp)
+          jobs_json=$(mktemp)
+          attempt_jobs=$(mktemp)
+          trap 'rm -f "${job_records}" "${jobs_json}" "${attempt_jobs}"' EXIT
+          : >"${job_records}"
+          attempt=1
+          while ((attempt <= RUN_ATTEMPT)); do
+            gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/attempts/${attempt}/jobs?per_page=100" \
+              >"${attempt_jobs}"
+            if ! jq -e '
+              type == "array" and
+              all(.[]; type == "object" and (.jobs | type == "array"))
+            ' "${attempt_jobs}" >/dev/null; then
+              echo "GitHub returned malformed runner job metadata for attempt ${attempt}." >&2
+              exit 1
+            fi
+            jq -c '.[] | .jobs[]' "${attempt_jobs}" >>"${job_records}"
+            ((attempt += 1))
+          done
+          jq -s '.' "${job_records}" >"${jobs_json}"
+
+          candidate_plan="${RUNNER_TEMP}/runner-candidates"
+          scripts/ci/select-runner-candidates.sh \
+            "${RUN_ID}" "${RUN_ATTEMPT}" "${RELEASE_COMMIT}" "${jobs_json}" \
+            >"${candidate_plan}"
+          echo "plan=${candidate_plan}" >>"${GITHUB_OUTPUT}"
+
+      - name: Install Cosign
+        if: steps.release.outputs.found == 'true'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Set up Docker Buildx
+        if: steps.release.outputs.found == 'true'
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Login to GHCR
+        if: steps.release.outputs.found == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify every runner release is ready
+        if: steps.release.outputs.found == 'true'
+        id: images
+        env:
+          CANDIDATE_PLAN: ${{ steps.candidates.outputs.plan }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          RUN_ID: ${{ steps.release.outputs.run_id }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          image_plan="${RUNNER_TEMP}/runner-images"
+          : >"${image_plan}"
+          while IFS=$'\t' read -r runner candidate_attempt; do
+            image="ghcr.io/kaito-project/aikit/runners/${runner}"
+            candidate="${image}:candidate-${RUN_ID}-${candidate_attempt}"
+            digest=$(docker buildx imagetools inspect "${candidate}" \
+              --format '{{json .Manifest.Digest}}' | jq -er 'select(type == "string")')
+            if ! [[ ${digest} =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "Registry returned an invalid digest for ${candidate}." >&2
+              exit 1
+            fi
+            cosign verify "${image}@${digest}" \
+              -a "release-artifact=${runner}" \
+              -a "release-commit=${RELEASE_COMMIT}" \
+              -a "release-run-attempt=${candidate_attempt}" \
+              -a "release-run-id=${RUN_ID}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity \
+                "https://github.com/kaito-project/aikit/.github/workflows/release-runners.yaml@refs/tags/${VERSION}"
+            printf '%s\t%s\t%s\n' \
+              "${runner}" "${candidate_attempt}" "${digest}" >>"${image_plan}"
+          done <"${CANDIDATE_PLAN}"
+
+          echo "plan=${image_plan}" >>"${GITHUB_OUTPUT}"
+
+      - name: Check every durable runner release floor
+        if: steps.release.outputs.found == 'true'
+        id: floors
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USERNAME: ${{ github.actor }}
+          IMAGE_PLAN: ${{ steps.images.outputs.plan }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          floor_dir=$(mktemp -d)
+          remote_tags=$(mktemp)
+          trap 'rm -rf "${floor_dir}"; rm -f "${remote_tags}"' EXIT
+
+          git ls-remote --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" 'refs/tags/v*' \
+            >"${remote_tags}"
+          promote=true
+          while IFS=$'\t' read -r runner _ _; do
+            floor_output="${floor_dir}/${runner}"
+            GITHUB_OUTPUT="${floor_output}" scripts/ci/check-release-alias-floor.sh \
+              "kaito-project/aikit/runners/${runner}" latest "${runner}" \
+              "${GITHUB_REPOSITORY}" .github/workflows/release-runners.yaml \
+              https://token.actions.githubusercontent.com "${remote_tags}" "${VERSION}" \
+              >/dev/null
+            floor_version=$(sed -n 's/^version=//p' "${floor_output}")
+            floor_promote=$(sed -n 's/^promote=//p' "${floor_output}")
+            if ! [[ ${floor_version} =~ ^(none|v[0-9]+\.[0-9]+\.[0-9]+)$ && \
+              ${floor_promote} =~ ^(true|false)$ ]]; then
+              echo "Alias-floor checker returned invalid output for ${runner}." >&2
+              exit 1
+            fi
+            if [[ ${floor_promote} == false ]]; then
+              promote=false
+            fi
+            echo "Durable ${runner} release floor: ${floor_version}." >>"${GITHUB_STEP_SUMMARY}"
+          done <"${IMAGE_PLAN}"
+          echo "promote=${promote}" >>"${GITHUB_OUTPUT}"
+
+      - name: Reconcile every runner latest alias
+        if: steps.release.outputs.found == 'true' && steps.floors.outputs.promote == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USERNAME: ${{ github.actor }}
+          IMAGE_PLAN: ${{ steps.images.outputs.plan }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          RUN_ID: ${{ steps.release.outputs.run_id }}
+          TRUSTED_COMMIT: ${{ github.sha }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          current_main_commit=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')
+          if [[ ${current_main_commit} != "${TRUSTED_COMMIT}" ]]; then
+            echo "main advanced from ${TRUSTED_COMMIT} to ${current_main_commit}; rerun reconciliation." >&2
+            exit 1
+          fi
+
+          while IFS=$'\t' read -r runner _ digest; do
+            image="ghcr.io/kaito-project/aikit/runners/${runner}"
+            existing_digest=$(scripts/ci/resolve-ghcr-tag-digest.sh \
+              "kaito-project/aikit/runners/${runner}" "${VERSION}")
+            if [[ ${existing_digest} != "${digest}" ]]; then
+              echo "Immutable tag ${image}:${VERSION} must already point to ${digest}; found ${existing_digest}." >&2
+              exit 1
+            fi
+          done <"${IMAGE_PLAN}"
+
+          while IFS=$'\t' read -r runner _ digest; do
+            image="ghcr.io/kaito-project/aikit/runners/${runner}"
+            docker buildx imagetools create --prefer-index=false \
+              --tag "${image}:latest" \
+              "${image}@${digest}"
+          done <"${IMAGE_PLAN}"
+
+          while IFS=$'\t' read -r runner candidate_attempt _; do
+            image="ghcr.io/kaito-project/aikit/runners/${runner}"
+            cosign verify "${image}:latest" \
+              -a "release-artifact=${runner}" \
+              -a "release-commit=${RELEASE_COMMIT}" \
+              -a "release-run-attempt=${candidate_attempt}" \
+              -a "release-run-id=${RUN_ID}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity \
+                "https://github.com/kaito-project/aikit/.github/workflows/release-runners.yaml@refs/tags/${VERSION}"
+          done <"${IMAGE_PLAN}"
+          echo "Promoted every runner latest alias to ${VERSION}." >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Report preserved newer runner release
+        if: steps.release.outputs.found == 'true' && steps.floors.outputs.promote == 'false'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          echo "Kept every runner latest alias because ${VERSION} is below at least one durable runner release floor." \
+            >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Report no successful runner release
+        if: steps.release.outputs.found != 'true'
+        run: echo "No successful stable runner release is ready for promotion." >>"${GITHUB_STEP_SUMMARY}"

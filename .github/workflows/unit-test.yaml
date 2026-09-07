@@ -2,9 +2,6 @@ name: unit-test
 
 on:
   push:
-    paths-ignore:
-      - '**.md'
-      - 'website/**'
   pull_request:
     paths-ignore:
       - '**.md'
@@ -78,6 +75,33 @@ jobs:
 
       - name: Test image size checker
         run: scripts/ci/check-image-size_test.sh
+
+      - name: Test release version validator
+        run: scripts/ci/validate-release-version_test.sh
+
+      - name: Test release validator
+        run: scripts/ci/validate-release_test.sh
+
+      - name: Test release sync planner
+        run: scripts/ci/plan-release-sync_test.sh
+
+      - name: Test latest release selector
+        run: scripts/ci/select-latest-release_test.sh
+
+      - name: Test release attempt collector
+        run: scripts/ci/collect-release-attempts_test.sh
+
+      - name: Test runner candidate selector
+        run: scripts/ci/select-runner-candidates_test.sh
+
+      - name: Test GHCR tag resolver
+        run: scripts/ci/resolve-ghcr-tag-digest_test.sh
+
+      - name: Test durable release alias floors
+        run: scripts/ci/check-release-alias-floor_test.sh
+
+      - name: Test release latest policy
+        run: scripts/ci/release-latest-policy_test.sh
 
   llb-benchmark:
     name: llb-benchmark

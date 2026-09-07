@@ -2,9 +2,6 @@ name: lint
 
 on:
   push:
-    paths-ignore:
-      - '**.md'
-      - 'website/**'
   pull_request:
     paths-ignore:
       - '**.md'
