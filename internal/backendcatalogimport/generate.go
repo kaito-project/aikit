@@ -38,7 +38,7 @@ func Generate(ctx context.Context, source []byte, options GenerateOptions) (Cata
 func localAIReviewedPolicyRequirements() reviewedPolicyRequirements {
 	return reviewedPolicyRequirements{
 		Source:   LocalAISource,
-		Version:  LocalAIVersion,
+		Version:  reviewedLocalAIVersion,
 		Overlays: reviewedPolicyOverlays,
 	}
 }

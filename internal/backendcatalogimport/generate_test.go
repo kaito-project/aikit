@@ -272,7 +272,7 @@ func TestGenerateRequiresEveryApplicableReviewedPolicyOverlay(t *testing.T) {
   uri: quay.io/go-skynet/local-ai-backends:latest-gpu-nvidia-cuda-12-vllm
 `
 	vllmKey := reviewedPolicyKey{
-		Version:  LocalAIVersion,
+		Version:  reviewedLocalAIVersion,
 		Family:   familyVLLM,
 		Selector: selectorNVIDIA,
 		Platform: linuxPlatform(architectureAMD64),
@@ -342,7 +342,7 @@ func TestGenerateRequiresEveryApplicableReviewedPolicyOverlay(t *testing.T) {
 				},
 			}, reviewedPolicyRequirements{
 				Source:   pin,
-				Version:  LocalAIVersion,
+				Version:  reviewedLocalAIVersion,
 				Overlays: []reviewedPolicyOverlay{vllmOverlay},
 			})
 			if test.wantErr == "" {

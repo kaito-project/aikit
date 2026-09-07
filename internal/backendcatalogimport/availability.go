@@ -13,11 +13,11 @@ type unavailableSourcePolicy struct {
 
 var reviewedUnavailableSources = []unavailableSourcePolicy{
 	{
-		Version:    LocalAIVersion,
+		Version:    reviewedLocalAIVersion,
 		Family:     "turboquant",
 		Selector:   selectorAMD,
 		Target:     "rocm-turboquant",
-		SourceRef:  "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-gpu-rocm-hipblas-turboquant",
+		SourceRef:  "quay.io/go-skynet/local-ai-backends:" + reviewedLocalAIVersion + "-gpu-rocm-hipblas-turboquant",
 		ErrorClass: resolutionErrorNotFound,
 	},
 }
