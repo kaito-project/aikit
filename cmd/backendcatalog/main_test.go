@@ -36,7 +36,7 @@ func TestRunWritesAndChecksCatalog(t *testing.T) {
 	arguments := []string{
 		"--source", sourcePath,
 		"--snapshot", snapshotPath,
-		"--core-ref", "registry.example/core:v4.8.2-{architecture}",
+		"--core-ref", "registry.example/core:v4.9.0-{architecture}",
 		"--output", outputPath,
 	}
 

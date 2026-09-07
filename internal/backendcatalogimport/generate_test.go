@@ -200,7 +200,7 @@ func TestGenerateRejectsReviewedPolicyMappingDrift(t *testing.T) {
 - name: cpu-llama-cpp
   uri: quay.io/go-skynet/local-ai-backends:latest-cpu-repacked-llama-cpp
 `,
-			sourceRef: "quay.io/go-skynet/local-ai-backends:v4.8.2-cpu-repacked-llama-cpp",
+			sourceRef: "quay.io/go-skynet/local-ai-backends:v4.9.0-cpu-repacked-llama-cpp",
 			wantErr:   "reviewed policy source reference drift",
 		},
 	}
@@ -229,7 +229,7 @@ func TestGenerateRejectsReviewedPolicyMappingDrift(t *testing.T) {
 func TestReviewedPolicyRequirementsApplyOnlyToExactPinnedSource(t *testing.T) {
 	requirements := localAIReviewedPolicyRequirements()
 	exact := GenerateOptions{
-		Source:  LocalAIV482Source,
+		Source:  LocalAIV490Source,
 		Version: LocalAIVersion,
 	}
 	if !requirements.applies(exact) {
@@ -314,7 +314,7 @@ func TestGenerateRequiresEveryApplicableReviewedPolicyOverlay(t *testing.T) {
 				Digest:   fixtureDigestA,
 				Platform: linuxPlatform(architectureAMD64),
 			}},
-			wantErr: "reviewed policy overlay v4.8.2/vllm/nvidia on linux/amd64/ did not produce its expected catalog entry",
+			wantErr: "reviewed policy overlay v4.9.0/vllm/nvidia on linux/amd64/ did not produce its expected catalog entry",
 		},
 		{
 			name:   "missing non-default vLLM platform",
@@ -323,7 +323,7 @@ func TestGenerateRequiresEveryApplicableReviewedPolicyOverlay(t *testing.T) {
 				Digest:   fixtureDigestA,
 				Platform: linuxPlatform(architectureARM64),
 			}},
-			wantErr: "reviewed policy overlay v4.8.2/vllm/nvidia on linux/amd64/ did not produce its expected catalog entry",
+			wantErr: "reviewed policy overlay v4.9.0/vllm/nvidia on linux/amd64/ did not produce its expected catalog entry",
 		},
 	}
 
@@ -697,17 +697,17 @@ func TestPolicyInferencePreservesAcceleratorSemantics(t *testing.T) {
 }
 
 func TestStableVersionReference(t *testing.T) {
-	got, err := stableVersionReference("quay.io/example/backend:latest-gpu-demo", "v4.8.2")
+	got, err := stableVersionReference("quay.io/example/backend:latest-gpu-demo", "v4.9.0")
 	if err != nil {
 		t.Fatalf("stableVersionReference() error = %v", err)
 	}
-	if want := "quay.io/example/backend:v4.8.2-gpu-demo"; got != want {
+	if want := "quay.io/example/backend:v4.9.0-gpu-demo"; got != want {
 		t.Fatalf("stableVersionReference() = %q, want %q", got, want)
 	}
-	if _, err := stableVersionReference("quay.io/example/backend:master-gpu-demo", "v4.8.2"); err == nil {
+	if _, err := stableVersionReference("quay.io/example/backend:master-gpu-demo", "v4.9.0"); err == nil {
 		t.Fatal("stableVersionReference() accepted a development tag")
 	}
-	if _, err := stableVersionReference("quay.io/example/backend", "v4.8.2"); err == nil {
+	if _, err := stableVersionReference("quay.io/example/backend", "v4.9.0"); err == nil {
 		t.Fatal("stableVersionReference() accepted a reference without a tag")
 	}
 }
@@ -756,11 +756,11 @@ func TestGenerateAcceptsMissingWorkloadsAndPlatformlessSpecializedCore(t *testin
 	resolver := scriptedResolver{
 		base: readSnapshot(t, "testdata/resolutions.json"),
 		manifests: staticResolver{
-			"registry.example/repo:v4.8.2-cpu-demo": {{
+			"registry.example/repo:v4.9.0-cpu-demo": {{
 				Digest:   fixtureDigestA,
 				Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
 			}},
-			"registry.example/core:v4.8.2-amd64": {{Digest: fixtureDigestB}},
+			"registry.example/core:v4.9.0-amd64": {{Digest: fixtureDigestB}},
 		},
 	}
 	catalog, err := Generate(context.Background(), source, GenerateOptions{
@@ -787,20 +787,20 @@ func TestGenerateAcceptsMissingWorkloadsAndPlatformlessSpecializedCore(t *testin
 
 func TestGenerateAppliesReviewedUnavailableSourcePolicyStrictly(t *testing.T) {
 	const (
-		availableRef = "registry.example/repo:v4.8.2-cpu-demo"
-		missingRef   = "quay.io/go-skynet/local-ai-backends:v4.8.2-cpu-kokoros"
-		coreRef      = "registry.example/core:v4.8.2-amd64"
+		availableRef = "registry.example/repo:v4.9.0-cpu-demo"
+		missingRef   = "quay.io/go-skynet/local-ai-backends:v4.9.0-gpu-rocm-hipblas-turboquant"
+		coreRef      = "registry.example/core:v4.9.0-amd64"
 	)
 	source := sourceWithDefaultFixture(t, `- name: demo
   capabilities:
     default: cpu-demo
 - name: cpu-demo
   uri: registry.example/repo:latest-cpu-demo
-- name: kokoros
+- name: turboquant
   capabilities:
-    default: cpu-kokoros
-- name: cpu-kokoros
-  uri: quay.io/go-skynet/local-ai-backends:latest-cpu-kokoros
+    amd: rocm-turboquant
+- name: rocm-turboquant
+  uri: quay.io/go-skynet/local-ai-backends:latest-gpu-rocm-hipblas-turboquant
 `)
 	manifest := ResolvedManifest{
 		Digest:   fixtureDigestA,
@@ -884,7 +884,7 @@ func TestUnavailableSourcePolicyMatchingIsExact(t *testing.T) {
 	if _, found := reviewedUnavailableSource(policy.Version, policy.Family, policy.Selector, policy.Target, policy.SourceRef); !found {
 		t.Fatal("reviewedUnavailableSource() did not find exact policy")
 	}
-	if _, found := reviewedUnavailableSource(policy.Version, policy.Family, policy.Selector, "cpu-renamed-kokoros", policy.SourceRef); found {
+	if _, found := reviewedUnavailableSource(policy.Version, policy.Family, policy.Selector, "rocm-renamed-turboquant", policy.SourceRef); found {
 		t.Fatal("reviewedUnavailableSource() matched a different target")
 	}
 	if _, found := reviewedUnavailableSource(policy.Version, policy.Family, policy.Selector, policy.Target, policy.SourceRef+"-moved"); found {
@@ -907,11 +907,11 @@ func TestGenerateExcludesNonLinuxManifests(t *testing.T) {
 	resolver := scriptedResolver{
 		base: readSnapshot(t, "testdata/resolutions.json"),
 		manifests: staticResolver{
-			"registry.example/repo:v4.8.2-cpu-demo": {{
+			"registry.example/repo:v4.9.0-cpu-demo": {{
 				Digest:   fixtureDigestA,
 				Platform: Platform{OS: platformLinux, Architecture: architectureAMD64},
 			}},
-			"registry.example/repo:v4.8.2-metal-darwin-arm64-demo": {{
+			"registry.example/repo:v4.9.0-metal-darwin-arm64-demo": {{
 				Digest:   fixtureDigestB,
 				Platform: Platform{OS: "darwin", Architecture: architectureARM64},
 			}},

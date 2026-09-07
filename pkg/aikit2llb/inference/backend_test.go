@@ -21,7 +21,7 @@ import (
 
 const (
 	testCPULlamaCppBackend = "cpu-llama-cpp"
-	testLocalAIVersion     = "v4.8.2"
+	testLocalAIVersion     = "v4.9.0"
 	testLegacyLocalAI      = "v3.12.1"
 	testArbitraryFamily    = "arbitrary-family"
 	testVLLMNativeSampler  = "VLLM_USE_FLASHINFER_SAMPLER=0"

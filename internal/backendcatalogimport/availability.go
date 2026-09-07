@@ -14,26 +14,10 @@ type unavailableSourcePolicy struct {
 var reviewedUnavailableSources = []unavailableSourcePolicy{
 	{
 		Version:    LocalAIVersion,
-		Family:     "kokoros",
-		Selector:   selectorDefault,
-		Target:     "cpu-kokoros",
-		SourceRef:  "quay.io/go-skynet/local-ai-backends:v4.8.2-cpu-kokoros",
-		ErrorClass: resolutionErrorNotFound,
-	},
-	{
-		Version:    LocalAIVersion,
 		Family:     "turboquant",
 		Selector:   selectorAMD,
 		Target:     "rocm-turboquant",
-		SourceRef:  "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-rocm-hipblas-turboquant",
-		ErrorClass: resolutionErrorNotFound,
-	},
-	{
-		Version:    LocalAIVersion,
-		Family:     familyVLLM,
-		Selector:   "intel",
-		Target:     "intel-vllm",
-		SourceRef:  "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-intel-vllm",
+		SourceRef:  "quay.io/go-skynet/local-ai-backends:v4.9.0-gpu-rocm-hipblas-turboquant",
 		ErrorClass: resolutionErrorNotFound,
 	},
 }

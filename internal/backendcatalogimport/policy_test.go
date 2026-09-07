@@ -115,7 +115,7 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			environment:       cuda12Environment,
 			runner:            runnerLlamaCpp,
 			fallbacks:         1,
-			sourceRef:         "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-nvidia-cuda-12-llama-cpp",
+			sourceRef:         "quay.io/go-skynet/local-ai-backends:v4.9.0-gpu-nvidia-cuda-12-llama-cpp",
 		},
 		{
 			name:            "llama ROCm",
@@ -131,7 +131,7 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			runner:          runnerLlamaCpp,
 			installName:     "hipblas-llama-cpp",
 			fallbacks:       1,
-			sourceRef:       "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-rocm-hipblas-llama-cpp",
+			sourceRef:       "quay.io/go-skynet/local-ai-backends:v4.9.0-gpu-rocm-hipblas-llama-cpp",
 		},
 		{
 			name:         "llama Vulkan",
@@ -227,7 +227,7 @@ func TestReviewedPolicyOverlay(t *testing.T) {
 			systemPackages: []string{systemPackageGCC, systemPackageLibcDev},
 			environment:    append(cuda12Environment, vllmNativeSampler),
 			runner:         runnerHFConfig,
-			sourceRef:      "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-nvidia-cuda-12-vllm",
+			sourceRef:      "quay.io/go-skynet/local-ai-backends:v4.9.0-gpu-nvidia-cuda-12-vllm",
 		},
 		{
 			name:           "vllm explicit CUDA 12 keeps native sampler",
@@ -459,7 +459,7 @@ func TestReviewedPolicyOverlayDriftFailsClosed(t *testing.T) {
 			Family:          cpuOverlay.Key.Family,
 			Selector:        cpuOverlay.Key.Selector,
 			Target:          cpuOverlay.Target,
-			SourceRef:       "quay.io/go-skynet/local-ai-backends:v4.8.2-cpu-repacked-llama-cpp",
+			SourceRef:       "quay.io/go-skynet/local-ai-backends:v4.9.0-cpu-repacked-llama-cpp",
 			Platform:        cpuOverlay.Key.Platform,
 		})
 		if err == nil || !strings.Contains(err.Error(), "reviewed policy source reference drift") {
@@ -646,7 +646,7 @@ func TestGenericL4TProfileFollowsArtifactCUDA(t *testing.T) {
 		Family:          familyVLLMCpp,
 		Selector:        selectorNVIDIAL4T,
 		Target:          "nvidia-l4t-arm64-vllm-cpp",
-		SourceRef:       "quay.io/go-skynet/local-ai-backends:v4.8.2-nvidia-l4t-cuda-13-arm64-vllm-cpp",
+		SourceRef:       "quay.io/go-skynet/local-ai-backends:v4.9.0-nvidia-l4t-cuda-13-arm64-vllm-cpp",
 		Platform:        Platform{OS: platformLinux, Architecture: architectureARM64},
 	})
 	if err != nil {
