@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kaito-project/aikit/internal/backendcatalogimport"
 	"github.com/kaito-project/aikit/pkg/aikit/config"
 	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
@@ -21,8 +22,8 @@ import (
 
 const (
 	testCPULlamaCppBackend = "cpu-llama-cpp"
-	testLocalAIVersion     = "v4.8.2"
-	testLegacyLocalAI      = "v3.12.1"
+	testLocalAIVersion     = backendcatalogimport.LocalAIVersion
+	testLegacyLocalAI      = backendcatalogimport.LegacyLocalAIVersion
 	testArbitraryFamily    = "arbitrary-family"
 	testVLLMNativeSampler  = "VLLM_USE_FLASHINFER_SAMPLER=0"
 )
@@ -373,7 +374,7 @@ func TestInstallBackendsUsesOnlyCatalogArtifacts(t *testing.T) {
 	}
 }
 
-func TestBackendMetadataMatchesLocalAIV482(t *testing.T) {
+func TestBackendMetadataMatchesLocalAI(t *testing.T) {
 	platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
 	resolved := testArbitraryBackendPlan(platform)
 	tests := []struct {

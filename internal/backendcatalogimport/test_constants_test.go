@@ -1,7 +1,7 @@
 package backendcatalogimport
 
 const (
-	fixtureCoreRefTemplate = "registry.example/core:v4.8.2-{architecture}"
+	fixtureCoreRefTemplate = "registry.example/core:" + LocalAIVersion + "-{architecture}"
 	fixtureCPULlamaCpp     = "cpu-llama-cpp"
 	fixtureDigestA         = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	fixtureDigestB         = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

@@ -5,10 +5,13 @@ const (
 	SchemaVersion = "v2"
 
 	// LocalAIVersion is the LocalAI release imported by this generator.
-	LocalAIVersion = "v4.8.2"
+	LocalAIVersion = "v4.9.0"
 
-	legacyLocalAIVersion   = "v3.12.1"
-	reviewedLocalAIVersion = "v4.8.2"
+	// LegacyLocalAIVersion is the LocalAI release retained for compatibility backends.
+	LegacyLocalAIVersion = "v3.12.1"
+
+	// Keep policy approval pinned independently of LocalAIVersion.
+	reviewedLocalAIVersion = "v4.9.0"
 
 	architectureAMD64         = "amd64"
 	architectureARM64         = "arm64"
@@ -72,19 +75,19 @@ const (
 	cudaPath                  = "PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	cudaVisibleDevices        = "NVIDIA_VISIBLE_DEVICES=all"
 	vllmNativeSampler         = "VLLM_USE_FLASHINFER_SAMPLER=0"
-	reviewedSourceCPULLM      = "quay.io/go-skynet/local-ai-backends:v4.8.2-cpu-llama-cpp"
-	reviewedSourceCPUVLLM     = "quay.io/go-skynet/local-ai-backends:v4.8.2-cpu-vllm-cpp"
-	reviewedSourceCUDAVLLMCpp = "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-nvidia-cuda-13-vllm-cpp"
-	reviewedSourceL4TLLM      = "quay.io/go-skynet/local-ai-backends:v4.8.2-nvidia-l4t-arm64-llama-cpp"
-	reviewedSourceVulkanLLM   = "quay.io/go-skynet/local-ai-backends:v3.12.1-gpu-vulkan-llama-cpp"
+	reviewedSourceCPULLM      = "quay.io/go-skynet/local-ai-backends:" + reviewedLocalAIVersion + "-cpu-llama-cpp"
+	reviewedSourceCPUVLLM     = "quay.io/go-skynet/local-ai-backends:" + reviewedLocalAIVersion + "-cpu-vllm-cpp"
+	reviewedSourceCUDAVLLMCpp = "quay.io/go-skynet/local-ai-backends:" + reviewedLocalAIVersion + "-gpu-nvidia-cuda-13-vllm-cpp"
+	reviewedSourceL4TLLM      = "quay.io/go-skynet/local-ai-backends:" + reviewedLocalAIVersion + "-nvidia-l4t-arm64-llama-cpp"
+	reviewedSourceVulkanLLM   = "quay.io/go-skynet/local-ai-backends:" + LegacyLocalAIVersion + "-gpu-vulkan-llama-cpp"
 )
 
-// LocalAIV482Source pins the exact upstream input accepted by the command.
-var LocalAIV482Source = SourcePin{
+// LocalAISource pins the exact upstream input accepted by the command.
+var LocalAISource = SourcePin{
 	Repository: "https://github.com/mudler/LocalAI",
 	Path:       "backend/index.yaml",
-	Revision:   "5ff25d9d145e0a03a5b9a3559c620f1e1204ca6d",
-	SHA256:     "sha256:bee962adf3332b9f5adea1c9ab28709d9371bee6de24c828f72b8668a694e3ca",
+	Revision:   "f7ad3f70eb5d8a0ddf80e08557f0d7df28cf032e",
+	SHA256:     "sha256:4a4635559a9e726a384a35eebc779da86235a7796821ea56edc01082ff3f0a28",
 }
 
 // SourcePin identifies and verifies an upstream catalog source.

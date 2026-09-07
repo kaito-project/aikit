@@ -55,7 +55,7 @@ func TestDefaultResolvesCurrentRunnerTuples(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse default catalog: %v", err)
 	}
-	if got, want := len(catalog.Entries), 544; got != want {
+	if got, want := len(catalog.Entries), 546; got != want {
 		t.Fatalf("default entry count = %d, want %d", got, want)
 	}
 	if !regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(catalog.Digest()) {
