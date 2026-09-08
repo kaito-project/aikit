@@ -138,11 +138,15 @@ If it doesn't include a specific model, you can always [create your own images](
 ### Apple Silicon (experimental)
 
 > [!NOTE]
-> To enable GPU acceleration on Apple Silicon, please see [Podman Desktop documentation](https://podman-desktop.io/docs/podman/gpu). For more information, please see [GPU Acceleration](https://kaito-project.github.io/aikit/docs/gpu).
+> For Apple Silicon GPU acceleration, use [Podman Desktop](https://podman-desktop.io/docs/podman/gpu)
+> or [Colima with Docker Engine](https://kaito-project.github.io/aikit/docs/gpu#colima-with-docker).
+> See [GPU Acceleration](https://kaito-project.github.io/aikit/docs/gpu#apple-silicon-experimental) for setup.
 >
 > Apple Silicon is an _experimental_ runtime and it may change in the future. This runtime is specific to Apple Silicon only, and it will not work as expected on other architectures, including Intel Macs.
 >
 > Only `gguf` models are supported on Apple Silicon.
+
+With the Colima profile from the guide, replace `podman` in the commands below with `docker --context colima-aikit-gpu`.
 
 | Model       | Optimization | Parameters | Command                                                                                                  | Model Name              | License                                                                            |
 | ----------- | ------------ | ---------- | -------------------------------------------------------------------------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------- |
