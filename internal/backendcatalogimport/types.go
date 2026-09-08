@@ -4,14 +4,11 @@ const (
 	// SchemaVersion is the generated backend catalog schema version.
 	SchemaVersion = "v2"
 
-	// LocalAIVersion is the LocalAI release imported by this generator.
+	// LocalAIVersion is the LocalAI release used by the generator and its policies.
 	LocalAIVersion = "v4.9.0"
 
 	// LegacyLocalAIVersion is the LocalAI release retained for compatibility backends.
 	LegacyLocalAIVersion = "v3.12.1"
-
-	// Keep policy approval pinned independently of LocalAIVersion.
-	reviewedLocalAIVersion = "v4.9.0"
 
 	architectureAMD64         = "amd64"
 	architectureARM64         = "arm64"
@@ -75,11 +72,11 @@ const (
 	cudaPath                  = "PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	cudaVisibleDevices        = "NVIDIA_VISIBLE_DEVICES=all"
 	vllmNativeSampler         = "VLLM_USE_FLASHINFER_SAMPLER=0"
-	reviewedSourceCPULLM      = "quay.io/go-skynet/local-ai-backends:" + reviewedLocalAIVersion + "-cpu-llama-cpp"
-	reviewedSourceCPUVLLM     = "quay.io/go-skynet/local-ai-backends:" + reviewedLocalAIVersion + "-cpu-vllm-cpp"
-	reviewedSourceCUDAVLLMCpp = "quay.io/go-skynet/local-ai-backends:" + reviewedLocalAIVersion + "-gpu-nvidia-cuda-13-vllm-cpp"
-	reviewedSourceL4TLLM      = "quay.io/go-skynet/local-ai-backends:" + reviewedLocalAIVersion + "-nvidia-l4t-arm64-llama-cpp"
-	reviewedSourceVulkanLLM   = "quay.io/go-skynet/local-ai-backends:" + reviewedLocalAIVersion + "-gpu-vulkan-llama-cpp"
+	reviewedSourceCPULLM      = "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-cpu-llama-cpp"
+	reviewedSourceCPUVLLM     = "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-cpu-vllm-cpp"
+	reviewedSourceCUDAVLLMCpp = "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-gpu-nvidia-cuda-13-vllm-cpp"
+	reviewedSourceL4TLLM      = "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-nvidia-l4t-arm64-llama-cpp"
+	reviewedSourceVulkanLLM   = "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-gpu-vulkan-llama-cpp"
 )
 
 // LocalAISource pins the exact upstream input accepted by the command.
