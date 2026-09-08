@@ -228,7 +228,7 @@ func artifactVersionFor(requestedVersion, family, selector string) string {
 	}
 
 	switch family + "/" + selector {
-	case familyDiffusers + "/" + selectorNVIDIA, runnerLlamaCpp + "/" + targetVulkan:
+	case familyDiffusers + "/" + selectorNVIDIA:
 		return LegacyLocalAIVersion
 	default:
 		return requestedVersion

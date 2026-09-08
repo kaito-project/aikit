@@ -79,7 +79,7 @@ const (
 	reviewedSourceCPUVLLM     = "quay.io/go-skynet/local-ai-backends:" + reviewedLocalAIVersion + "-cpu-vllm-cpp"
 	reviewedSourceCUDAVLLMCpp = "quay.io/go-skynet/local-ai-backends:" + reviewedLocalAIVersion + "-gpu-nvidia-cuda-13-vllm-cpp"
 	reviewedSourceL4TLLM      = "quay.io/go-skynet/local-ai-backends:" + reviewedLocalAIVersion + "-nvidia-l4t-arm64-llama-cpp"
-	reviewedSourceVulkanLLM   = "quay.io/go-skynet/local-ai-backends:" + LegacyLocalAIVersion + "-gpu-vulkan-llama-cpp"
+	reviewedSourceVulkanLLM   = "quay.io/go-skynet/local-ai-backends:" + reviewedLocalAIVersion + "-gpu-vulkan-llama-cpp"
 )
 
 // LocalAISource pins the exact upstream input accepted by the command.
