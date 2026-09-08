@@ -6343,14 +6343,14 @@
         "ref": "docker.io/library/ubuntu@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467"
       },
       "core": {
-        "ref": "ghcr.io/kaito-project/aikit/localai@sha256:c9f061c7d002abf967820487dfa26d6228ef6e752002e4448e348149fd7b0771"
+        "ref": "ghcr.io/kaito-project/aikit/localai@sha256:dafcc4fb739a44e039c35d731daa1bf404044c0aa9921f71e400d2f6e6bc7f62"
       },
       "backend": {
-        "ref": "quay.io/go-skynet/local-ai-backends@sha256:c97cca0cfaefb44ba2ebbdc7f181601f05811fd75f71be9a1c2bc75813c095e4",
+        "ref": "quay.io/go-skynet/local-ai-backends@sha256:b8a3fe7f45f0c29462d0e5ae7b943e876b0034a93151654b23043fe266cb6cf1",
         "installName": "vulkan-llama-cpp"
       },
-      "version": "v3.12.1",
-      "sourceRef": "quay.io/go-skynet/local-ai-backends:v3.12.1-gpu-vulkan-llama-cpp",
+      "version": "v4.9.0",
+      "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.9.0-gpu-vulkan-llama-cpp",
       "runnerProfile": "unsupported",
       "workloads": [
         "cpu",
@@ -6379,14 +6379,14 @@
         "ref": "ghcr.io/kaito-project/aikit/applesilicon/base@sha256:e1447388a566e6e902c99988bb072f88763975c0850f50e064fb1e33f3d4c830"
       },
       "core": {
-        "ref": "ghcr.io/kaito-project/aikit/localai@sha256:cea173afc320181d11d7385f74338a3614a9e204804fd7627980523ab31df77e"
+        "ref": "ghcr.io/kaito-project/aikit/localai@sha256:08c9af486171f49593bf69ea4409578784aaa7b1541d966ee86f719355aebf76"
       },
       "backend": {
-        "ref": "quay.io/go-skynet/local-ai-backends@sha256:d3aeacc6a4376a6e76541f56403bdc79e966952025a3e77df13924750e63f4fa",
+        "ref": "quay.io/go-skynet/local-ai-backends@sha256:d6e9a4f88eab2ccadf416c0da75bf046969a99118e47934308e4a2a33a162d9f",
         "installName": "gpu-vulkan-llama-cpp"
       },
-      "version": "v3.12.1",
-      "sourceRef": "quay.io/go-skynet/local-ai-backends:v3.12.1-gpu-vulkan-llama-cpp",
+      "version": "v4.9.0",
+      "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.9.0-gpu-vulkan-llama-cpp",
       "environment": [
         "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/virtio_icd.aarch64.json"
       ],

@@ -58,7 +58,7 @@
       ]
     },
     {
-      "sourceRef": "quay.io/go-skynet/local-ai-backends:v3.12.1-gpu-vulkan-llama-cpp",
+      "sourceRef": "quay.io/go-skynet/local-ai-backends:v4.9.0-gpu-vulkan-llama-cpp",
       "manifests": [
         {
           "digest": "sha256:abababababababababababababababababababababababababababababababab",

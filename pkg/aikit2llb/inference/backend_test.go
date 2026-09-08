@@ -115,13 +115,13 @@ func TestResolveBackendCurrentCompatibility(t *testing.T) {
 			wantEnvironment: testCUDA12Environment,
 		},
 		{
-			name: "Apple Silicon llama-cpp preserves legacy default",
+			name: "Apple Silicon llama-cpp Vulkan",
 			config: &config.InferenceConfig{
 				Runtime: utils.RuntimeAppleSilicon,
 			},
 			platform:        specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformARM64},
 			wantName:        "gpu-vulkan-llama-cpp",
-			wantVersion:     testLegacyLocalAI,
+			wantVersion:     testLocalAIVersion,
 			wantProfile:     backendcatalog.TargetProfileVulkan,
 			wantRunner:      backendcatalog.RunnerProfileUnsupported,
 			wantEnvironment: []string{"VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/virtio_icd.aarch64.json"},
@@ -495,6 +495,69 @@ func TestInstallBackendKeepsCopyAndMetadataInOneFileOp(t *testing.T) {
 	}
 	if fileOps != 1 {
 		t.Errorf("backend file operations = %d, want 1", fileOps)
+	}
+}
+
+func TestInstallBackendsPreservesAppleSiliconVulkanDriver(t *testing.T) {
+	tests := []struct {
+		name       string
+		runtime    backendcatalog.Runtime
+		profile    backendcatalog.TargetProfile
+		wantRemove bool
+	}{
+		{name: "Apple Silicon Vulkan", runtime: backendcatalog.RuntimeAppleSilicon, profile: backendcatalog.TargetProfileVulkan, wantRemove: true},
+		{name: "Apple Silicon Metal", runtime: backendcatalog.RuntimeAppleSilicon, profile: backendcatalog.TargetProfileMetal},
+		{name: "Linux Vulkan", runtime: backendcatalog.RuntimeCPU, profile: backendcatalog.TargetProfileVulkan},
+		{name: "CPU", runtime: backendcatalog.RuntimeCPU, profile: backendcatalog.TargetProfileCPU},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			platform := specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformARM64}
+			if test.runtime == backendcatalog.RuntimeCPU {
+				platform.Architecture = utils.PlatformAMD64
+			}
+			resolved := testArbitraryBackendPlan(platform)
+			resolved.Runtime = test.runtime
+			resolved.TargetProfile = test.profile
+			resolved.Fallbacks = nil
+			resolved.SystemPackages = nil
+			base := llb.Image(resolved.RuntimeBase.Ref, llb.Platform(platform))
+			state := installBackends(resolved, test.runtime, platform, base, base)
+			definition, err := state.Marshal(context.Background())
+			if err != nil {
+				t.Fatalf("marshal backend definition: %v", err)
+			}
+
+			backendDir := "/backends/" + resolved.Backend.InstallName
+			removed := false
+			for _, data := range definition.Def {
+				op := new(pb.Op)
+				if err := op.Unmarshal(data); err != nil {
+					t.Fatalf("unmarshal LLB op: %v", err)
+				}
+				if op.GetFile() == nil {
+					continue
+				}
+				copied := false
+				for _, action := range op.GetFile().Actions {
+					if copyAction := action.GetCopy(); copyAction != nil && strings.HasPrefix(copyAction.Dest, backendDir) {
+						copied = true
+					}
+					if rm := action.GetRm(); rm != nil && rm.Path == backendDir+"/vulkan/icd.d" {
+						removed = true
+						if !copied {
+							t.Error("bundled ICD removal must follow the backend copy")
+						}
+						if !rm.AllowNotFound {
+							t.Error("backends without bundled ICD manifests must remain installable")
+						}
+					}
+				}
+			}
+			if removed != test.wantRemove {
+				t.Errorf("bundled ICD removal = %v, want %v", removed, test.wantRemove)
+			}
+		})
 	}
 }
 

@@ -330,10 +330,17 @@ func installBackendArtifact(
 
 	metadata := marshalBackendMetadata(backend, runtime, artifact, primary)
 
+	actions := llb.Copy(backendState, "/", backendDir+"/", &llb.CopyInfo{
+		CreateDestPath: true,
+	}).Mkfile(backendDir+"/metadata.json", 0o644, metadata)
+	if runtime == backendcatalog.RuntimeAppleSilicon && backend.TargetProfile == backendcatalog.TargetProfileVulkan {
+		// LocalAI prefers bundled ICD manifests over VK_ICD_FILENAMES. Remove them
+		// so Apple Silicon uses the runtime base's patched Venus driver.
+		actions = actions.Rm(backendDir+"/vulkan/icd.d", llb.WithAllowNotFound(true))
+	}
+
 	s = s.File(
-		llb.Copy(backendState, "/", backendDir+"/", &llb.CopyInfo{
-			CreateDestPath: true,
-		}).Mkfile(backendDir+"/metadata.json", 0o644, metadata),
+		actions,
 		llb.WithCustomName(fmt.Sprintf("Creating metadata.json for backend %s", artifact.InstallName)),
 	)
 

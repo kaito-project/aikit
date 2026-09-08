@@ -16,7 +16,7 @@ func TestCompatibilityArtifactVersions(t *testing.T) {
 	}{
 		{name: "Diffusers default CUDA", version: LocalAIVersion, family: familyDiffusers, selector: selectorNVIDIA, want: LegacyLocalAIVersion},
 		{name: "Diffusers explicit CUDA 12", version: LocalAIVersion, family: familyDiffusers, selector: selectorNVIDIACUDA12, want: LocalAIVersion},
-		{name: "Apple Silicon Vulkan", version: LocalAIVersion, family: runnerLlamaCpp, selector: targetVulkan, want: LegacyLocalAIVersion},
+		{name: "Apple Silicon Vulkan", version: LocalAIVersion, family: runnerLlamaCpp, selector: targetVulkan, want: LocalAIVersion},
 		{name: "vLLM default CUDA", version: LocalAIVersion, family: familyVLLM, selector: selectorNVIDIA, want: LocalAIVersion},
 		{name: "different imported release", version: fixtureFutureVersion, family: familyDiffusers, selector: selectorNVIDIA, want: fixtureFutureVersion},
 	}

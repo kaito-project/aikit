@@ -130,9 +130,9 @@ func TestGenerateDeterministicCatalog(t *testing.T) {
 		t.Fatalf("NVIDIA fallbacks = %#v, want %#v", nvidia.Fallbacks, amd64CPU.Backend)
 	}
 	vulkan := findGeneratedEntry(t, first, runnerLlamaCpp, targetVulkan, Platform{OS: platformLinux, Architecture: architectureARM64})
-	if vulkan.Version != LegacyLocalAIVersion || vulkan.SourceRef != reviewedSourceVulkanLLM ||
+	if vulkan.Version != LocalAIVersion || vulkan.SourceRef != reviewedSourceVulkanLLM || vulkan.Core != arm64CPU.Core ||
 		vulkan.Backend.InstallName != backendInstallVulkanLLM || vulkan.Status != statusExperimental || vulkan.RunnerProfile != runnerUnsupported {
-		t.Fatalf("Vulkan legacy compatibility entry = %#v", vulkan)
+		t.Fatalf("Vulkan entry = %#v", vulkan)
 	}
 	if strings.Contains(string(firstJSON), "development") || strings.Contains(string(firstJSON), "latest-") {
 		t.Fatalf("generated catalog contains development or mutable latest data:\n%s", firstJSON)
@@ -272,7 +272,7 @@ func TestGenerateRequiresEveryApplicableReviewedPolicyOverlay(t *testing.T) {
   uri: quay.io/go-skynet/local-ai-backends:latest-gpu-nvidia-cuda-12-vllm
 `
 	vllmKey := reviewedPolicyKey{
-		Version:  reviewedLocalAIVersion,
+		Version:  LocalAIVersion,
 		Family:   familyVLLM,
 		Selector: selectorNVIDIA,
 		Platform: linuxPlatform(architectureAMD64),
@@ -342,7 +342,7 @@ func TestGenerateRequiresEveryApplicableReviewedPolicyOverlay(t *testing.T) {
 				},
 			}, reviewedPolicyRequirements{
 				Source:   pin,
-				Version:  reviewedLocalAIVersion,
+				Version:  LocalAIVersion,
 				Overlays: []reviewedPolicyOverlay{vllmOverlay},
 			})
 			if test.wantErr == "" {
