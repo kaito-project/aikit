@@ -59,7 +59,7 @@ jobs:
             (.choices[0].message.content | type == "string" and length > 0)
           '
           podman logs testmodel > /tmp/podman-gpu.log 2>&1
-          grep -E 'Virtio-GPU Venus.*Apple' /tmp/podman-gpu.log
+          grep -E 'using device Vulkan[0-9]+ \(Virtio-GPU Venus.*Apple' /tmp/podman-gpu.log
           grep -E 'offloaded [1-9][0-9]*/[1-9][0-9]* layers to GPU' /tmp/podman-gpu.log
 
       - name: save logs
