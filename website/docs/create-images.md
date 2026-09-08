@@ -6,10 +6,13 @@ title: Creating Model Images
 This section shows how to create a custom image with models of your choosing. If you want to use one of the pre-made models, skip to [running models](#running-models).
 :::
 
-First, create a buildx buildkit instance.
+Create a builder with BuildKit 0.33.0 to use native OCI blob downloads and the current parallel-build and remote-cache fixes. The BuildKit daemon version is independent of the AIKit frontend version.
 
 ```bash
-docker buildx create --use --name aikit-builder
+docker buildx create --use --name aikit-builder \
+    --driver docker-container \
+    --driver-opt image=moby/buildkit:v0.33.0
+docker buildx inspect --bootstrap
 ```
 
 ## Quick Start
@@ -61,6 +64,20 @@ docker buildx build -t my-model --load \
 ```
 
 Resulting model name will be the image name. In this case, `llama3`.
+
+On builders with native blob support, AIKit downloads OCI model files by blob digest. Mutable tags are resolved once per build, shared across target platforms, and refreshed on subsequent builds. Digest-pinned references skip tag resolution. Named artifact files retain their paths, and Ollama model layers retain the repository's model name. Older builders use the existing ORAS download path.
+
+BuildKit fetches model blobs using its registry credentials and configuration. Manifest lookups still run in ORAS and do not inherit those credentials, so private OCI artifacts retain the existing authentication limitation.
+
+Use an external cache to reuse model downloads across builders. For example:
+
+```bash
+docker buildx build . -f aikitfile.yaml -t my-model --load \
+    --cache-from type=registry,ref=ghcr.io/your-org/my-model:buildcache \
+    --cache-to type=registry,ref=ghcr.io/your-org/my-model:buildcache,mode=max
+```
+
+Inference, fine-tuning, and packaging targets all accept cache imports. Give independent cache writers separate cache references or scopes to avoid replacing each other's exported cache.
 
 After building the image, you can proceed to [running models](#running-models) to start the server.
 

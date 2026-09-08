@@ -81,6 +81,7 @@ jobs:
             --name oci-platforms \
             --driver docker-container \
             --driver-opt network=host \
+            --driver-opt image=moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3 \
             --platform linux/amd64 \
             --use
           docker buildx inspect --bootstrap | tee "$RUNNER_TEMP/buildx-inspect.txt"
@@ -108,28 +109,45 @@ jobs:
             tee "$RUNNER_TEMP/multi-platform-index.json" |
             jq .
 
-      - name: Build arm64 targets and verify selected model bytes
+      - name: Verify arm64 model downloads and remote cache reuse
         run: |
           set -euo pipefail
 
           build_and_verify() {
-            local case_name=$1
-            local expected_payload=$2
-            local output_dir="$RUNNER_TEMP/oci-platform-output/$case_name"
-            local build_log="$RUNNER_TEMP/$case_name-build.log"
+            local builder=$1
+            local case_name=$2
+            local expected_payload=$3
+            local output_dir="$RUNNER_TEMP/oci-platform-output/$builder/$case_name"
+            local build_log="$RUNNER_TEMP/$builder-$case_name-build.log"
+            local cache_ref="localhost:5000/aikit/cache:$case_name"
+            local cache_args=(--cache-to "type=registry,ref=$cache_ref,mode=max")
+            if [[ "$builder" == oci-platforms-cache ]]; then
+              cache_args=(--cache-from "type=registry,ref=$cache_ref")
+            fi
 
             mkdir -p "$output_dir"
             docker buildx build . \
-              --builder oci-platforms \
+              --builder "$builder" \
               --file "test/ci/oci-platforms/$case_name.aikitfile.yaml" \
               --platform linux/arm64 \
               --output "type=local,dest=$output_dir" \
+              "${cache_args[@]}" \
               --provenance=false \
               --progress=plain 2>&1 | tee "$build_log"
 
-            # The target is arm64. The x86_64 apk index proves the ORAS helper
-            # actually executed on the amd64 builder rather than the target.
-            grep -E '/x86_64/APKINDEX' "$build_log"
+            # Model bytes must use native blob sources on this builder.
+            grep -F 'docker-image+blob://' "$build_log"
+            if grep -E '/APKINDEX|apk add --no-cache jq curl' "$build_log"; then
+              echo 'OCI model download used the legacy helper' >&2
+              exit 1
+            fi
+            if [[ "$builder" == oci-platforms-cache ]]; then
+              awk '
+                /Verifying OCI model blob/ { model[$1] = 1 }
+                $2 == "CACHED" && model[$1] { hit = 1 }
+                END { exit !hit }
+              ' "$build_log"
+            fi
             test -f "$output_dir/models/model.gguf"
             test "$(find "$output_dir/models" -maxdepth 1 -type f | wc -l)" -eq 1
             test ! -e "$output_dir/models/predicate.json"
@@ -140,12 +158,31 @@ jobs:
           # The sole descriptor is stamped amd64, but a neutral ModelPack-style
           # index must still pull successfully for an arm64 target.
           build_and_verify \
+            oci-platforms \
             single-stamped \
             test/ci/oci-platforms/payloads/single/model.gguf
 
           # The real two-platform index must select arm64 while ignoring its
           # unknown-platform attestation descriptor.
           build_and_verify \
+            oci-platforms \
+            multi-platform \
+            test/ci/oci-platforms/payloads/multi-arm64/model.gguf
+
+          # A fresh builder must reuse the registry cache without local build state.
+          docker buildx create \
+            --name oci-platforms-cache \
+            --driver docker-container \
+            --driver-opt network=host \
+            --driver-opt image=moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3 \
+            --platform linux/amd64
+          docker buildx inspect oci-platforms-cache --bootstrap
+          build_and_verify \
+            oci-platforms-cache \
+            single-stamped \
+            test/ci/oci-platforms/payloads/single/model.gguf
+          build_and_verify \
+            oci-platforms-cache \
             multi-platform \
             test/ci/oci-platforms/payloads/multi-arm64/model.gguf
 
@@ -155,6 +192,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/oci-platform-diagnostics"
           docker logs oci-platform-registry > "$RUNNER_TEMP/oci-platform-diagnostics/registry.log" 2>&1 || true
           docker buildx inspect oci-platforms > "$RUNNER_TEMP/oci-platform-diagnostics/buildx.txt" 2>&1 || true
+          docker buildx inspect oci-platforms-cache > "$RUNNER_TEMP/oci-platform-diagnostics/buildx-cache.txt" 2>&1 || true
           cp "$RUNNER_TEMP"/*-index.json "$RUNNER_TEMP/oci-platform-diagnostics/" 2>/dev/null || true
           cp "$RUNNER_TEMP"/*-build.log "$RUNNER_TEMP/oci-platform-diagnostics/" 2>/dev/null || true
 

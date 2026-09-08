@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/exporter/containerimage/exptypes"
 	"github.com/moby/buildkit/frontend/gateway/client"
@@ -67,12 +68,16 @@ func parseBuildConfig(opts map[string]string, sessionID string, isModelpack bool
 // and constructs a client.Result with the appropriate image config.
 // This eliminates the repeated marshal→solve→getRef→createConfig→buildResult pattern.
 func solveAndBuildResult(ctx context.Context, c client.Client, state llb.State, customName string) (*client.Result, error) {
+	cacheImports, err := utils.ParseCacheImports(c.BuildOpts().Opts)
+	if err != nil {
+		return nil, err
+	}
 	def, err := state.Marshal(ctx, llb.WithCustomName(customName))
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal %s LLB definition: %w", customName, err)
 	}
 
-	resSolve, err := c.Solve(ctx, client.SolveRequest{Definition: def.ToPB()})
+	resSolve, err := c.Solve(ctx, client.SolveRequest{Definition: def.ToPB(), CacheImports: cacheImports})
 	if err != nil {
 		return nil, fmt.Errorf("failed to solve %s build: %w", customName, err)
 	}
