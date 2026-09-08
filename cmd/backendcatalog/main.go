@@ -24,7 +24,7 @@ type commandConfig struct {
 
 func main() {
 	config := commandConfig{
-		Source:  backendcatalogimport.LocalAIV482Source,
+		Source:  backendcatalogimport.LocalAISource,
 		Version: backendcatalogimport.LocalAIVersion,
 		Stdout:  os.Stdout,
 	}

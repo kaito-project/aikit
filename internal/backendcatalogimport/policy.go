@@ -58,7 +58,7 @@ type reviewedPolicyOverlay struct {
 
 var reviewedPolicyOverlays = []reviewedPolicyOverlay{
 	{
-		Key:                  reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: runnerLlamaCpp, Selector: selectorDefault, Platform: linuxPlatform(architectureAMD64)},
+		Key:                  reviewedPolicyKey{Version: LocalAIVersion, Family: runnerLlamaCpp, Selector: selectorDefault, Platform: linuxPlatform(architectureAMD64)},
 		Target:               "cpu-llama-cpp",
 		SourceRef:            reviewedSourceCPULLM,
 		TargetProfile:        runtimeCPU,
@@ -68,7 +68,7 @@ var reviewedPolicyOverlays = []reviewedPolicyOverlay{
 		RunnerProfile:        runnerLlamaCpp,
 	},
 	{
-		Key:                  reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: runnerLlamaCpp, Selector: selectorDefault, Platform: linuxPlatform(architectureARM64)},
+		Key:                  reviewedPolicyKey{Version: LocalAIVersion, Family: runnerLlamaCpp, Selector: selectorDefault, Platform: linuxPlatform(architectureARM64)},
 		Target:               "cpu-llama-cpp",
 		SourceRef:            reviewedSourceCPULLM,
 		TargetProfile:        runtimeCPU,
@@ -78,9 +78,9 @@ var reviewedPolicyOverlays = []reviewedPolicyOverlay{
 		RunnerProfile:        runnerLlamaCpp,
 	},
 	{
-		Key:                  reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: runnerLlamaCpp, Selector: selectorNVIDIA, Platform: linuxPlatform(architectureAMD64)},
+		Key:                  reviewedPolicyKey{Version: LocalAIVersion, Family: runnerLlamaCpp, Selector: selectorNVIDIA, Platform: linuxPlatform(architectureAMD64)},
 		Target:               backendTargetCUDALLM,
-		SourceRef:            "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-nvidia-cuda-12-llama-cpp",
+		SourceRef:            "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-gpu-nvidia-cuda-12-llama-cpp",
 		TargetProfile:        targetCUDA12,
 		Status:               statusSupported,
 		RuntimeBaseRef:       chiseledRuntimeBase,
@@ -89,9 +89,9 @@ var reviewedPolicyOverlays = []reviewedPolicyOverlay{
 		Fallbacks:            []fallbackTarget{{Family: runnerLlamaCpp, Selector: selectorDefault}},
 	},
 	{
-		Key:            reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: runnerLlamaCpp, Selector: selectorAMD, Platform: linuxPlatform(architectureAMD64)},
+		Key:            reviewedPolicyKey{Version: LocalAIVersion, Family: runnerLlamaCpp, Selector: selectorAMD, Platform: linuxPlatform(architectureAMD64)},
 		Target:         "rocm-llama-cpp",
-		SourceRef:      "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-rocm-hipblas-llama-cpp",
+		SourceRef:      "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-gpu-rocm-hipblas-llama-cpp",
 		TargetProfile:  targetROCm,
 		Status:         statusExperimental,
 		RuntimeBaseRef: rocmRuntimeBase,
@@ -100,7 +100,7 @@ var reviewedPolicyOverlays = []reviewedPolicyOverlay{
 		Fallbacks:      []fallbackTarget{{Family: runnerLlamaCpp, Selector: selectorDefault}},
 	},
 	{
-		Key:            reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: runnerLlamaCpp, Selector: selectorNVIDIAL4T, Platform: linuxPlatform(architectureARM64)},
+		Key:            reviewedPolicyKey{Version: LocalAIVersion, Family: runnerLlamaCpp, Selector: selectorNVIDIAL4T, Platform: linuxPlatform(architectureARM64)},
 		Target:         backendTargetL4TLLM,
 		SourceRef:      reviewedSourceL4TLLM,
 		TargetProfile:  targetL4TCUDA12,
@@ -110,7 +110,7 @@ var reviewedPolicyOverlays = []reviewedPolicyOverlay{
 		Fallbacks:      []fallbackTarget{{Family: runnerLlamaCpp, Selector: selectorDefault}},
 	},
 	{
-		Key:            reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: runnerLlamaCpp, Selector: selectorL4TCUDA12, Platform: linuxPlatform(architectureARM64)},
+		Key:            reviewedPolicyKey{Version: LocalAIVersion, Family: runnerLlamaCpp, Selector: selectorL4TCUDA12, Platform: linuxPlatform(architectureARM64)},
 		Target:         backendTargetL4TLLM,
 		SourceRef:      reviewedSourceL4TLLM,
 		TargetProfile:  targetL4TCUDA12,
@@ -120,9 +120,9 @@ var reviewedPolicyOverlays = []reviewedPolicyOverlay{
 		Fallbacks:      []fallbackTarget{{Family: runnerLlamaCpp, Selector: selectorDefault}},
 	},
 	{
-		Key:            reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: runnerLlamaCpp, Selector: selectorL4TCUDA13, Platform: linuxPlatform(architectureARM64)},
+		Key:            reviewedPolicyKey{Version: LocalAIVersion, Family: runnerLlamaCpp, Selector: selectorL4TCUDA13, Platform: linuxPlatform(architectureARM64)},
 		Target:         "cuda13-nvidia-l4t-arm64-llama-cpp",
-		SourceRef:      "quay.io/go-skynet/local-ai-backends:v4.8.2-nvidia-l4t-cuda-13-arm64-llama-cpp",
+		SourceRef:      "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-nvidia-l4t-cuda-13-arm64-llama-cpp",
 		TargetProfile:  targetL4TCUDA13,
 		Status:         statusExperimental,
 		RuntimeBaseRef: ubuntuRuntimeBase,
@@ -130,7 +130,7 @@ var reviewedPolicyOverlays = []reviewedPolicyOverlay{
 		Fallbacks:      []fallbackTarget{{Family: runnerLlamaCpp, Selector: selectorDefault}},
 	},
 	{
-		Key:            reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: runnerLlamaCpp, Selector: targetVulkan, Platform: linuxPlatform(architectureARM64)},
+		Key:            reviewedPolicyKey{Version: LocalAIVersion, Family: runnerLlamaCpp, Selector: targetVulkan, Platform: linuxPlatform(architectureARM64)},
 		Target:         backendTargetVulkanLLM,
 		SourceRef:      reviewedSourceVulkanLLM,
 		TargetProfile:  targetVulkan,
@@ -140,25 +140,25 @@ var reviewedPolicyOverlays = []reviewedPolicyOverlay{
 		RunnerProfile:  runnerUnsupported,
 	},
 	{
-		Key:            reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: familyDiffusers, Selector: selectorNVIDIA, Platform: linuxPlatform(architectureAMD64)},
+		Key:            reviewedPolicyKey{Version: LocalAIVersion, Family: familyDiffusers, Selector: selectorNVIDIA, Platform: linuxPlatform(architectureAMD64)},
 		Target:         "cuda12-diffusers",
-		SourceRef:      "quay.io/go-skynet/local-ai-backends:v3.12.1-gpu-nvidia-cuda-12-diffusers",
+		SourceRef:      "quay.io/go-skynet/local-ai-backends:" + LegacyLocalAIVersion + "-gpu-nvidia-cuda-12-diffusers",
 		TargetProfile:  targetCUDA12,
 		Status:         statusSupported,
 		RuntimeBaseRef: ubuntu22RuntimeBase,
 		RunnerProfile:  runnerHFConfig,
 	},
 	{
-		Key:            reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: familyVLLM, Selector: selectorNVIDIA, Platform: linuxPlatform(architectureAMD64)},
+		Key:            reviewedPolicyKey{Version: LocalAIVersion, Family: familyVLLM, Selector: selectorNVIDIA, Platform: linuxPlatform(architectureAMD64)},
 		Target:         backendTargetCUDAVLLM,
-		SourceRef:      "quay.io/go-skynet/local-ai-backends:v4.8.2-gpu-nvidia-cuda-12-vllm",
+		SourceRef:      "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-gpu-nvidia-cuda-12-vllm",
 		TargetProfile:  targetCUDA12,
 		Status:         statusSupported,
 		RuntimeBaseRef: ubuntu22RuntimeBase,
 		RunnerProfile:  runnerHFConfig,
 	},
 	{
-		Key:                  reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: familyVLLMCpp, Selector: selectorDefault, Platform: linuxPlatform(architectureAMD64)},
+		Key:                  reviewedPolicyKey{Version: LocalAIVersion, Family: familyVLLMCpp, Selector: selectorDefault, Platform: linuxPlatform(architectureAMD64)},
 		Target:               backendTargetCPUVLLM,
 		SourceRef:            reviewedSourceCPUVLLM,
 		TargetProfile:        runtimeCPU,
@@ -168,7 +168,7 @@ var reviewedPolicyOverlays = []reviewedPolicyOverlay{
 		RunnerProfile:        familyVLLMCpp,
 	},
 	{
-		Key:                  reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: familyVLLMCpp, Selector: selectorDefault, Platform: linuxPlatform(architectureARM64)},
+		Key:                  reviewedPolicyKey{Version: LocalAIVersion, Family: familyVLLMCpp, Selector: selectorDefault, Platform: linuxPlatform(architectureARM64)},
 		Target:               backendTargetCPUVLLM,
 		SourceRef:            reviewedSourceCPUVLLM,
 		TargetProfile:        runtimeCPU,
@@ -178,7 +178,7 @@ var reviewedPolicyOverlays = []reviewedPolicyOverlay{
 		RunnerProfile:        familyVLLMCpp,
 	},
 	{
-		Key:                  reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: familyVLLMCpp, Selector: selectorNVIDIA, Platform: linuxPlatform(architectureAMD64)},
+		Key:                  reviewedPolicyKey{Version: LocalAIVersion, Family: familyVLLMCpp, Selector: selectorNVIDIA, Platform: linuxPlatform(architectureAMD64)},
 		Target:               backendTargetCUDAVLLMCpp,
 		SourceRef:            reviewedSourceCUDAVLLMCpp,
 		TargetProfile:        targetCUDA13,
@@ -188,7 +188,7 @@ var reviewedPolicyOverlays = []reviewedPolicyOverlay{
 		RunnerProfile:        familyVLLMCpp,
 	},
 	{
-		Key:                  reviewedPolicyKey{Version: reviewedLocalAIVersion, Family: familyVLLMCpp, Selector: selectorNVIDIACUDA13, Platform: linuxPlatform(architectureAMD64)},
+		Key:                  reviewedPolicyKey{Version: LocalAIVersion, Family: familyVLLMCpp, Selector: selectorNVIDIACUDA13, Platform: linuxPlatform(architectureAMD64)},
 		Target:               backendTargetCUDAVLLMCpp,
 		SourceRef:            reviewedSourceCUDAVLLMCpp,
 		TargetProfile:        targetCUDA13,
@@ -223,13 +223,13 @@ func hasReviewedOverlayMapping(version, family, selector, target, sourceRef stri
 }
 
 func artifactVersionFor(requestedVersion, family, selector string) string {
-	if requestedVersion != reviewedLocalAIVersion {
+	if requestedVersion != LocalAIVersion {
 		return requestedVersion
 	}
 
 	switch family + "/" + selector {
-	case familyDiffusers + "/" + selectorNVIDIA, runnerLlamaCpp + "/" + targetVulkan:
-		return legacyLocalAIVersion
+	case familyDiffusers + "/" + selectorNVIDIA:
+		return LegacyLocalAIVersion
 	default:
 		return requestedVersion
 	}
@@ -311,8 +311,8 @@ func policyFor(input policyInput) (entryPolicy, error) {
 		policy.Status = statusQuarantined
 	}
 
-	// LocalAI v4.8.2's CUDA 12 SGLang bundle mixes PyTorch CUDA 13.0 with
-	// TorchAudio CUDA 12.8 and exits before its gRPC service becomes ready.
+	// The CUDA 12 SGLang bundle was quarantined in v4.8.2 for mixing PyTorch
+	// CUDA 13.0 with TorchAudio CUDA 12.8. Keep it unavailable until verified.
 	if input.Family == familySGLang && policy.TargetProfile == targetCUDA12 && input.Platform.OS == platformLinux && input.Platform.Architecture == architectureAMD64 {
 		policy.Status = statusQuarantined
 	}

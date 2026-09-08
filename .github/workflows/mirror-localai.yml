@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "LocalAI version tag (e.g. v4.8.2)"
+        description: "LocalAI version tag (e.g. v4.9.0)"
         required: true
-        default: v4.8.2
+        default: v4.9.0
 
 permissions:
   contents: read
