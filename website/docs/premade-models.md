@@ -26,6 +26,7 @@ Depending on your CPU capabilities, AIKit will automatically select the most opt
 | QwQ             |              | 32B        | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwq:32b`       | `qwq-32b`                | [Apache 2.0](https://huggingface.co/Qwen/QwQ-32B/blob/main/LICENSE) |  |
 | 🤖 GPT-OSS       |              | 20B        | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/gpt-oss:20b`   | `gpt-oss-20b`            | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/)       |
 | 🤖 GPT-OSS       |              | 120B       | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/gpt-oss:120b`  | `gpt-oss-120b`           | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/)       |
+| ✨ Muse Glimmer   | Vision + DFlash | 30B     | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/muse-glimmer:30b` | `muse-glimmer-30b`    | [Apache 2.0](https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF/blob/main/LICENSE) |
 
 ## NVIDIA CUDA
 

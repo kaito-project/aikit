@@ -11,7 +11,7 @@ on:
       models:
         description: "models to update"
         required: true
-        default: '["llama-3.2-1b-instruct", "llama-3.2-3b-instruct", "llama-3.1-8b-instruct", "phi-4-14b-instruct", "gemma-2-2b-instruct", "flux-1-dev", "llama-3.3-70b-instruct", "mixtral-8x7b-instruct", "codestral-22b", "qwq-32b", "gpt-oss-20b", "gpt-oss-120b"]'
+        default: '["llama-3.2-1b-instruct", "llama-3.2-3b-instruct", "llama-3.1-8b-instruct", "phi-4-14b-instruct", "gemma-2-2b-instruct", "flux-1-dev", "llama-3.3-70b-instruct", "mixtral-8x7b-instruct", "codestral-22b", "qwq-32b", "gpt-oss-20b", "gpt-oss-120b", "muse-glimmer-30b"]'
         type: string
       runtime:
         description: "runtime to build"
@@ -35,6 +35,8 @@ jobs:
         runtime: ${{ fromJSON(github.event.inputs.runtime) }}
         exclude:
         - model: flux-1-dev # requires cuda runtime
+          runtime: applesilicon
+        - model: muse-glimmer-30b # legacy Apple Silicon backend lacks Muse support
           runtime: applesilicon
     runs-on: ubuntu-latest-16-cores
     timeout-minutes: 360
