@@ -17,6 +17,7 @@ import (
 	"github.com/moby/buildkit/frontend/dockerui"
 	"github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/moby/buildkit/solver/pb"
+	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -160,12 +161,75 @@ func TestBuildInferenceUsesBuildPlatformForArtifactHelpers(t *testing.T) {
 	}
 }
 
+func TestBuildInferenceSharesNativeOCIAndRemoteCache(t *testing.T) {
+	layerDigest := digest.FromString("model bytes")
+	manifest, err := json.Marshal(map[string]any{
+		"schemaVersion": 2,
+		"mediaType":     specs.MediaTypeImageManifest,
+		"layers": []specs.Descriptor{{
+			MediaType: "application/vnd.cncf.model.weight.v1.raw",
+			Digest:    layerDigest, Size: 11,
+			Annotations: map[string]string{specs.AnnotationTitle: "model.gguf"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const repository = "example.com/models/test"
+	imports := []client.CacheOptionsEntry{{Type: "registry", Attrs: map[string]string{"ref": "example.com/models/cache:build"}}}
+	cacheJSON, err := json.Marshal(imports)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayClient := &recordingBuildClient{
+		buildOpts: client.BuildOpts{
+			Opts:    map[string]string{keyTargetPlatform: "linux/amd64,linux/arm64", "cache-imports": string(cacheJSON)},
+			Workers: []client.WorkerInfo{{Platforms: []specs.Platform{{OS: "linux", Architecture: "amd64"}}}},
+			LLBCaps: pb.Caps.CapSet(pb.Caps.All()),
+		},
+		files: map[string][]byte{
+			"/manifest.json": manifest,
+			"/resolved-ref":  []byte(repository + "@" + digest.FromBytes(manifest).String()),
+		},
+	}
+	cfg := &config.InferenceConfig{
+		APIVersion: utils.APIv1alpha1,
+		Models:     []config.Model{{Name: testBuildModelName, Source: "oci://" + repository + ":latest"}},
+	}
+	result, err := buildInference(context.Background(), gatewayClient, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions := gatewayClient.solveDefinitions()
+	if len(definitions) != 3 || len(result.Refs) != 2 {
+		t.Fatalf("got %d solves and %d outputs, want one shared metadata solve and two platform outputs", len(definitions), len(result.Refs))
+	}
+	nativeBuilds := 0
+	for i, definition := range definitions {
+		if !reflect.DeepEqual(gatewayClient.cacheImports[i], imports) {
+			t.Errorf("solve %d did not receive remote cache imports", i)
+		}
+		blobs := findBuildSourceOps(t, definition, "docker-image+blob://"+repository+"@"+layerDigest.String())
+		if len(blobs) == 1 {
+			nativeBuilds++
+			if blobs[0].Platform != nil {
+				t.Error("model blob source unexpectedly depends on the target platform")
+			}
+		}
+	}
+	if nativeBuilds != 2 {
+		t.Fatalf("native model builds = %d, want two", nativeBuilds)
+	}
+}
+
 type recordingBuildClient struct {
 	client.Client
 
 	buildOpts     client.BuildOpts
 	mu            sync.Mutex
 	definitions   []*pb.Definition
+	cacheImports  [][]client.CacheOptionsEntry
+	files         map[string][]byte
 	nextReference int
 }
 
@@ -176,8 +240,9 @@ func (c *recordingBuildClient) BuildOpts() client.BuildOpts {
 func (c *recordingBuildClient) Solve(_ context.Context, request client.SolveRequest) (*client.Result, error) {
 	c.mu.Lock()
 	c.definitions = append(c.definitions, request.Definition.CloneVT())
+	c.cacheImports = append(c.cacheImports, request.CacheImports)
 	c.nextReference++
-	reference := &recordingBuildReference{id: c.nextReference}
+	reference := &recordingBuildReference{id: c.nextReference, files: c.files}
 	c.mu.Unlock()
 
 	result := client.NewResult()
@@ -198,7 +263,16 @@ func (c *recordingBuildClient) solveDefinitions() []*pb.Definition {
 
 type recordingBuildReference struct {
 	client.Reference
-	id int
+	id    int
+	files map[string][]byte
+}
+
+func (r *recordingBuildReference) ReadFile(_ context.Context, request client.ReadRequest) ([]byte, error) {
+	data, ok := r.files[request.Filename]
+	if !ok {
+		return nil, fmt.Errorf("unexpected metadata file %s", request.Filename)
+	}
+	return data, nil
 }
 
 func findBuildSourceOp(t *testing.T, definition *pb.Definition, identifierFragment string) *pb.Op {
