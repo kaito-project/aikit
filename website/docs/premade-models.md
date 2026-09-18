@@ -65,12 +65,15 @@ The documented ROCm image path uses `llama-cpp` on `linux/amd64`. Other experime
 ## Apple Silicon (experimental)
 
 :::note
-To enable GPU acceleration on Apple Silicon, please see [Podman Desktop documentation](https://podman-desktop.io/docs/podman/gpu).
+For Apple Silicon GPU acceleration, use [Podman Desktop](https://podman-desktop.io/docs/podman/gpu)
+or [Colima with Docker Engine](gpu.md#colima-with-docker). See [GPU Acceleration](gpu.md#apple-silicon-experimental) for setup.
 
 Apple Silicon is an _experimental_ runtime and it may change in the future. This runtime is specific to Apple Silicon only, and it will not work as expected on other architectures, including Intel Macs.
 
 The published Apple Silicon images use the experimental `llama-cpp` Apple Silicon profile with GGUF models. Other experimental catalog tuples, if present, are not a promise that a published image or end-to-end model workflow is available.
 :::
+
+With the Colima profile from the guide, replace `podman` in the commands below with `docker --context colima-aikit-gpu`.
 
 | Model       | Optimization | Parameters | Command                                                                                                  | Model Name              | License                                                            |
 | ----------- | ------------ | ---------- | -------------------------------------------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------ |
