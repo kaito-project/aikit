@@ -5,7 +5,7 @@ const (
 	SchemaVersion = "v2"
 
 	// LocalAIVersion is the LocalAI release used by the generator and its policies.
-	LocalAIVersion = "v4.9.0"
+	LocalAIVersion = "v4.10.0"
 
 	// LegacyLocalAIVersion is the LocalAI release retained for compatibility backends.
 	LegacyLocalAIVersion = "v3.12.1"
@@ -83,8 +83,8 @@ const (
 var LocalAISource = SourcePin{
 	Repository: "https://github.com/mudler/LocalAI",
 	Path:       "backend/index.yaml",
-	Revision:   "f7ad3f70eb5d8a0ddf80e08557f0d7df28cf032e",
-	SHA256:     "sha256:4a4635559a9e726a384a35eebc779da86235a7796821ea56edc01082ff3f0a28",
+	Revision:   "7ad0cbf259f0c7bf9920fe2438fc3630ecd6c672",
+	SHA256:     "sha256:14b21ebda878655dab335283dbd0b105a3755dbfdd362d87bd36974b519bc4a4",
 }
 
 // SourcePin identifies and verifies an upstream catalog source.

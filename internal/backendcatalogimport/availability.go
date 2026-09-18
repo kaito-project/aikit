@@ -20,6 +20,22 @@ var reviewedUnavailableSources = []unavailableSourcePolicy{
 		SourceRef:  "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-gpu-rocm-hipblas-turboquant",
 		ErrorClass: resolutionErrorNotFound,
 	},
+	{
+		Version:    LocalAIVersion,
+		Family:     "bonsai",
+		Selector:   selectorNVIDIA,
+		Target:     "cuda12-bonsai",
+		SourceRef:  "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-gpu-nvidia-cuda-12-bonsai",
+		ErrorClass: resolutionErrorNotFound,
+	},
+	{
+		Version:    LocalAIVersion,
+		Family:     "bonsai",
+		Selector:   selectorNVIDIACUDA12,
+		Target:     "cuda12-bonsai",
+		SourceRef:  "quay.io/go-skynet/local-ai-backends:" + LocalAIVersion + "-gpu-nvidia-cuda-12-bonsai",
+		ErrorClass: resolutionErrorNotFound,
+	},
 }
 
 func validateUnavailableSourcePolicies(policies []unavailableSourcePolicy) error {
