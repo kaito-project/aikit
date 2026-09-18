@@ -1,7 +1,7 @@
 #syntax=ghcr.io/kaito-project/aikit/aikit:dev
 # Requires a frontend with LocalAI v4.10.0 or newer.
 apiVersion: v1alpha1
-runtime: cpu
+runtime: applesilicon
 backends:
   - llama-cpp
 models:
@@ -14,6 +14,7 @@ models:
 config: |
   - name: qwen3-tts
     backend: llama-cpp
+    gpu_layers: 99
     known_usecases:
       - tts
     parameters:
