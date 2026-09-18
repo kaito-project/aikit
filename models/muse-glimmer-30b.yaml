@@ -1,0 +1,38 @@
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
+apiVersion: v1alpha1
+debug: true
+runtime: cuda
+models:
+  - name: muse-glimmer-30b
+    source: https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF/resolve/a0532f7263ee67f1e0a5f5c5fdcd50dd62fc9aa4/muse-glimmer-30B-kquant-17gb.gguf
+    sha256: "7e9b74b7c8875e9e265695df9613bf6290f2392e479ce740495a129019c488d8"
+  - name: muse-glimmer-30b-mmproj
+    source: https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF/resolve/a0532f7263ee67f1e0a5f5c5fdcd50dd62fc9aa4/mmproj-kquant.gguf
+    sha256: "f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6"
+  - name: muse-glimmer-30b-dflash
+    source: https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF/resolve/a0532f7263ee67f1e0a5f5c5fdcd50dd62fc9aa4/dflash-kquant.gguf
+    sha256: "27d9a805fa29b943cfb6ad4843367cd4eaaaf06bd452d8cc3e00a2cd18a677bc"
+config: |
+  - name: muse-glimmer-30b
+    backend: llama-cpp
+    flash_attention: "on"
+    draft_model: dflash-kquant.gguf
+    function:
+      automatic_tool_parsing_fallback: true
+      grammar:
+        disable: true
+    known_usecases:
+      - chat
+      - vision
+    mmproj: mmproj-kquant.gguf
+    options:
+      - use_jinja:true
+      - spec_type:draft-dflash
+      - spec_n_max:15
+    parameters:
+      model: muse-glimmer-30B-kquant-17gb.gguf
+      temperature: 1.0
+      top_k: 64
+      top_p: 0.95
+    template:
+      use_tokenizer_template: true
