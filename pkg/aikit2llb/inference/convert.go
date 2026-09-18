@@ -15,13 +15,27 @@ import (
 
 const standardRuntimeCABundlePath = "/etc/ssl/certs/ca-certificates.crt"
 
+// ConvertOption configures model source resolution during conversion.
+type ConvertOption func(*convertOptions)
+
+type convertOptions struct {
+	ociResolver OCIResolver
+}
+
+// WithOCIResolver enables native registry blob downloads through a BuildKit gateway.
+func WithOCIResolver(resolver OCIResolver) ConvertOption {
+	return func(opts *convertOptions) {
+		opts.ociResolver = resolver
+	}
+}
+
 // Aikit2LLB converts an InferenceConfig to an LLB state.
-func Aikit2LLB(c *config.InferenceConfig, targetPlatform *specs.Platform) (llb.State, *specs.Image, error) {
-	return Aikit2LLBWithPlatforms(c, targetPlatform, targetPlatform)
+func Aikit2LLB(c *config.InferenceConfig, targetPlatform *specs.Platform, opts ...ConvertOption) (llb.State, *specs.Image, error) {
+	return Aikit2LLBWithPlatforms(c, targetPlatform, targetPlatform, opts...)
 }
 
 // Aikit2LLBWithPlatforms converts an InferenceConfig using separate build and target platforms.
-func Aikit2LLBWithPlatforms(c *config.InferenceConfig, buildPlatform, targetPlatform *specs.Platform) (llb.State, *specs.Image, error) {
+func Aikit2LLBWithPlatforms(c *config.InferenceConfig, buildPlatform, targetPlatform *specs.Platform, opts ...ConvertOption) (llb.State, *specs.Image, error) {
 	if targetPlatform == nil {
 		return llb.State{}, nil, fmt.Errorf("target platform is required")
 	}
@@ -31,11 +45,11 @@ func Aikit2LLBWithPlatforms(c *config.InferenceConfig, buildPlatform, targetPlat
 		return llb.State{}, nil, err
 	}
 
-	return aikit2LLBWithResolvedBackend(c, buildPlatform, targetPlatform, backend)
+	return aikit2LLBWithResolvedBackend(c, buildPlatform, targetPlatform, backend, opts...)
 }
 
 // Aikit2LLBWithBackend converts an InferenceConfig using a pre-resolved immutable backend plan.
-func Aikit2LLBWithBackend(c *config.InferenceConfig, buildPlatform, targetPlatform *specs.Platform, backend backendcatalog.Resolution) (llb.State, *specs.Image, error) {
+func Aikit2LLBWithBackend(c *config.InferenceConfig, buildPlatform, targetPlatform *specs.Platform, backend backendcatalog.Resolution, opts ...ConvertOption) (llb.State, *specs.Image, error) {
 	if targetPlatform == nil {
 		return llb.State{}, nil, fmt.Errorf("target platform is required")
 	}
@@ -47,12 +61,16 @@ func Aikit2LLBWithBackend(c *config.InferenceConfig, buildPlatform, targetPlatfo
 		return llb.State{}, nil, fmt.Errorf("pre-resolved backend plan does not match the embedded catalog")
 	}
 
-	return aikit2LLBWithResolvedBackend(c, buildPlatform, targetPlatform, backend)
+	return aikit2LLBWithResolvedBackend(c, buildPlatform, targetPlatform, backend, opts...)
 }
 
-func aikit2LLBWithResolvedBackend(c *config.InferenceConfig, buildPlatform, targetPlatform *specs.Platform, backend backendcatalog.Resolution) (llb.State, *specs.Image, error) {
+func aikit2LLBWithResolvedBackend(c *config.InferenceConfig, buildPlatform, targetPlatform *specs.Platform, backend backendcatalog.Resolution, opts ...ConvertOption) (llb.State, *specs.Image, error) {
 	if buildPlatform == nil {
 		buildPlatform = targetPlatform
+	}
+	var options convertOptions
+	for _, opt := range opts {
+		opt(&options)
 	}
 
 	var merge llb.State
@@ -69,7 +87,7 @@ func aikit2LLBWithResolvedBackend(c *config.InferenceConfig, buildPlatform, targ
 		state, merge = installRunnerEntrypoint(c, backend, state, merge)
 	} else {
 		// Standard mode materializes models and config on an isolated branch.
-		state, merge, err = copyModels(c, base, buildBase, *buildPlatform, *targetPlatform)
+		state, merge, err = copyModels(c, base, buildBase, *buildPlatform, *targetPlatform, WithOCIResolver(options.ociResolver))
 		if err != nil {
 			return state, nil, err
 		}
@@ -134,7 +152,11 @@ func writeConfig(c *config.InferenceConfig, base llb.State, s llb.State, platfor
 }
 
 // copyModels copies models to the image and writes the config.
-func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, buildPlatform, targetPlatform specs.Platform) (llb.State, llb.State, error) {
+func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, buildPlatform, targetPlatform specs.Platform, opts ...ConvertOption) (llb.State, llb.State, error) {
+	var options convertOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
 	savedState := s
 	localSources := make([]string, 0, len(c.Models))
 	for _, model := range c.Models {
@@ -150,7 +172,11 @@ func copyModels(c *config.InferenceConfig, base llb.State, s llb.State, buildPla
 		if _, err := url.ParseRequestURI(model.Source); err == nil {
 			switch {
 			case strings.HasPrefix(model.Source, "oci://"):
-				s = handleOCI(model.Source, s, buildPlatform, targetPlatform)
+				if options.ociResolver != nil {
+					s = copyOCIModel(model.Source, s, targetPlatform, options.ociResolver)
+				} else {
+					s = handleOCI(model.Source, s, buildPlatform, targetPlatform)
+				}
 			case strings.HasPrefix(model.Source, "http://"), strings.HasPrefix(model.Source, "https://"):
 				s = handleHTTP(model.Source, model.Name, model.SHA256, s)
 			case strings.HasPrefix(model.Source, "huggingface://"):

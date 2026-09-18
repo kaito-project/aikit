@@ -16,7 +16,6 @@ import (
 	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/packager"
 	"github.com/kaito-project/aikit/pkg/utils"
-	controlapi "github.com/moby/buildkit/api/services/control"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/exporter/containerimage/exptypes"
 	d2llb "github.com/moby/buildkit/frontend/dockerfile/dockerfile2llb"
@@ -37,7 +36,6 @@ const (
 	keyTarget                = "target"
 	keyOutput                = "output"
 	keyTargetPlatform        = "platform"
-	keyCacheImports          = "cache-imports"
 	nvidiaUUIDPattern        = `[A-Fa-f0-9]{8}-(?:[A-Fa-f0-9]{4}-){3}[A-Fa-f0-9]{12}`
 	maximumBackendNameLength = 128
 	supportedRuntimeValues   = `"cpu", "cuda", "cuda-12", "cuda-13", "rocm", and "applesilicon"`
@@ -95,7 +93,7 @@ func buildFineTune(ctx context.Context, c client.Client, cfg *config.FineTuneCon
 	finetuneOpts.BuildSessionID = buildOpts.SessionID
 
 	// Parse cache imports
-	cacheImports, err := parseCacheOptions(opts)
+	cacheImports, err := utils.ParseCacheImports(opts)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to parse cache import options")
 	}
@@ -129,7 +127,7 @@ func buildInference(ctx context.Context, c client.Client, cfg *config.InferenceC
 	opts := buildOpts.Opts
 
 	// Parse cache imports
-	cacheImports, err := parseCacheOptions(opts)
+	cacheImports, err := utils.ParseCacheImports(opts)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to parse cache import options")
 	}
@@ -143,6 +141,7 @@ func buildInference(ctx context.Context, c client.Client, cfg *config.InferenceC
 	}
 
 	buildPlatforms := []specs.Platform{defaultBuildPlatform}
+	ociResolver := inference.NewOCIResolver(c, defaultBuildPlatform, cacheImports)
 
 	targetPlatforms := []*specs.Platform{nil}
 	if platform, exists := opts[keyTargetPlatform]; exists && platform != "" {
@@ -181,7 +180,7 @@ func buildInference(ctx context.Context, c client.Client, cfg *config.InferenceC
 						MultiPlatformRequested: isMultiPlatform,
 						CacheImports:           cacheImports,
 					},
-				})
+				}, inference.WithOCIResolver(ociResolver))
 				if err != nil {
 					return errors.Wrap(err, "failed to build image")
 				}
@@ -248,6 +247,7 @@ func buildImage(
 	cfg *config.InferenceConfig,
 	backend backendcatalog.Resolution,
 	convertOpts *d2llb.ConvertOpt,
+	inferenceOpts ...inference.ConvertOption,
 ) (*buildResult, error) {
 	result := buildResult{
 		Platform:      convertOpts.TargetPlatform,
@@ -255,7 +255,7 @@ func buildImage(
 	}
 
 	buildPlatform := buildPlatformFromConvertOpt(convertOpts)
-	state, image, err := inference.Aikit2LLBWithBackend(cfg, &buildPlatform, convertOpts.TargetPlatform, backend)
+	state, image, err := inference.Aikit2LLBWithBackend(cfg, &buildPlatform, convertOpts.TargetPlatform, backend, inferenceOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -893,19 +893,4 @@ func parsePlatforms(v string) ([]*specs.Platform, error) {
 		pp = append(pp, &p)
 	}
 	return pp, nil
-}
-
-// parseCacheOptions handles given cache imports.
-func parseCacheOptions(opts map[string]string) ([]client.CacheOptionsEntry, error) {
-	var cacheImports []client.CacheOptionsEntry
-	if cacheImportsStr := opts[keyCacheImports]; cacheImportsStr != "" {
-		var cacheImportsUM []*controlapi.CacheOptionsEntry
-		if err := json.Unmarshal([]byte(cacheImportsStr), &cacheImportsUM); err != nil {
-			return nil, errors.Wrapf(err, "failed to unmarshal %s (%q)", keyCacheImports, cacheImportsStr)
-		}
-		for _, um := range cacheImportsUM {
-			cacheImports = append(cacheImports, client.CacheOptionsEntry{Type: um.Type, Attrs: um.Attrs})
-		}
-	}
-	return cacheImports, nil
 }
