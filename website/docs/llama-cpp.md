@@ -15,7 +15,27 @@ Exact runtime, platform, and status availability is defined by the catalog embed
 
 ## Qwen3-TTS
 
-The [Qwen3-TTS aikitfile](https://github.com/kaito-project/aikit/blob/main/models/qwen3-tts-1.7b-base.yaml) packages the 1.7B Base model at Q4_K_M and its Q8_0 audio projector. It uses the development frontend with LocalAI v4.10.0 and defaults to experimental Apple Silicon GPU acceleration. Both downloads are pinned by revision and SHA-256.
+The [Qwen3-TTS aikitfile](https://github.com/kaito-project/aikit/blob/main/models/qwen3-tts-1.7b-base.yaml) packages the 1.7B Base model at Q4_K_M and its Q8_0 audio projector. It uses the development frontend with LocalAI v4.10.0 and defaults to NVIDIA CUDA. The same spec supports experimental Apple Silicon GPU acceleration with a runtime build argument. Both downloads are pinned by revision and SHA-256.
+
+The Base model requires reference audio. Place a short WAV voice recording at `reference.wav` in the repository root before starting either server below.
+
+### NVIDIA CUDA
+
+On a Linux AMD64 host with an NVIDIA GPU and [NVIDIA Container Toolkit](gpu.md#nvidia), build and run the image from the repository root:
+
+```bash
+docker buildx build --load --platform linux/amd64 \
+  --build-arg runtime=cuda \
+  -t qwen3-tts:cuda -f models/qwen3-tts-1.7b-base.yaml .
+
+docker run -d --rm --name qwen3-tts \
+  --gpus all \
+  -p 127.0.0.1:8080:8080 \
+  --mount "type=bind,source=$(pwd)/reference.wav,target=/models/reference.wav,readonly" \
+  qwen3-tts:cuda
+```
+
+### Apple Silicon
 
 Start a Podman machine with [Apple Silicon GPU support](gpu.md#apple-silicon-experimental) and install BuildKit's `buildctl` CLI. From the repository root, run a temporary BuildKit daemon in Podman, build the ARM64 image, and load it into Podman:
 
@@ -27,6 +47,7 @@ buildctl --addr podman-container://aikit-buildkit build \
   --frontend gateway.v0 \
   --opt source=ghcr.io/kaito-project/aikit/aikit:dev \
   --opt filename=models/qwen3-tts-1.7b-base.yaml \
+  --opt build-arg:runtime=applesilicon \
   --opt platform=linux/arm64 \
   --local context=. --local dockerfile=. \
   --output type=docker,name=localhost/qwen3-tts:applesilicon,dest=/tmp/qwen3-tts-applesilicon.tar
@@ -35,7 +56,7 @@ podman load -i /tmp/qwen3-tts-applesilicon.tar
 podman stop aikit-buildkit
 ```
 
-The Base model requires reference audio. Place a short WAV voice recording at `reference.wav` in the repository root, then mount it when starting the server:
+Start the server with the reference recording mounted:
 
 ```bash
 podman run -d --rm --name qwen3-tts \
@@ -45,7 +66,9 @@ podman run -d --rm --name qwen3-tts \
   localhost/qwen3-tts:applesilicon --debug --config-file=/config.yaml
 ```
 
-After the server starts, generate speech through LocalAI's `/v1/audio/speech` endpoint. The `voice` value is the reference file's path inside the container:
+### Generate speech
+
+After either server starts, generate speech through LocalAI's `/v1/audio/speech` endpoint. The `voice` value is the reference file's path inside the container:
 
 ```bash
 curl --fail http://localhost:8080/v1/audio/speech \
