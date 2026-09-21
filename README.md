@@ -83,7 +83,7 @@ Text images support AMD64 and ARM64 and include a CPU backend. Docker selects th
 docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:4b
 ```
 
-FLUX.2 uses the experimental CUDA 12 backend plan on AMD64 and downloads weights from Hugging Face on first use. See [image generation requirements](https://kaito-project.github.io/aikit/docs/premade-models#image-generation).
+FLUX.2 uses the experimental CUDA 12 backend plan on AMD64 and downloads weights from Hugging Face on first use. See [image generation requirements](https://kaito-project.github.io/aikit/docs/premade-models#nvidia-cuda).
 
 ### Apple Silicon, experimental
 
