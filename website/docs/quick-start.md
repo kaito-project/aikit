@@ -4,10 +4,6 @@ title: Quick start
 
 Start with Qwen 3.5 4B for text chat on a CPU. Its Q4_K_M weights are about 2.74 GB; the runtime and context require additional memory.
 
-:::note
-The Qwen 3.5 image is pending staging validation and publication. The commands below use its planned tag. Until publication, use `ghcr.io/kaito-project/aikit/llama3.2:3b` with API model ID `llama-3.2-3b-instruct`. See the [model release process](./release.md#predefined-models).
-:::
-
 ```bash
 docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:4b
 ```

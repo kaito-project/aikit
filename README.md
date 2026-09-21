@@ -37,9 +37,6 @@ AIKit offers three main capabilities:
 
 Start with Qwen 3.5 4B for text chat. Its Q4_K_M weights are about 2.74 GB; allow additional memory for the runtime and context.
 
-> [!NOTE]
-> The new Qwen, Gemma 4, Devstral Small 2, and FLUX.2 images are pending staging validation and publication. The commands below use their planned tags. Until publication, use `ghcr.io/kaito-project/aikit/llama3.2:3b` with API model ID `llama-3.2-3b-instruct`. See the [model release process](./website/docs/release.md#predefined-models).
-
 ```bash
 docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:4b
 ```

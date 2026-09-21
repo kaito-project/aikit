@@ -6,10 +6,6 @@ AIKit comes with pre-made models that you can use out-of-the-box!
 
 If it doesn't include a specific model, you can always [create your own images](./create-images.md), and host in a container registry of your choice!
 
-:::note
-The new Qwen, Gemma 4, Devstral Small 2, and FLUX.2 presets are pending staging validation and image publication. Their commands below show planned tags. GPT-OSS recipe fixes also need validation and republishing. Use the existing Llama and Phi images until then. See the [model release process](./release.md#predefined-models).
-:::
-
 ## CPU
 
 :::note
