@@ -59,10 +59,10 @@ config: |
       model: Llama-3.2-1B-Instruct.Q4_K_M.gguf
     context_size: 1024
     template:
-      chat_message: "chatMsg"
-      function: "function"
-      chat: "chat"
-      completion: "completion"
+      chat_message: chatMsg
+      function: function
+      chat: chat
+      completion: completion
     stopwords:
       - <|im_end|>
       - <dummy32000>

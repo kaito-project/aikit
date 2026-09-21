@@ -59,10 +59,10 @@ config: |
     context_size: 1024
     f16: true
     template:
-      chat_message: "chatMsg"
-      function: "function"
-      chat: "chat"
-      completion: "completion"
+      chat_message: chatMsg
+      function: function
+      chat: chat
+      completion: completion
     stopwords:
       - <|im_end|>
       - <dummy32000>
