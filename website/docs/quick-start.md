@@ -1,34 +1,38 @@
 ---
-title: Quick Start
+title: Quick start
 ---
 
-You can get started with AIKit quickly on your local machine without a GPU!
+Start with Qwen 3.5 4B for text chat on a CPU. Its Q4_K_M weights are about 2.74 GB; the runtime and context require additional memory.
+
+:::note
+The Qwen 3.5 image is pending staging validation and publication. The commands below use its planned tag. Until publication, use `ghcr.io/kaito-project/aikit/llama3.2:3b` with API model ID `llama-3.2-3b-instruct`. See the [model release process](./release.md#predefined-models).
+:::
 
 ```bash
-docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.1:8b
+docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:4b
 ```
 
 After running this, navigate to [http://localhost:8080/chat](http://localhost:8080/chat) to access the WebUI.
 
 ## API
 
-AIKit provides an OpenAI API compatible endpoint, so you can use any OpenAI API compatible client to send requests to open LLMs!
+AIKit provides an OpenAI-compatible endpoint.
 
 For example:
 
 ```bash
 curl http://localhost:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
-    "model": "llama-3.1-8b-instruct",
+    "model": "qwen-3.5-4b",
     "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
   }'
 ```
 
-Output should be similar to:
+Example response:
 
 ```jsonc
 {
   // ...
-    "model": "llama-3.1-8b-instruct",
+    "model": "qwen-3.5-4b",
     "choices": [
         {
             "index": 0,
@@ -43,7 +47,7 @@ Output should be similar to:
 }
 ```
 
-That's it! 🎉 API is OpenAI compatible so this is a drop-in replacement for any OpenAI API compatible client.
+This preset serves text and defaults to direct answers with reasoning disabled. See [pre-made models](./premade-models.md) for larger models and GPU options.
 
 ## Demo
 
@@ -51,8 +55,6 @@ https://www.youtube.com/watch?v=O0AOnxXp-o4
 
 ## What's next?
 
-👉 If you are interested in other pre-made models (such as Gemma, Mixtral or Phi), please refer to [Pre-made models](./premade-models.md).
-
-👉  If you are interested in learning more about how to create your own custom model images, please refer to [Creating Model Images](./create-images.md).
-
-👉  If you are interested in fine tuning a model with domain-specific knowledge, please refer to [Fine Tuning](./fine-tune.md).
+- Choose another [pre-made model](./premade-models.md), such as Gemma 4, Devstral Small 2, or GPT-OSS.
+- [Create a custom model image](./create-images.md).
+- [Fine-tune a model](./fine-tune.md) with domain-specific knowledge.

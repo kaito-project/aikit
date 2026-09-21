@@ -1,0 +1,66 @@
+{
+  "qwen-3.5-2b": {
+    "image": "qwen3.5",
+    "tag": "2b"
+  },
+  "qwen-3.5-4b": {
+    "image": "qwen3.5",
+    "tag": "4b"
+  },
+  "qwen-3.5-9b": {
+    "image": "qwen3.5",
+    "tag": "9b"
+  },
+  "qwen-3.8-27b": {
+    "image": "qwen3.8",
+    "tag": "27b"
+  },
+  "gemma-4-e2b-instruct": {
+    "image": "gemma4",
+    "tag": "e2b",
+    "alias": "e2b-instruct"
+  },
+  "devstral-small-2-24b-instruct": {
+    "image": "devstral-small2",
+    "tag": "24b",
+    "alias": "24b-instruct"
+  },
+  "gpt-oss-20b": {
+    "image": "gpt-oss",
+    "tag": "20b"
+  },
+  "gpt-oss-120b": {
+    "image": "gpt-oss",
+    "tag": "120b"
+  },
+  "flux-2-klein-4b": {
+    "image": "flux2",
+    "tag": "klein-4b",
+    "platforms": "linux/amd64"
+  },
+  "llama-3.2-1b-instruct": {
+    "image": "llama3.2",
+    "tag": "1b",
+    "alias": "1b-instruct"
+  },
+  "llama-3.2-3b-instruct": {
+    "image": "llama3.2",
+    "tag": "3b",
+    "alias": "3b-instruct"
+  },
+  "llama-3.1-8b-instruct": {
+    "image": "llama3.1",
+    "tag": "8b",
+    "alias": "8b-instruct"
+  },
+  "llama-3.3-70b-instruct": {
+    "image": "llama3.3",
+    "tag": "70b",
+    "alias": "70b-instruct"
+  },
+  "phi-4-14b-instruct": {
+    "image": "phi4",
+    "tag": "14b",
+    "alias": "14b-instruct"
+  }
+}

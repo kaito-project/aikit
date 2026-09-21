@@ -5,14 +5,17 @@ runtime: cuda
 backends:
   - diffusers
 config: |
-  - name: flux-1-dev
+  - name: flux-2-klein-4b
     backend: diffusers
     parameters:
-      model: ChuckMcSneed/FLUX.1-dev
+      model: black-forest-labs/FLUX.2-klein-4B
     diffusers:
-      cfg_scale: 0
       cuda: true
       enable_parameters: num_inference_steps
-      pipeline_type: FluxPipeline
-    f16: true
-    step: 25
+      pipeline_type: Flux2KleinPipeline
+    cfg_scale: 1.0
+    step: 4
+    low_vram: true
+    f16: false
+    options:
+      - "torch_dtype:bf16"
