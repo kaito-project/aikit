@@ -6,7 +6,9 @@ Runner images are reusable AIKit images that download models at runtime instead 
 
 Runner mode is available only for a resolved catalog entry with an explicit `runnerProfile`. The profile selects a reviewed AIKit adapter for model download, cache layout, input validation, generated configuration, and startup behavior. It is an internal catalog field, not a value users can add to an aikitfile.
 
-A backend being installable in a standard model image does not make it runner-capable. When `backends` contains one family and `models` is empty, AIKit requests runner mode and fails if that exact family, runtime, and platform tuple has `runnerProfile: unsupported`. There is no silent switch back to standard mode or to a different runner.
+A backend being installable in a standard model image does not make it runner-capable. When `runner` is omitted, `backends` contains one family, and `models` is empty, AIKit requests runner mode and fails if that exact family, runtime, and platform tuple has `runnerProfile: unsupported`. There is no silent switch back to standard mode or to a different runner.
+
+Set `runner: false` for a preset that should start LocalAI directly with its baked `config`, such as FLUX.2 Klein. This selects standard mode without requiring embedded model files or a model argument at startup. `runner: true` requests runner mode explicitly and requires one backend, no embedded models, and an audited runner profile. Adding a baked `config` alone does not change automatic mode selection.
 
 ## Pre-built Runner Images
 

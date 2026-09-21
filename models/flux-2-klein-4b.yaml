@@ -2,6 +2,7 @@
 apiVersion: v1alpha1
 debug: true
 runtime: cuda-12
+runner: false
 backends:
   - diffusers
 config: |

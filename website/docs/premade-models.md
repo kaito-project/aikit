@@ -54,7 +54,7 @@ Use `qwen-3.5-4b` as the model in requests to `/v1/chat/completions`. Substitute
 
 FLUX.2 Klein 4B uses the `diffusers` backend on NVIDIA CUDA, Linux AMD64 only. The preset uses BF16, CPU offloading, four sampling steps, and guidance scale 1.0, following the [upstream example](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B#usage). Upstream reports about 13 GB VRAM with offloading; allow host memory and disk space for the full pipeline as well.
 
-The recipe selects `runtime: cuda-12`, which uses the catalog's experimental LocalAI v4.10.0 Diffusers plan. The generic `cuda` runtime selects the older v3.12.1 plan. Validate the explicit CUDA 12 plan on the target GPU before publication.
+The recipe selects `runtime: cuda-12`, which uses the catalog's experimental LocalAI v4.10.0 Diffusers plan. It sets `runner: false` so LocalAI starts with the baked configuration and no model argument. The generic `cuda` runtime selects the older v3.12.1 plan. Validate the explicit CUDA 12 plan on the target GPU before publication.
 
 ```bash
 docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/flux2:klein-4b

@@ -4,6 +4,7 @@ type InferenceConfig struct {
 	APIVersion   string   `yaml:"apiVersion"`
 	Debug        bool     `yaml:"debug"`
 	Runtime      string   `yaml:"runtime"`
+	Runner       *bool    `yaml:"runner,omitempty"`
 	Backends     []string `yaml:"backends"`
 	Models       []Model  `yaml:"models"`
 	Config       string   `yaml:"config"`

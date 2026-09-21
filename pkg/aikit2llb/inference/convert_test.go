@@ -2,6 +2,7 @@ package inference
 
 import (
 	"context"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -17,6 +18,69 @@ const (
 	testInferenceModelName   = "test"
 	testInferenceModelSource = "model.gguf"
 )
+
+func TestAikit2LLBFluxPreset(t *testing.T) {
+	data, err := os.ReadFile("../../../models/flux-2-klein-4b.yaml")
+	if err != nil {
+		t.Fatalf("read FLUX preset: %v", err)
+	}
+	cfg, _, err := config.NewFromBytes(data)
+	if err != nil {
+		t.Fatalf("parse FLUX preset: %v", err)
+	}
+	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
+	backend, err := ResolveBackend(cfg, *platform)
+	if err != nil {
+		t.Fatalf("resolve FLUX backend: %v", err)
+	}
+	if backend.Family != utils.BackendDiffusers || backend.Version != testLocalAIVersion || backend.TargetProfile != backendcatalog.TargetProfileCUDA12 {
+		t.Fatalf("FLUX backend = %s %s %s, want current Diffusers CUDA 12 plan", backend.Family, backend.Version, backend.TargetProfile)
+	}
+
+	state, img, err := Aikit2LLB(cfg, platform)
+	if err != nil {
+		t.Fatalf("convert FLUX preset: %v", err)
+	}
+	if !reflect.DeepEqual(img.Config.Entrypoint, []string{localAIEntrypointCommand}) {
+		t.Errorf("entrypoint = %v, want LocalAI without a runner model argument", img.Config.Entrypoint)
+	}
+	if want := []string{imageTestDebugArgument, "--config-file=/config.yaml"}; !reflect.DeepEqual(img.Config.Cmd, want) {
+		t.Errorf("command = %v, want %v", img.Config.Cmd, want)
+	}
+	if img.Config.Labels["ai.kaito.aikit.runner"] != "" {
+		t.Error("FLUX preset is labeled as a runner")
+	}
+
+	definition, err := state.Marshal(context.Background())
+	if err != nil {
+		t.Fatalf("marshal FLUX definition: %v", err)
+	}
+	foundConfig := false
+	for _, graphOp := range decodeInferenceDefinition(t, definition) {
+		file := graphOp.op.GetFile()
+		if file == nil {
+			continue
+		}
+		for _, action := range file.Actions {
+			mkfile := action.GetMkfile()
+			if mkfile == nil {
+				continue
+			}
+			switch mkfile.Path {
+			case "/config.yaml":
+				foundConfig = true
+				if string(mkfile.Data) != cfg.Config {
+					t.Error("baked FLUX configuration differs from the preset")
+				}
+			case runnerEntrypointPath:
+				t.Error("FLUX preset unexpectedly installs the runner entrypoint")
+			}
+		}
+	}
+	if !foundConfig {
+		t.Fatal("FLUX image definition is missing its baked configuration")
+	}
+}
 
 func TestAikit2LLBWithPlatformsSeparatesHelperAndTargetPlatforms(t *testing.T) {
 	buildPlatform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformARM64}
