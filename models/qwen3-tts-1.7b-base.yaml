@@ -1,0 +1,24 @@
+#syntax=ghcr.io/kaito-project/aikit/aikit:v0.23.0
+# Requires a frontend with LocalAI v4.10.0 or newer.
+# Use --build-arg runtime=applesilicon for Apple Silicon.
+apiVersion: v1alpha1
+runtime: cuda
+backends:
+  - llama-cpp
+models:
+  - name: Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf
+    source: https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF/resolve/ca27d74bc954b73dadab5b71ca265d87fc861a7c/Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf
+    sha256: "8d18c94acb2addd042f97da63c98be144eafa76d0d9495177eab65130cf85129"
+  - name: mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf
+    source: https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF/resolve/ca27d74bc954b73dadab5b71ca265d87fc861a7c/mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf
+    sha256: "6fd65188839bcd6ecc91b277ad471e22a0edfada4699a0fe82f1165c18cfcce2"
+config: |
+  - name: qwen3-tts
+    backend: llama-cpp
+    gpu_layers: 99
+    known_usecases:
+      - tts
+    parameters:
+      model: Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf
+    mmproj: mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf
+    context_size: 4096
