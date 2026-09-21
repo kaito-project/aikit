@@ -57,12 +57,12 @@ printf '%s\n' "$response" | jq -e \
   (.usage.completion_tokens > 0 and .usage.completion_tokens <= $max_tokens) and
   (if $mode == "chat" then
     .choices[0].finish_reason == "stop" and
-    (.choices[0].message.content | test("(^|[^[:alpha:]])Paris([^[:alpha:]]|$)"; "i"))
+    (.choices[0].message.content | test("^[[:space:]]*Paris[.]?[[:space:]]*$"; "i"))
   else
     .choices[0].finish_reason == "tool_calls" and
     (.choices[0].message.tool_calls | length == 1) and
     .choices[0].message.tool_calls[0].type == "function" and
     .choices[0].message.tool_calls[0].function.name == "get_weather" and
     (.choices[0].message.tool_calls[0].function.arguments | fromjson | .location |
-      test("(^|[^[:alpha:]])Paris([^[:alpha:]]|$)"; "i"))
+      test("^[[:space:]]*Paris[[:space:]]*$"; "i"))
   end)'
