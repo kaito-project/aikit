@@ -204,7 +204,7 @@ jobs:
         if: always() && matrix.backend != 'qwen3-tts'
 
       - run: docker system prune -a -f --volumes || true
-        if: always() && matrix.backend != 'qwen3-tts'
+        if: always()
 
       - name: publish test artifacts
         if: always()
