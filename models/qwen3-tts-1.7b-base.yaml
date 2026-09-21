@@ -1,5 +1,6 @@
-#syntax=ghcr.io/kaito-project/aikit/aikit:dev
+#syntax=ghcr.io/kaito-project/aikit/aikit:v0.23.0
 # Requires a frontend with LocalAI v4.10.0 or newer.
+# Use --build-arg runtime=applesilicon for Apple Silicon.
 apiVersion: v1alpha1
 runtime: cuda
 backends:

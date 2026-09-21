@@ -15,7 +15,16 @@ Exact runtime, platform, and status availability is defined by the catalog embed
 
 ## Qwen3-TTS
 
-The [Qwen3-TTS aikitfile](https://github.com/kaito-project/aikit/blob/main/models/qwen3-tts-1.7b-base.yaml) packages the 1.7B Base model at Q4_K_M and its Q8_0 audio projector. It uses the development frontend with LocalAI v4.10.0 and defaults to NVIDIA CUDA. The same spec supports experimental Apple Silicon GPU acceleration with a runtime build argument. Both downloads are pinned by revision and SHA-256.
+The [Qwen3-TTS aikitfile](https://github.com/kaito-project/aikit/blob/main/models/qwen3-tts-1.7b-base.yaml) packages the 1.7B Base model at Q4_K_M and its Q8_0 audio projector. It uses AIKit v0.23.0 with LocalAI v4.10.0 and defaults to NVIDIA CUDA. The same spec supports experimental Apple Silicon GPU acceleration with the `runtime=applesilicon` build argument. Both downloads are pinned by revision and SHA-256.
+
+The manual [model publishing workflow](https://github.com/kaito-project/aikit/actions/workflows/update-models.yaml) builds both variants from this spec. Set `models` to `["qwen3-tts-1.7b-base"]`, `runtime` to `["cuda", "applesilicon"]`, and leave `staging` disabled to publish:
+
+| Runtime | Image |
+| --- | --- |
+| NVIDIA CUDA | `ghcr.io/kaito-project/aikit/qwen3-tts:1.7b-base` |
+| Apple Silicon | `ghcr.io/kaito-project/aikit/applesilicon/qwen3-tts:1.7b-base` |
+
+The workflow also publishes a `:1.7b` alias for each image. Image publication requires a separate workflow run after the spec is merged.
 
 The Base model requires reference audio. Place a short WAV voice recording at `reference.wav` in the repository root before starting either server below.
 
@@ -45,7 +54,7 @@ podman run -d --rm --privileged --name aikit-buildkit \
 
 buildctl --addr podman-container://aikit-buildkit build \
   --frontend gateway.v0 \
-  --opt source=ghcr.io/kaito-project/aikit/aikit:dev \
+  --opt source=ghcr.io/kaito-project/aikit/aikit:v0.23.0 \
   --opt filename=models/qwen3-tts-1.7b-base.yaml \
   --opt build-arg:runtime=applesilicon \
   --opt platform=linux/arm64 \
