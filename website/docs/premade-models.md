@@ -11,7 +11,7 @@ If it doesn't include a specific model, you can always [create your own images](
 :::note
 AIKit supports both AMD64 and ARM64 CPUs. You can run the same command on either architecture, and Docker will automatically pull the correct image for your CPU.
 Depending on your CPU capabilities, AIKit will automatically select the most optimized instruction set.
-The GGUF presets serve text only, even when the upstream model supports image or audio inputs.
+The GGUF chat presets listed below serve text only, even when the upstream model supports image or audio inputs.
 :::
 
 | Model           | Optimization | Parameters | Command                                                                     | Model Name               | License                                                             |
