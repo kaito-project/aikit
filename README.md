@@ -57,6 +57,8 @@ curl http://localhost:8080/v1/chat/completions -H "Content-Type: application/jso
 
 The recommended presets are listed below. Image names use the prefix `ghcr.io/kaito-project/aikit/`. All recommended weights use Apache 2.0 licenses; the model links provide upstream details.
 
+Gemma 4 uses Google's [Apache 2.0 license](https://ai.google.dev/gemma/apache_2).
+
 | Model | Image | API model ID | GGUF size |
 | --- | --- | --- | --- |
 | [Qwen 3.5 2B](https://huggingface.co/Qwen/Qwen3.5-2B) | `qwen3.5:2b` | `qwen-3.5-2b` | 1.28 GB |
@@ -81,7 +83,7 @@ Text images support AMD64 and ARM64 and include a CPU backend. Docker selects th
 docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:4b
 ```
 
-FLUX.2 requires NVIDIA CUDA on AMD64 and downloads weights from Hugging Face on first use. See [image generation requirements](https://kaito-project.github.io/aikit/docs/premade-models#image-generation).
+FLUX.2 uses the experimental CUDA 12 backend plan on AMD64 and downloads weights from Hugging Face on first use. See [image generation requirements](https://kaito-project.github.io/aikit/docs/premade-models#image-generation).
 
 ### Apple Silicon, experimental
 

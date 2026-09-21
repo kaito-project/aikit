@@ -29,4 +29,4 @@ After releasing the frontend:
 
 The new Qwen, Gemma 4, Devstral Small 2, and corrected GPT-OSS recipes pin their GGUF downloads by revision and SHA-256. FLUX.2 downloads the official Hugging Face pipeline on first inference with the current Diffusers backend; that download is not revision-pinned. Include first-use download and cache behavior in staging validation.
 
-The weekly patch workflow reads canonical production tags from the same catalog. Publish newly added tags before its next scheduled run. It does not publish new presets or validate model inference. The catalog refresh alone does not establish runtime compatibility.
+The weekly patch workflow reads canonical production tags in `ghcr.io/kaito-project/aikit/` from the same catalog. Its existing scope excludes alias tags and Apple Silicon repositories; refresh those variants with a full `update-models` rebuild. Publish newly added tags before the next scheduled patch run. Weekly patching does not publish new presets or validate model inference. The catalog refresh alone does not establish runtime compatibility.

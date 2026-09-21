@@ -1,7 +1,7 @@
 #syntax=ghcr.io/kaito-project/aikit/aikit:latest
 apiVersion: v1alpha1
 debug: true
-runtime: cuda
+runtime: cuda-12
 backends:
   - diffusers
 config: |

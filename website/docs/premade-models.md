@@ -12,6 +12,8 @@ The new Qwen, Gemma 4, Devstral Small 2, and FLUX.2 presets are pending staging 
 
 Prefix each image below with `ghcr.io/kaito-project/aikit/`. API model IDs are the same across runtimes. All recommended weights use Apache 2.0 licenses; the upstream model cards are linked below.
 
+Gemma 4 uses Google's [Apache 2.0 license](https://ai.google.dev/gemma/apache_2).
+
 | Model | Image | API model ID | Quantization | GGUF size |
 | --- | --- | --- | --- | --- |
 | [Qwen 3.5 2B](https://huggingface.co/Qwen/Qwen3.5-2B) | `qwen3.5:2b` | `qwen-3.5-2b` | Q4_K_M | 1.28 GB |
@@ -52,6 +54,8 @@ Use `qwen-3.5-4b` as the model in requests to `/v1/chat/completions`. Substitute
 
 FLUX.2 Klein 4B uses the `diffusers` backend on NVIDIA CUDA, Linux AMD64 only. The preset uses BF16, CPU offloading, four sampling steps, and guidance scale 1.0, following the [upstream example](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B#usage). Upstream reports about 13 GB VRAM with offloading; allow host memory and disk space for the full pipeline as well.
 
+The recipe selects `runtime: cuda-12`, which uses the catalog's experimental LocalAI v4.10.0 Diffusers plan. The generic `cuda` runtime selects the older v3.12.1 plan. Validate the explicit CUDA 12 plan on the target GPU before publication.
+
 ```bash
 docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/flux2:klein-4b
 ```
@@ -60,7 +64,7 @@ Send image-generation requests to `/v1/images/generations` with model `flux-2-kl
 
 ## Maintained compatibility presets
 
-These presets retain their current recipes, image tags, and API IDs for existing deployments. They remain in publishing and weekly patching.
+These presets retain their current recipes, image tags, and API IDs for existing deployments. Full rebuilds refresh all published variants. Weekly patching currently covers canonical tags in the main image repository; aliases and Apple Silicon variants require a full rebuild through `update-models`.
 
 | Model | Image | API model ID | License |
 | --- | --- | --- | --- |
