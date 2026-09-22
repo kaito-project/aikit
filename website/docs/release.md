@@ -17,16 +17,8 @@ git push origin v0.1.0
 
 ## Predefined models
 
-[`models/catalog.json`](https://github.com/kaito-project/aikit/blob/main/models/catalog.json) is the active preset list for both [publishing](https://github.com/kaito-project/aikit/actions/workflows/update-models.yaml) and [weekly patching](https://github.com/kaito-project/aikit/actions/workflows/patch-models.yaml). Each entry maps a recipe filename to its image name, canonical tag, optional alias, and optional platform restriction. Retired recipes and tags must be removed from this catalog together.
+[`models/catalog.json`](https://github.com/kaito-project/aikit/blob/main/models/catalog.json) lists the active presets used by [publishing](https://github.com/kaito-project/aikit/actions/workflows/update-models.yaml) and [weekly patching](https://github.com/kaito-project/aikit/actions/workflows/patch-models.yaml).
 
-After releasing the frontend:
+After releasing the frontend, run `update-models` with `staging: true`. Set `models` to a JSON array of preset IDs, or `[]` for all active presets. Validate the staged images, then rerun with `staging: false` and the same models and runtimes to publish.
 
-1. Trigger `update-models` with `staging: true`. Set `models` to a JSON array of recipe IDs, such as `["qwen-3.5-4b", "gpt-oss-20b"]`, or `[]` for all active presets. Unknown and retired IDs are rejected. The default runtime list is `["cuda", "applesilicon"]`; FLUX.2 is CUDA-only and builds for AMD64 only.
-2. Validate the staged images on appropriate hardware. CUDA images use `ghcr.io/kaito-project/aikit/test/`; Apple Silicon images use `ghcr.io/kaito-project/aikit/test/applesilicon/`. Check model loading, `/v1/models`, chat and streaming responses, tool calls, reasoning output, and image generation where applicable. Check CPU fallback for text images and the advertised architectures. Stage the Qwen 3.5 4B quickstart before directing users to it.
-3. Confirm that the frontend's backend catalog supports the model architectures and `Flux2KleinPipeline`. The FLUX.2 preset embeds the complete Diffusers pipeline. Allow sufficient disk, host memory, and GPU memory for large presets. GPT-OSS 120B alone downloads about 63.39 GB of weights, before build layers and caches. The workflow currently uses `ubuntu-latest-16-cores`; arrange adequate runner capacity before scheduling models that exceed it.
-4. After validation, rerun `update-models` with `staging: false` for the same model and runtime selection. Production images are signed and their signatures verified by the workflow. Confirm the resulting tags and digests before directing users to them.
-5. Validate replacements before moving deployments off retired tags. Existing registry tags are retained; removing a preset from the catalog stops future rebuilds and weekly patches.
-
-The new Qwen, Gemma 4, Devstral Small 2, corrected GPT-OSS, and FLUX.2 recipes pin their downloads by revision and SHA-256. Validate FLUX.2 image generation with networking disabled to confirm the baked pipeline is complete.
-
-The weekly patch workflow reads canonical production tags in `ghcr.io/kaito-project/aikit/` from the same catalog. Its existing scope excludes alias tags and Apple Silicon repositories; refresh those variants with a full `update-models` rebuild. Publish newly added tags before the next scheduled patch run. Weekly patching does not publish new presets or validate model inference. The catalog refresh alone does not establish runtime compatibility.
+Weekly patching updates canonical tags in `ghcr.io/kaito-project/aikit/`; alias tags and Apple Silicon images require a full `update-models` rebuild.
