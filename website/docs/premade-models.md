@@ -56,7 +56,7 @@ If not being offloaded to GPU VRAM, minimum of 8GB of RAM is required for 7B mod
 
 The published `llama-cpp` model images in the NVIDIA CUDA section above use a CUDA 12 catalog plan that deliberately includes a digest-pinned CPU companion backend. When no compatible NVIDIA GPU is available, LocalAI can use that installed CPU backend. This is runtime behavior inside the selected CUDA plan, not catalog resolution silently changing to a CPU tuple.
 
-FLUX.2 Klein 4B requires NVIDIA CUDA on Linux AMD64. It uses BF16 with CPU offloading; [upstream reports about 13 GB VRAM](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B#usage). Allow host memory and disk space for the full pipeline as well.
+FLUX.2 Klein 4B requires NVIDIA CUDA on Linux AMD64 and uses BF16. A 512x512 generation on an A100 80 GB reached about 15.7 GiB of GPU memory use. The preset requests CPU offloading, but LocalAI v4.10.0 also moves the pipeline onto the GPU. Allow extra VRAM for larger images, plus host memory and disk space for the full pipeline.
 
 FLUX.2 includes the complete Diffusers pipeline, about 16 GB of model files, and loads it locally without a first-use model download. All pipeline files are pinned by revision and SHA-256.
 :::
