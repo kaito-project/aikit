@@ -7,11 +7,11 @@ models:
     promptTemplates:
       - name: chatMsg
         template: |
-          <|start_header_id|>{{if eq .RoleName \"assistant\"}}assistant{{else if eq .RoleName \"system\"}}system{{else if eq .RoleName \"tool\"}}tool{{else if eq .RoleName \"user\"}}user{{end}}<|end_header_id|>
+          <|start_header_id|>{{if eq .RoleName "assistant"}}assistant{{else if eq .RoleName "system"}}system{{else if eq .RoleName "tool"}}tool{{else if eq .RoleName "user"}}user{{end}}<|end_header_id|>
 
           {{ if .FunctionCall -}}
           Function call:
-          {{ else if eq .RoleName \"tool\" -}}
+          {{ else if eq .RoleName "tool" -}}
           Function response:
           {{ end -}}
           {{ if .Content -}}
@@ -45,12 +45,12 @@ config: |
     backend: llama
     parameters:
       model: llama3.2
-    context_size: 8192
+    context_size: 1024
     template:
-      chat_message: \"chatMsg\"
-      function: \"function\"
-      chat: \"chat\"
-      completion: \"completion\"
+      chat_message: "chatMsg"
+      function: "function"
+      chat: "chat"
+      completion: "completion"
     stopwords:
       - <|im_end|>
       - <dummy32000>

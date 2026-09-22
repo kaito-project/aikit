@@ -1,0 +1,79 @@
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
+apiVersion: v1alpha1
+debug: true
+runtime: cuda-12
+backends:
+  - diffusers
+models:
+  - name: flux-2-klein-4b/LICENSE.md
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/LICENSE.md
+    sha256: ca02bc51900ab07789d1b70283329e7137f5af98f5161c23a1c81fc38a4af1fe
+  - name: flux-2-klein-4b/model_index.json
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/model_index.json
+    sha256: 51a76cb1cf3ed37423a1128c79c22faee8e6fbe7f5aaeb737f0a258930dbaac0
+  - name: flux-2-klein-4b/scheduler/scheduler_config.json
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/scheduler/scheduler_config.json
+    sha256: 067afb012cef64553a763447d1efd93daeffcc0123ca7e25b09f8de20b90762e
+  - name: flux-2-klein-4b/text_encoder/config.json
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/text_encoder/config.json
+    sha256: 214b4c29a0d975e9fddf9994a5673f22cb2c4c5750352f9227c2c3251ebeab40
+  - name: flux-2-klein-4b/text_encoder/generation_config.json
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/text_encoder/generation_config.json
+    sha256: 4347b1aeed2b2b78bc059920a0b7f5fec71482e1344952b76d7665d638d71f13
+  - name: flux-2-klein-4b/text_encoder/model-00001-of-00002.safetensors
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/text_encoder/model-00001-of-00002.safetensors
+    sha256: 8c0506e7f4936fa7e26183a4fd8da4e2bdbc5990ba64ae441f965d51228f36ea
+  - name: flux-2-klein-4b/text_encoder/model-00002-of-00002.safetensors
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/text_encoder/model-00002-of-00002.safetensors
+    sha256: 82f2bd839378541b0557bfabaf37c7d3d637071fdcb73302dedd7cf61162ce07
+  - name: flux-2-klein-4b/text_encoder/model.safetensors.index.json
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/text_encoder/model.safetensors.index.json
+    sha256: 06b3d5319b6d76d1a4a2433419180016cfd54ed62d086a5e6567a809f8c82634
+  - name: flux-2-klein-4b/tokenizer/added_tokens.json
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/tokenizer/added_tokens.json
+    sha256: c0284b582e14987fbd3d5a2cb2bd139084371ed9acbae488829a1c900833c680
+  - name: flux-2-klein-4b/tokenizer/chat_template.jinja
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/tokenizer/chat_template.jinja
+    sha256: a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8
+  - name: flux-2-klein-4b/tokenizer/merges.txt
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/tokenizer/merges.txt
+    sha256: 8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5
+  - name: flux-2-klein-4b/tokenizer/special_tokens_map.json
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/tokenizer/special_tokens_map.json
+    sha256: 76862e765266b85aa9459767e33cbaf13970f327a0e88d1c65846c2ddd3a1ecd
+  - name: flux-2-klein-4b/tokenizer/tokenizer.json
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/tokenizer/tokenizer.json
+    sha256: aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4
+  - name: flux-2-klein-4b/tokenizer/tokenizer_config.json
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/tokenizer/tokenizer_config.json
+    sha256: 443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0
+  - name: flux-2-klein-4b/tokenizer/vocab.json
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/tokenizer/vocab.json
+    sha256: ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910
+  - name: flux-2-klein-4b/transformer/config.json
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/transformer/config.json
+    sha256: 09733c74a3da6d17dd0a0472a091a8950c7c6935889c32c16cc800ede05029de
+  - name: flux-2-klein-4b/transformer/diffusion_pytorch_model.safetensors
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/transformer/diffusion_pytorch_model.safetensors
+    sha256: 9f29f9edcfdae452a653ffb51a534ca4decd389952c225724ff3b94042612a6e
+  - name: flux-2-klein-4b/vae/config.json
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/vae/config.json
+    sha256: 0d6dfb69ae95a5e2ac9836284bbb63d8b38ce67b25ba2dff380752b2a10ab948
+  - name: flux-2-klein-4b/vae/diffusion_pytorch_model.safetensors
+    source: https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/vae/diffusion_pytorch_model.safetensors
+    sha256: ca70d2202afe6415bdbcb8793ba8cd99fd159cfe6192381504d6c4d3036e0f04
+config: |
+  - name: flux-2-klein-4b
+    backend: diffusers
+    parameters:
+      model: flux-2-klein-4b
+    diffusers:
+      cuda: true
+      enable_parameters: num_inference_steps
+      pipeline_type: Flux2KleinPipeline
+    cfg_scale: 1.0
+    step: 4
+    low_vram: true
+    f16: false
+    options:
+      - "torch_dtype:bf16"

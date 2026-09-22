@@ -3,22 +3,22 @@ apiVersion: v1alpha1
 debug: true
 runtime: cuda
 models:
-  - name: gpt-oss-120b
-    source: https://huggingface.co/ggml-org/gpt-oss-120b-GGUF/resolve/238abdd290bb874b90a5da1b4549881b7d05c091/gpt-oss-120b-MXFP4.gguf
-    sha256: 582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d
+  - name: gemma-4-e2b-instruct
+    source: https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/675cff42a74c774d6cb76f76d8eacb49b48c9b93/gemma-4-E2B_q4_0-it.gguf
+    sha256: fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634
 config: |
-  - name: gpt-oss-120b
+  - name: gemma-4-e2b-instruct
     backend: llama-cpp
     parameters:
-      model: gpt-oss-120b-MXFP4.gguf
+      model: gemma-4-E2B_q4_0-it.gguf
       temperature: 1.0
-      top_p: 1.0
-      top_k: 0
+      top_p: 0.95
+      top_k: 64
       repeat_penalty: 1.0
     context_size: 8192
     f16: true
     mmap: true
-    reasoning_effort: medium
+    reasoning_effort: none
     template:
       use_tokenizer_template: true
     options:

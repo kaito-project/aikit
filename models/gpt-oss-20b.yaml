@@ -4,77 +4,25 @@ debug: true
 runtime: cuda
 models:
   - name: gpt-oss-20b
-    source: https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-mxfp4.gguf
-    sha256: "be37a636aca0fc1aae0d32325f82f6b4d21495f06823b5fbc1898ae0303e9935"
+    source: https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/ef9b12f2ff56c69cf32153a02784e7a3c88bf524/gpt-oss-20b-MXFP4.gguf
+    sha256: 27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901
 config: |
   - name: gpt-oss-20b
     backend: llama-cpp
     parameters:
-      model: gpt-oss-20b-mxfp4.gguf
+      model: gpt-oss-20b-MXFP4.gguf
+      temperature: 1.0
+      top_p: 1.0
+      top_k: 0
+      repeat_penalty: 1.0
     context_size: 8192
     f16: true
     mmap: true
+    reasoning_effort: medium
     template:
-      chat_message: |-
-        <|start|>{{ if .FunctionCall -}}functions.{{ .FunctionCall.Name }} to=assistant{{ else if eq .RoleName \"assistant\"}}assistant<|channel|>final<|message|>{{else}}{{ .RoleName }}{{end}}<|message|>
-        {{- if .Content -}}
-        {{- .Content -}}
-        {{- end -}}
-        {{- if .FunctionCall -}}
-        {{- toJson .FunctionCall -}}
-        {{- end -}}<|end|>
-
-      function: |-
-        <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
-        Knowledge cutoff: 2024-06
-        Current date: {{ now | date \"Mon Jan 2 15:04:05 MST 2006\" }}
-
-        Reasoning: {{if eq .ReasoningEffort \"\"}}medium{{else}}{{.ReasoningEffort}}{{end}}
-
-        # {{with .Metadata}}{{ if ne .system_prompt \"\" }}{{ .system_prompt }}{{ end }}{{else}}You are a friendly and helpful assistant.{{ end }}<|end|>{{- .Input -}}<|start|>assistant
-
-        # Tools
-
-        ## functions
-
-        namespace functions {
-        {{-range .Functions}}
-        {{if .Description }}
-        // {{ .Description }}
-        {{- end }}
-        {{- if and .Parameters.Properties (gt (len .Parameters.Properties) 0) }}
-        type {{ .Name }} = (_: {
-        {{- range $name, $prop := .Parameters.Properties }}
-        {{- if $prop.Description }}
-          // {{ $prop.Description }}
-        {{- end }}
-          {{ $name }}: {{ if gt (len $prop.Type) 1 }}{{ range $i, $t := $prop.Type }}{{ if $i }} | {{ end }}{{ $t }}{{ end }}{{ else }}{{ index $prop.Type 0 }}{{ end }},
-        {{- end }}
-        }) => any;
-        {{- else }}
-        type {{ .Function.Name }} = () => any;
-        {{- end }}
-        {{- end }}{{/* end of range .Functions */}}
-        } // namespace functions
-
-        # Instructions
-
-        <|end|>{{.Input -}}<|start|>assistant
-
-      chat: |-
-        <|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
-        Knowledge cutoff: 2024-06
-        Current date: {{ now | date \"Mon Jan 2 15:04:05 MST 2006\" }}
-
-        Reasoning: {{if eq .ReasoningEffort \"\"}}medium{{else}}{{.ReasoningEffort}}{{end}}
-
-        # {{with .Metadata}}{{ if ne .system_prompt \"\" }}{{ .system_prompt }}{{ end }}{{else}}You are a friendly and helpful assistant.{{ end }}<|end|>{{- .Input -}}<|start|>assistant
-
-      completion: |-
-        {{.Input}}
-    stopwords:
-      - '<|im_end|>'
-      - '<dummy32000>'
-      - '</s>'
-      - '<|endoftext|>'
-      - '<|end|>s'
+      use_tokenizer_template: true
+    options:
+      - "use_jinja:true"
+    function:
+      grammar:
+        disable: true

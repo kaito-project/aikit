@@ -1,0 +1,30 @@
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
+apiVersion: v1alpha1
+debug: true
+runtime: cuda
+models:
+  - name: qwen-3.8-27b
+    source: https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/4ca720788d1e01f1bff70c033e0d0028fd02e502/Qwen3.8-27B-UD-Q4_K_M.gguf
+    sha256: 322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482
+config: |
+  - name: qwen-3.8-27b
+    backend: llama-cpp
+    parameters:
+      model: Qwen3.8-27B-UD-Q4_K_M.gguf
+      temperature: 0.7
+      top_p: 0.8
+      top_k: 20
+      min_p: 0.0
+      presence_penalty: 1.5
+      repeat_penalty: 1.0
+    context_size: 8192
+    f16: true
+    mmap: true
+    reasoning_effort: none
+    template:
+      use_tokenizer_template: true
+    options:
+      - "use_jinja:true"
+    function:
+      grammar:
+        disable: true

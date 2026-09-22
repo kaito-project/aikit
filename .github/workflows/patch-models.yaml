@@ -9,7 +9,24 @@ permissions:
   contents: read
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.catalog.outputs.images }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: List active images
+        id: catalog
+        run: |
+          images=$(bash scripts/parse-models.sh --images)
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+
   patch-models:
+    needs: prepare
     permissions:
       contents: read
       packages: write
@@ -19,16 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        images:
-          - ghcr.io/kaito-project/aikit/llama3.1:8b
-          - ghcr.io/kaito-project/aikit/llama3.3:70b
-          - ghcr.io/kaito-project/aikit/llama3.2:1b
-          - ghcr.io/kaito-project/aikit/llama3.2:3b
-          - ghcr.io/kaito-project/aikit/mixtral:8x7b
-          - ghcr.io/kaito-project/aikit/phi3.5:3.8b
-          - ghcr.io/kaito-project/aikit/gemma2:2b
-          - ghcr.io/kaito-project/aikit/codestral:22b
-          - ghcr.io/kaito-project/aikit/flux1:dev
+        images: ${{ fromJSON(needs.prepare.outputs.images) }}
     steps:
     - name: Harden Runner
       uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1

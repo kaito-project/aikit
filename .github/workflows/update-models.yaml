@@ -9,9 +9,9 @@ on:
         default: false
         type: boolean
       models:
-        description: "models to update"
+        description: "JSON array of model IDs; [] updates all active presets"
         required: true
-        default: '["llama-3.2-1b-instruct", "llama-3.2-3b-instruct", "llama-3.1-8b-instruct", "phi-4-14b-instruct", "gemma-2-2b-instruct", "flux-1-dev", "llama-3.3-70b-instruct", "mixtral-8x7b-instruct", "codestral-22b", "qwq-32b", "gpt-oss-20b", "gpt-oss-120b", "qwen3-tts-1.7b-base"]'
+        default: '[]'
         type: string
       runtime:
         description: "runtime to build"
@@ -23,7 +23,26 @@ permissions:
   contents: read
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      models: ${{ steps.catalog.outputs.models }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Select active presets
+        id: catalog
+        env:
+          MODELS: ${{ inputs.models }}
+        run: |
+          models=$(bash scripts/parse-models.sh --models "$MODELS")
+          echo "models=$models" >> "$GITHUB_OUTPUT"
+
   update-models:
+    needs: prepare
     permissions:
       contents: write
       packages: write
@@ -31,10 +50,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: ${{ fromJSON(github.event.inputs.models) }}
-        runtime: ${{ fromJSON(github.event.inputs.runtime) }}
+        model: ${{ fromJSON(needs.prepare.outputs.models) }}
+        runtime: ${{ fromJSON(inputs.runtime) }}
         exclude:
-        - model: flux-1-dev # requires cuda runtime
+        - model: flux-2-klein-4b # Requires the CUDA runtime.
           runtime: applesilicon
     runs-on: ubuntu-latest-16-cores
     timeout-minutes: 360
@@ -81,66 +100,51 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: parse matrix
-        run: |
-          if [ "${{ matrix.model }}" == "qwen3-tts-1.7b-base" ]; then
-            {
-              echo "MODEL_NAME=qwen3-tts"
-              echo "MODEL_SIZE=1.7b"
-              echo "MODEL_TYPE=-base"
-            } >> "$GITHUB_ENV"
-            exit 0
-          fi
-
-          echo "MODEL_NAME=$(echo ${{ matrix.model }} | sed -E 's/^llama-(3\.[1-9])-([0-9]+\.?[0-9]*b)-.*/llama\1/;t; s/^flux-([0-9]+)-dev$/flux\1/;t; s/^phi-(3\.5)-([0-9]+\.?[0-9]*b)-.*/phi\1/;t; s/^([a-z]+-[a-z]+)-([0-9]+\.?[0-9]*b)$/\1/;t; s/^([a-z]+)-([0-9]+x[0-9]+b|[0-9]+\.?[0-9]*b)-.*/\1/; s/^([a-z]+)-([0-9]+)-.*/\1\2/; s/^([a-z]+)-([0-9]+\.?[0-9]*b)$/\1/')" >> $GITHUB_ENV
-
-          echo "MODEL_SIZE=$(echo ${{ matrix.model }} | sed -E 's/^llama-(3\.[1-9])-([0-9]+\.?[0-9]*b)-.*/\2/;t; s/^flux-[0-9]+-dev$/dev/;t; s/^[a-z]+-[a-z]+-([0-9]+\.?[0-9]*b)$/\1/;t; s/^[a-z]+-([0-9]+x[0-9]+b|[0-9]+\.?[0-9]*b)-.*/\1/; s/^[a-z]+-[0-9]+(\.[0-9]+)?-([0-9]+\.?[0-9]*b).*/\2/; s/^[a-z]+-([0-9]+\.?[0-9]*b)$/\1/')" >> $GITHUB_ENV
-
-          echo "MODEL_TYPE=-$(echo ${{ matrix.model }} | sed -n -e 's/^flux-[0-9]+-\(dev\)$/\1/p' -e 's/.*\(chat\).*/\1/p' -e 's/.*\(instruct\).*/\1/p')" >> $GITHUB_ENV
+      - name: Read image metadata
+        env:
+          MODEL_ID: ${{ matrix.model }}
+        run: bash scripts/parse-models.sh "$MODEL_ID" >> "$GITHUB_ENV"
 
       - name: Build and push
+        env:
+          MODEL_ID: ${{ matrix.model }}
+          RUNTIME: ${{ matrix.runtime }}
+          STAGING: ${{ inputs.staging }}
         run: |
-          if [ "${MODEL_TYPE}" == "-" ]; then
-            export MODEL_TYPE=""
-            echo "MODEL_TYPE=''" >> $GITHUB_ENV
+          REGISTRY=ghcr.io/kaito-project/aikit
+          if [ "$STAGING" = "true" ]; then
+            REGISTRY="$REGISTRY/test"
           fi
 
-          if ${{ inputs.staging }}; then
-            if [ ${{ matrix.runtime }} == "applesilicon" ]; then
-              export REGISTRY=ghcr.io/kaito-project/aikit/test/applesilicon
-            else
-              export REGISTRY=ghcr.io/kaito-project/aikit/test
-            fi
-          else
-            if [ ${{ matrix.runtime }} == "applesilicon" ]; then
-              export REGISTRY=ghcr.io/kaito-project/aikit/applesilicon
-            else
-              export REGISTRY=ghcr.io/kaito-project/aikit
-            fi
-          fi
+          PLATFORMS="$MODEL_PLATFORMS"
+          BUILD_ARGS=()
+          case "$RUNTIME" in
+            cuda) ;;
+            applesilicon)
+              REGISTRY="$REGISTRY/applesilicon"
+              PLATFORMS=linux/arm64
+              BUILD_ARGS=(--build-arg runtime=applesilicon)
+              ;;
+            *)
+              echo "Unsupported publishing runtime: $RUNTIME" >&2
+              exit 1
+              ;;
+          esac
 
-          export PLATFORMS="linux/amd64,linux/arm64"
-          if [ ${{ matrix.model }} == "flux-1-dev" ]; then
-            export PLATFORMS="linux/amd64"
-          fi
-          if [ ${{ matrix.runtime }} == "applesilicon" ]; then
-            export PLATFORMS="linux/arm64"
-          fi
-
-          if [ ${{ matrix.runtime }} == "applesilicon" ]; then
-            export BUILD_ARGS="--build-arg runtime=applesilicon"
-          else
-            export BUILD_ARGS=""
+          IMAGE="$REGISTRY/$MODEL_NAME"
+          TAGS=(-t "$IMAGE:$MODEL_SIZE")
+          if [ -n "$MODEL_ALIAS" ]; then
+            TAGS+=(-t "$IMAGE:$MODEL_ALIAS")
           fi
 
           docker buildx build . \
-            -t ${REGISTRY}/${MODEL_NAME}:${MODEL_SIZE} \
-            -t ${REGISTRY}/${MODEL_NAME}:${MODEL_SIZE}${MODEL_TYPE} \
-            -f models/${{ matrix.model }}.yaml \
+            "${TAGS[@]}" \
+            -f "models/$MODEL_ID.yaml" \
             --push --progress plain \
             --sbom=true --provenance=true \
-            --platform ${PLATFORMS} ${BUILD_ARGS}
-          echo "DIGEST=$(cosign triangulate ${REGISTRY}/${MODEL_NAME}:${MODEL_SIZE} --type digest)" >> $GITHUB_ENV
+            --platform "$PLATFORMS" "${BUILD_ARGS[@]}"
+          DIGEST=$(cosign triangulate "$IMAGE:$MODEL_SIZE" --type digest)
+          echo "DIGEST=$DIGEST" >> "$GITHUB_ENV"
 
       - name: Sign the images with GitHub OIDC Token
         if: ${{ !inputs.staging }}
