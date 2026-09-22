@@ -56,9 +56,7 @@ If not being offloaded to GPU VRAM, minimum of 8GB of RAM is required for 7B mod
 
 The published `llama-cpp` model images in the NVIDIA CUDA section above use a CUDA 12 catalog plan that deliberately includes a digest-pinned CPU companion backend. When no compatible NVIDIA GPU is available, LocalAI can use that installed CPU backend. This is runtime behavior inside the selected CUDA plan, not catalog resolution silently changing to a CPU tuple.
 
-FLUX.2 Klein 4B requires NVIDIA CUDA on Linux AMD64 and uses BF16. A 512x512 generation on an A100 80 GB reached about 15.7 GiB of GPU memory use. The preset requests CPU offloading, but LocalAI v4.10.0 also moves the pipeline onto the GPU. Allow extra VRAM for larger images, plus host memory and disk space for the full pipeline.
-
-FLUX.2 includes the complete Diffusers pipeline, about 16 GB of model files, and loads it locally without a first-use model download. All pipeline files are pinned by revision and SHA-256.
+FLUX.2 Klein 4B requires NVIDIA CUDA on Linux AMD64. Its model files use about 16 GB of disk space. A 512x512 generation on an A100 used about 15.7 GiB of GPU memory; larger images require more memory.
 :::
 
 ## AMD ROCm (experimental)
@@ -104,11 +102,11 @@ If you need to use these specific models, you can always [create your own images
 | --- | --- | --- |
 | Gemma 2 2B | `ghcr.io/kaito-project/aikit/gemma2:2b` | `gemma4:e2b`, API `gemma-4-e2b-instruct` |
 | Mixtral 8x7B | `ghcr.io/kaito-project/aikit/mixtral:8x7b` | `qwen3.8:27b`, API `qwen-3.8-27b` |
-| QwQ 32B | `ghcr.io/kaito-project/aikit/qwq:32b` | `qwen3.8:27b`, API `qwen-3.8-27b`; enable reasoning as needed |
+| QwQ 32B | `ghcr.io/kaito-project/aikit/qwq:32b` | `qwen3.8:27b`, API `qwen-3.8-27b` |
 | Codestral 22B | `ghcr.io/kaito-project/aikit/codestral:22b` | `devstral-small2:24b`, API `devstral-small-2-24b-instruct` |
 | FLUX.1 Dev | `ghcr.io/kaito-project/aikit/flux1:dev` | `flux2:klein-4b`, API `flux-2-klein-4b` |
 
-Change both the image tag and API model name when migrating. Devstral Small 2 is not a drop-in replacement for Codestral's fill-in-the-middle prompting. FLUX.2 changes the generation pipeline and sampling defaults.
+Codestral's fill-in-the-middle prompts need to be adapted for Devstral Small 2.
 
 ### CPU
 

@@ -1,8 +1,8 @@
 ---
-title: Quick start
+title: Quick Start
 ---
 
-Start with Qwen 3.5 4B for text chat on a CPU. Its Q4_K_M weights are about 2.74 GB; the runtime and context require additional memory.
+You can get started with AIKit quickly on your local machine without a GPU!
 
 ```bash
 docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:4b
@@ -12,7 +12,7 @@ After running this, navigate to [http://localhost:8080/chat](http://localhost:80
 
 ## API
 
-AIKit provides an OpenAI-compatible endpoint.
+AIKit provides an OpenAI API compatible endpoint, so you can use any OpenAI API compatible client to send requests to open LLMs!
 
 For example:
 
@@ -23,7 +23,7 @@ curl http://localhost:8080/v1/chat/completions -H "Content-Type: application/jso
   }'
 ```
 
-Example response:
+Output should be similar to:
 
 ```jsonc
 {
@@ -43,7 +43,7 @@ Example response:
 }
 ```
 
-This preset serves text and defaults to direct answers with reasoning disabled. See [pre-made models](./premade-models.md) for larger models and GPU options.
+That's it! 🎉 API is OpenAI compatible so this is a drop-in replacement for any OpenAI API compatible client.
 
 ## Demo
 
@@ -51,6 +51,8 @@ https://www.youtube.com/watch?v=O0AOnxXp-o4
 
 ## What's next?
 
-- Choose another [pre-made model](./premade-models.md), such as Gemma 4, Devstral Small 2, or GPT-OSS.
-- [Create a custom model image](./create-images.md).
-- [Fine-tune a model](./fine-tune.md) with domain-specific knowledge.
+👉 If you are interested in other pre-made models (such as Gemma, Qwen or Phi), please refer to [Pre-made models](./premade-models.md).
+
+👉  If you are interested in learning more about how to create your own custom model images, please refer to [Creating Model Images](./create-images.md).
+
+👉  If you are interested in fine tuning a model with domain-specific knowledge, please refer to [Fine Tuning](./fine-tune.md).

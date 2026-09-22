@@ -18,7 +18,7 @@ AIKit offers three main capabilities:
 
 ## Features
 
-- 🐳 Run GGUF text models on a CPU with [Docker](https://docs.docker.com/desktop/install/linux-install/) or [Podman](https://podman.io), including offline inference after pulling the image.
+- 🐳 No GPU, Internet access or additional tools needed except for [Docker](https://docs.docker.com/desktop/install/linux-install/) or [Podman](https://podman.io)!
 - 🤏 Minimal image size, resulting in less vulnerabilities and smaller attack surface with a custom [chiseled](https://ubuntu.com/containers/chiseled) image
 - 🎵 [Fine-tune support](https://kaito-project.github.io/aikit/docs/fine-tune)
 - 📦 [OCI packaging support](https://kaito-project.github.io/aikit/docs/packaging) for distributing models as OCI artifacts
@@ -33,15 +33,19 @@ AIKit offers three main capabilities:
 - 🔐 Ensure [supply chain security](https://kaito-project.github.io/aikit/docs/security) with SBOMs, Provenance attestations, and signed images
 - 🌈 Supports air-gapped inference with self-hosted or local registries when model content and dependencies are baked or mirrored ahead of time; runner images that download models at startup are not air-gapped by default.
 
-## Quick start
+## Quick Start
 
-Start with Qwen 3.5 4B for text chat. Its Q4_K_M weights are about 2.74 GB; allow additional memory for the runtime and context.
+You can get started with AIKit quickly on your local machine without a GPU!
 
 ```bash
 docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:4b
 ```
 
-Open [http://localhost:8080/chat](http://localhost:8080/chat) for the WebUI, or call the OpenAI-compatible API:
+After running this, navigate to [http://localhost:8080/chat](http://localhost:8080/chat) to access the WebUI!
+
+### API
+
+AIKit provides an OpenAI API compatible endpoint, so you can use any OpenAI API compatible client to send requests to open LLMs!
 
 ```bash
 curl http://localhost:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
@@ -50,51 +54,112 @@ curl http://localhost:8080/v1/chat/completions -H "Content-Type: application/jso
   }'
 ```
 
-## Pre-made models
+Output should be similar to:
 
-The recommended presets are listed below. Image names use the prefix `ghcr.io/kaito-project/aikit/`. All recommended weights use Apache 2.0 licenses; the model links provide upstream details.
-
-Gemma 4 uses Google's [Apache 2.0 license](https://ai.google.dev/gemma/apache_2).
-
-| Model | Image | API model ID | Model files |
-| --- | --- | --- | --- |
-| [Qwen 3.5 2B](https://huggingface.co/Qwen/Qwen3.5-2B) | `qwen3.5:2b` | `qwen-3.5-2b` | 1.28 GB |
-| [Qwen 3.5 4B](https://huggingface.co/Qwen/Qwen3.5-4B), quickstart | `qwen3.5:4b` | `qwen-3.5-4b` | 2.74 GB |
-| [Qwen 3.5 9B](https://huggingface.co/Qwen/Qwen3.5-9B) | `qwen3.5:9b` | `qwen-3.5-9b` | 5.68 GB |
-| [Qwen 3.8 27B](https://huggingface.co/Qwen/Qwen3.8-27B) | `qwen3.8:27b` | `qwen-3.8-27b` | 16.46 GB |
-| [Gemma 4 E2B](https://huggingface.co/google/gemma-4-E2B-it) | `gemma4:e2b` | `gemma-4-e2b-instruct` | 3.35 GB |
-| [Devstral Small 2 24B](https://huggingface.co/mistralai/Devstral-Small-2-24B-Instruct-2512), coding | `devstral-small2:24b` | `devstral-small-2-24b-instruct` | 14.33 GB |
-| [GPT-OSS 20B](https://huggingface.co/openai/gpt-oss-20b) | `gpt-oss:20b` | `gpt-oss-20b` | 12.11 GB |
-| [GPT-OSS 120B](https://huggingface.co/openai/gpt-oss-120b) | `gpt-oss:120b` | `gpt-oss-120b` | 63.39 GB |
-| [FLUX.2 Klein 4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B), image generation | `flux2:klein-4b` | `flux-2-klein-4b` | 15.98 GB |
-
-Sizes cover model files; allow additional space for the runtime and memory for inference. The text presets include no multimodal projectors. Gemma's E2B label describes effective parameters; its full model including embeddings is about 5.1B parameters.
-
-Llama 3.2 1B/3B, Llama 3.1 8B, Llama 3.3 70B, and Phi 4 14B remain maintained compatibility options with their existing image tags and API IDs. Gemma 2, Mixtral 8x7B, QwQ 32B, Codestral 22B, and FLUX.1 Dev are retired from publishing and weekly patching. See [pre-made models](https://kaito-project.github.io/aikit/docs/premade-models) for compatibility tags and migration guidance.
-
-### CPU and NVIDIA CUDA
-
-Text images support AMD64 and ARM64 and include a CPU backend. Docker selects the image for your architecture. To use an NVIDIA GPU, add `--gpus all`:
-
-```bash
-docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:4b
+```jsonc
+{
+  // ...
+    "model": "qwen-3.5-4b",
+    "choices": [
+        {
+            "index": 0,
+            "finish_reason": "stop",
+            "message": {
+                "role": "assistant",
+                "content": "Kubernetes is an open-source container orchestration system that automates the deployment, scaling, and management of applications and services, allowing developers to focus on writing code rather than managing infrastructure."
+            }
+        }
+    ],
+  // ...
+}
 ```
 
-FLUX.2 uses the experimental CUDA 12 backend plan on AMD64 and includes the complete Diffusers pipeline in the image. See [image generation requirements](https://kaito-project.github.io/aikit/docs/premade-models#nvidia-cuda).
+That's it! 🎉 API is OpenAI compatible so this is a drop-in replacement for any OpenAI API compatible client.
 
-### Apple Silicon, experimental
+## Pre-made Models
 
-GGUF text presets also have an experimental Apple Silicon image path:
+AIKit comes with pre-made models that you can use out-of-the-box!
 
-```bash
-podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/qwen3.5:4b
-```
+If it doesn't include a specific model, you can always [create your own images](https://kaito-project.github.io/aikit/docs/create-images), and host in a container registry of your choice!
 
-Set up GPU access using the [Podman Desktop instructions](https://podman-desktop.io/docs/podman/gpu). This profile targets Apple Silicon and does not support Intel Macs or FLUX.2.
+## CPU
 
-### AMD ROCm, experimental
+> [!NOTE]
+> AIKit supports both AMD64 and ARM64 CPUs. You can run the same command on either architecture, and Docker will automatically pull the correct image for your CPU.
+>
+> Depending on your CPU capabilities, AIKit will automatically select the most optimized instruction set.
 
-For AMD GPUs, [create a custom image](https://kaito-project.github.io/aikit/docs/create-images) using `llama-cpp` with `runtime: rocm` on `linux/amd64`. Follow the device setup in [GPU acceleration](https://kaito-project.github.io/aikit/docs/gpu). Pre-made ROCm images are not published.
+| Model           | Optimization | Parameters | Command                                                                     | Model Name               | License                                                                            |
+| --------------- | ------------ | ---------- | --------------------------------------------------------------------------- | ------------------------ | ---------------------------------------------------------------------------------- |
+| Qwen 3.5 | Instruct | 2B | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:2b` | `qwen-3.5-2b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.5 | Instruct | 4B | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:4b` | `qwen-3.5-4b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.5 | Instruct | 9B | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:9b` | `qwen-3.5-9b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.8 | Instruct | 27B | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.8:27b` | `qwen-3.8-27b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| 🔡 Gemma 4 E2B | Instruct | 5.1B | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/gemma4:e2b` | `gemma-4-e2b-instruct` | [Apache 2.0](https://ai.google.dev/gemma/apache_2) |
+| Devstral Small 2 | Code | 24B | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/devstral-small2:24b` | `devstral-small-2-24b-instruct` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| 🦙 Llama 3.2     | Instruct     | 1B         | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.2:1b`   | `llama-3.2-1b-instruct`  | [Llama](https://ai.meta.com/llama/license/)                                        |
+| 🦙 Llama 3.2     | Instruct     | 3B         | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.2:3b`   | `llama-3.2-3b-instruct`  | [Llama](https://ai.meta.com/llama/license/)                                        |
+| 🦙 Llama 3.1     | Instruct     | 8B         | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.1:8b`   | `llama-3.1-8b-instruct`  | [Llama](https://ai.meta.com/llama/license/)                                        |
+| 🦙 Llama 3.3     | Instruct     | 70B        | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.3:70b`  | `llama-3.3-70b-instruct` | [Llama](https://ai.meta.com/llama/license/)                                        |  |
+| 🅿️ Phi 4         | Instruct     | 14B        | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/phi4:14b`      | `phi-4-14b-instruct`     | [MIT](https://huggingface.co/microsoft/Phi-4/resolve/main/LICENSE)                  |
+| 🤖 GPT-OSS       |              | 20B        | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/gpt-oss:20b`   | `gpt-oss-20b`            | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/)                      |
+| 🤖 GPT-OSS       |              | 120B       | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/gpt-oss:120b`  | `gpt-oss-120b`           | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/)                      |
+
+
+### NVIDIA CUDA
+
+> [!NOTE]
+> To enable NVIDIA GPU acceleration, please see [GPU Acceleration](https://kaito-project.github.io/aikit/docs/gpu).
+>
+> Published pre-made GPU images include NVIDIA CUDA libraries. For the NVIDIA CUDA commands below, the only difference from the CPU section is the `--gpus all` flag.
+
+| Model           | Optimization  | Parameters | Command                                                                                | Model Name               | License                                                                                                                     |
+| --------------- | ------------- | ---------- | -------------------------------------------------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| Qwen 3.5 | Instruct | 2B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:2b` | `qwen-3.5-2b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.5 | Instruct | 4B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:4b` | `qwen-3.5-4b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.5 | Instruct | 9B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:9b` | `qwen-3.5-9b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.8 | Instruct | 27B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.8:27b` | `qwen-3.8-27b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| 🔡 Gemma 4 E2B | Instruct | 5.1B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/gemma4:e2b` | `gemma-4-e2b-instruct` | [Apache 2.0](https://ai.google.dev/gemma/apache_2) |
+| Devstral Small 2 | Code | 24B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/devstral-small2:24b` | `devstral-small-2-24b-instruct` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| 📸 Flux 2 Klein | Text to image | 4B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/flux2:klein-4b` | `flux-2-klein-4b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| 🦙 Llama 3.2     | Instruct      | 1B         | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.2:1b`   | `llama-3.2-1b-instruct`  | [Llama](https://ai.meta.com/llama/license/)                                                                                 |
+| 🦙 Llama 3.2     | Instruct      | 3B         | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.2:3b`   | `llama-3.2-3b-instruct`  | [Llama](https://ai.meta.com/llama/license/)                                                                                 |
+| 🦙 Llama 3.1     | Instruct      | 8B         | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.1:8b`   | `llama-3.1-8b-instruct`  | [Llama](https://ai.meta.com/llama/license/)                                                                                 |
+| 🦙 Llama 3.3     | Instruct      | 70B        | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.3:70b`  | `llama-3.3-70b-instruct` | [Llama](https://ai.meta.com/llama/license/)                                                                                 |  |
+| 🅿️ Phi 4         | Instruct      | 14B        | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/phi4:14b`      | `phi-4-14b-instruct`     | [MIT](https://huggingface.co/microsoft/Phi-4/resolve/main/LICENSE)                                                          |
+| 🤖 GPT-OSS       |               | 20B        | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/gpt-oss:20b`   | `gpt-oss-20b`            | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/)                                                               |
+| 🤖 GPT-OSS       |               | 120B       | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/gpt-oss:120b`  | `gpt-oss-120b`           | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/)                                                               |
+
+
+### AMD ROCm (experimental)
+
+> [!NOTE]
+> AMD GPU acceleration is currently available for custom `llama-cpp` images built with `runtime: rocm`. Published pre-made model images are currently CUDA-based, so for AMD GPUs please [create your own image](https://kaito-project.github.io/aikit/docs/create-images) and follow the ROCm instructions in [GPU Acceleration](https://kaito-project.github.io/aikit/docs/gpu).
+>
+> ROCm support currently applies to the `llama-cpp` backend on `linux/amd64`.
+
+
+### Apple Silicon (experimental)
+
+> [!NOTE]
+> To enable GPU acceleration on Apple Silicon, please see [Podman Desktop documentation](https://podman-desktop.io/docs/podman/gpu). For more information, please see [GPU Acceleration](https://kaito-project.github.io/aikit/docs/gpu).
+>
+> Apple Silicon is an _experimental_ runtime and it may change in the future. This runtime is specific to Apple Silicon only, and it will not work as expected on other architectures, including Intel Macs.
+>
+> Only `gguf` models are supported on Apple Silicon.
+
+| Model       | Optimization | Parameters | Command                                                                                                  | Model Name              | License                                                                            |
+| ----------- | ------------ | ---------- | -------------------------------------------------------------------------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------- |
+| Qwen 3.5 | Instruct | 2B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/qwen3.5:2b` | `qwen-3.5-2b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.5 | Instruct | 4B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/qwen3.5:4b` | `qwen-3.5-4b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.5 | Instruct | 9B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/qwen3.5:9b` | `qwen-3.5-9b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.8 | Instruct | 27B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/qwen3.8:27b` | `qwen-3.8-27b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| 🔡 Gemma 4 E2B | Instruct | 5.1B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/gemma4:e2b` | `gemma-4-e2b-instruct` | [Apache 2.0](https://ai.google.dev/gemma/apache_2) |
+| Devstral Small 2 | Code | 24B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/devstral-small2:24b` | `devstral-small-2-24b-instruct` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| 🦙 Llama 3.2 | Instruct     | 1B         | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/llama3.2:1b` | `llama-3.2-1b-instruct` | [Llama](https://ai.meta.com/llama/license/)                                        |
+| 🦙 Llama 3.2 | Instruct     | 3B         | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/llama3.2:3b` | `llama-3.2-3b-instruct` | [Llama](https://ai.meta.com/llama/license/)                                        |
+| 🦙 Llama 3.1 | Instruct     | 8B         | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/llama3.1:8b` | `llama-3.1-8b-instruct` | [Llama](https://ai.meta.com/llama/license/)                                        |
+| 🅿️ Phi 4     | Instruct     | 14B        | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/phi4:14b`    | `phi-4-14b-instruct`    | [MIT](https://huggingface.co/microsoft/Phi-4/resolve/main/LICENSE)                  |
 
 ## Contributing
 
