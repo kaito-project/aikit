@@ -38,7 +38,7 @@ AIKit offers three main capabilities:
 You can get started with AIKit quickly on your local machine without a GPU!
 
 ```bash
-docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.1:8b
+docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:4b
 ```
 
 After running this, navigate to [http://localhost:8080/chat](http://localhost:8080/chat) to access the WebUI!
@@ -49,7 +49,7 @@ AIKit provides an OpenAI API compatible endpoint, so you can use any OpenAI API 
 
 ```bash
 curl http://localhost:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
-    "model": "llama-3.1-8b-instruct",
+    "model": "qwen-3.5-4b",
     "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
   }'
 ```
@@ -59,7 +59,7 @@ Output should be similar to:
 ```jsonc
 {
   // ...
-    "model": "llama-3.1-8b-instruct",
+    "model": "qwen-3.5-4b",
     "choices": [
         {
             "index": 0,
@@ -91,15 +91,17 @@ If it doesn't include a specific model, you can always [create your own images](
 
 | Model           | Optimization | Parameters | Command                                                                     | Model Name               | License                                                                            |
 | --------------- | ------------ | ---------- | --------------------------------------------------------------------------- | ------------------------ | ---------------------------------------------------------------------------------- |
+| Qwen 3.5 | Instruct | 2B | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:2b` | `qwen-3.5-2b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.5 | Instruct | 4B | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:4b` | `qwen-3.5-4b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.5 | Instruct | 9B | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:9b` | `qwen-3.5-9b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.8 | Instruct | 27B | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.8:27b` | `qwen-3.8-27b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| 🔡 Gemma 4 E2B | Instruct | 5.1B | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/gemma4:e2b` | `gemma-4-e2b-instruct` | [Apache 2.0](https://ai.google.dev/gemma/apache_2) |
+| Devstral Small 2 | Code | 24B | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/devstral-small2:24b` | `devstral-small-2-24b-instruct` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
 | 🦙 Llama 3.2     | Instruct     | 1B         | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.2:1b`   | `llama-3.2-1b-instruct`  | [Llama](https://ai.meta.com/llama/license/)                                        |
 | 🦙 Llama 3.2     | Instruct     | 3B         | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.2:3b`   | `llama-3.2-3b-instruct`  | [Llama](https://ai.meta.com/llama/license/)                                        |
 | 🦙 Llama 3.1     | Instruct     | 8B         | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.1:8b`   | `llama-3.1-8b-instruct`  | [Llama](https://ai.meta.com/llama/license/)                                        |
 | 🦙 Llama 3.3     | Instruct     | 70B        | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.3:70b`  | `llama-3.3-70b-instruct` | [Llama](https://ai.meta.com/llama/license/)                                        |  |
-| Ⓜ️ Mixtral       | Instruct     | 8x7B       | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/mixtral:8x7b`  | `mixtral-8x7b-instruct`  | [Apache](https://choosealicense.com/licenses/apache-2.0/)                          |
 | 🅿️ Phi 4         | Instruct     | 14B        | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/phi4:14b`      | `phi-4-14b-instruct`     | [MIT](https://huggingface.co/microsoft/Phi-4/resolve/main/LICENSE)                  |
-| 🔡 Gemma 2       | Instruct     | 2B         | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/gemma2:2b`     | `gemma-2-2b-instruct`    | [Gemma](https://ai.google.dev/gemma/terms)                                         |
-| QwQ             |              | 32B        | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwq:32b`       | `qwq-32b`        | [Apache 2.0](https://huggingface.co/Qwen/QwQ-32B/blob/main/LICENSE)        |
-| ⌨️ Codestral 0.1 | Code         | 22B        | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/codestral:22b` | `codestral-22b`          | [MNLP](https://mistral.ai/licenses/MNPL-0.1.md)                                    |
 | 🤖 GPT-OSS       |              | 20B        | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/gpt-oss:20b`   | `gpt-oss-20b`            | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/)                      |
 | 🤖 GPT-OSS       |              | 120B       | `docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/gpt-oss:120b`  | `gpt-oss-120b`           | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/)                      |
 
@@ -113,16 +115,18 @@ If it doesn't include a specific model, you can always [create your own images](
 
 | Model           | Optimization  | Parameters | Command                                                                                | Model Name               | License                                                                                                                     |
 | --------------- | ------------- | ---------- | -------------------------------------------------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| Qwen 3.5 | Instruct | 2B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:2b` | `qwen-3.5-2b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.5 | Instruct | 4B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:4b` | `qwen-3.5-4b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.5 | Instruct | 9B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:9b` | `qwen-3.5-9b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.8 | Instruct | 27B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.8:27b` | `qwen-3.8-27b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| 🔡 Gemma 4 E2B | Instruct | 5.1B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/gemma4:e2b` | `gemma-4-e2b-instruct` | [Apache 2.0](https://ai.google.dev/gemma/apache_2) |
+| Devstral Small 2 | Code | 24B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/devstral-small2:24b` | `devstral-small-2-24b-instruct` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| 📸 Flux 2 Klein | Text to image | 4B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/flux2:klein-4b` | `flux-2-klein-4b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
 | 🦙 Llama 3.2     | Instruct      | 1B         | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.2:1b`   | `llama-3.2-1b-instruct`  | [Llama](https://ai.meta.com/llama/license/)                                                                                 |
 | 🦙 Llama 3.2     | Instruct      | 3B         | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.2:3b`   | `llama-3.2-3b-instruct`  | [Llama](https://ai.meta.com/llama/license/)                                                                                 |
 | 🦙 Llama 3.1     | Instruct      | 8B         | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.1:8b`   | `llama-3.1-8b-instruct`  | [Llama](https://ai.meta.com/llama/license/)                                                                                 |
 | 🦙 Llama 3.3     | Instruct      | 70B        | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.3:70b`  | `llama-3.3-70b-instruct` | [Llama](https://ai.meta.com/llama/license/)                                                                                 |  |
-| Ⓜ️ Mixtral       | Instruct      | 8x7B       | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/mixtral:8x7b`  | `mixtral-8x7b-instruct`  | [Apache](https://choosealicense.com/licenses/apache-2.0/)                                                                   |
 | 🅿️ Phi 4         | Instruct      | 14B        | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/phi4:14b`      | `phi-4-14b-instruct`     | [MIT](https://huggingface.co/microsoft/Phi-4/resolve/main/LICENSE)                                                          |
-| 🔡 Gemma 2       | Instruct      | 2B         | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/gemma2:2b`     | `gemma-2-2b-instruct`    | [Gemma](https://ai.google.dev/gemma/terms)                                                                                  |
-| QwQ             |               | 32B        | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/qwq:32b`       | `qwq-32b`        | [Apache 2.0](https://huggingface.co/Qwen/QwQ-32B/blob/main/LICENSE)                                                 |
-| ⌨️ Codestral 0.1 | Code          | 22B        | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/codestral:22b` | `codestral-22b`          | [MNLP](https://mistral.ai/licenses/MNPL-0.1.md)                                                                             |
-| 📸 Flux 1 Dev    | Text to image | 12B        | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/flux1:dev`     | `flux-1-dev`             | [FLUX.1 [dev] Non-Commercial License](https://github.com/black-forest-labs/flux/blob/main/model_licenses/LICENSE-FLUX1-dev) |
 | 🤖 GPT-OSS       |               | 20B        | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/gpt-oss:20b`   | `gpt-oss-20b`            | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/)                                                               |
 | 🤖 GPT-OSS       |               | 120B       | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/gpt-oss:120b`  | `gpt-oss-120b`           | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/)                                                               |
 
@@ -146,11 +150,16 @@ If it doesn't include a specific model, you can always [create your own images](
 
 | Model       | Optimization | Parameters | Command                                                                                                  | Model Name              | License                                                                            |
 | ----------- | ------------ | ---------- | -------------------------------------------------------------------------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------- |
+| Qwen 3.5 | Instruct | 2B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/qwen3.5:2b` | `qwen-3.5-2b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.5 | Instruct | 4B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/qwen3.5:4b` | `qwen-3.5-4b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.5 | Instruct | 9B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/qwen3.5:9b` | `qwen-3.5-9b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen 3.8 | Instruct | 27B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/qwen3.8:27b` | `qwen-3.8-27b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| 🔡 Gemma 4 E2B | Instruct | 5.1B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/gemma4:e2b` | `gemma-4-e2b-instruct` | [Apache 2.0](https://ai.google.dev/gemma/apache_2) |
+| Devstral Small 2 | Code | 24B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/devstral-small2:24b` | `devstral-small-2-24b-instruct` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
 | 🦙 Llama 3.2 | Instruct     | 1B         | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/llama3.2:1b` | `llama-3.2-1b-instruct` | [Llama](https://ai.meta.com/llama/license/)                                        |
 | 🦙 Llama 3.2 | Instruct     | 3B         | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/llama3.2:3b` | `llama-3.2-3b-instruct` | [Llama](https://ai.meta.com/llama/license/)                                        |
 | 🦙 Llama 3.1 | Instruct     | 8B         | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/llama3.1:8b` | `llama-3.1-8b-instruct` | [Llama](https://ai.meta.com/llama/license/)                                        |
 | 🅿️ Phi 4     | Instruct     | 14B        | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/phi4:14b`    | `phi-4-14b-instruct`    | [MIT](https://huggingface.co/microsoft/Phi-4/resolve/main/LICENSE)                  |
-| 🔡 Gemma 2   | Instruct     | 2B         | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/gemma2:2b`   | `gemma-2-2b-instruct`   | [Gemma](https://ai.google.dev/gemma/terms)                                         |
 
 ## Contributing
 

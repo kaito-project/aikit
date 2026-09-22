@@ -13,6 +13,7 @@ on:
           - llama-cuda
           - qwen3-tts
           - diffusers
+          - flux-2-klein-4b
           - vllm
           - whisper
           - transformers
@@ -21,13 +22,13 @@ permissions: read-all
 
 jobs:
   test:
-    runs-on: [self-hosted, gpu]
+    runs-on: ${{ matrix.backend == 'flux-2-klein-4b' && fromJson('["self-hosted", "linux", "x64", "gpu"]') || fromJson('["self-hosted", "gpu"]') }}
     timeout-minutes: 240
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix:
-        backend: ${{ inputs.backend == 'all' && fromJson('["llama-cuda", "qwen3-tts", "diffusers", "vllm", "whisper", "transformers"]') || fromJson(format('["{0}"]', inputs.backend)) }}
+        backend: ${{ inputs.backend == 'all' && fromJson('["llama-cuda", "qwen3-tts", "diffusers", "flux-2-klein-4b", "vllm", "whisper", "transformers"]') || fromJson(format('["{0}"]', inputs.backend)) }}
     steps:
       - name: cleanup workspace
         run: |
@@ -45,7 +46,7 @@ jobs:
             --load --provenance=false --progress plain
 
       - name: build test model
-        if: matrix.backend != 'qwen3-tts'
+        if: matrix.backend != 'qwen3-tts' && matrix.backend != 'flux-2-klein-4b'
         run: |
           docker buildx build . -t testmodel:test \
             -f test/aikitfile-${{ matrix.backend }}.yaml \
@@ -65,15 +66,28 @@ jobs:
         timeout-minutes: 15
         run: bash scripts/ci/test-qwen3-tts.sh docker testmodel:test "$RUNNER_TEMP/qwen3-tts"
 
+      - name: build FLUX.2 Klein preset
+        if: matrix.backend == 'flux-2-klein-4b'
+        run: |
+          docker buildx build . -t testmodel:test \
+            -f models/flux-2-klein-4b.yaml \
+            --build-arg BUILDKIT_SYNTAX=aikit:test \
+            --load --provenance=false --progress plain
+
+      - name: test FLUX.2 image generation offline
+        if: matrix.backend == 'flux-2-klein-4b'
+        timeout-minutes: 20
+        run: bash scripts/ci/test-flux2.sh testmodel:test "$RUNNER_TEMP/flux2"
+
       - name: list images
         run: docker images
 
       - name: run test model
-        if: matrix.backend != 'qwen3-tts'
+        if: matrix.backend != 'qwen3-tts' && matrix.backend != 'flux-2-klein-4b'
         run: docker run --name testmodel -d -p 8080:8080 --gpus all testmodel:test
 
       - name: wait for test model
-        if: matrix.backend != 'qwen3-tts'
+        if: matrix.backend != 'qwen3-tts' && matrix.backend != 'flux-2-klein-4b'
         timeout-minutes: 10
         run: |
           deadline=$((SECONDS + 600))
@@ -191,7 +205,7 @@ jobs:
           ' > /dev/null
 
       - name: save logs
-        if: always() && matrix.backend != 'qwen3-tts'
+        if: always() && matrix.backend != 'qwen3-tts' && matrix.backend != 'flux-2-klein-4b'
         run: |
           if docker inspect testmodel >/dev/null 2>&1; then
             docker logs testmodel > /tmp/docker-${{ matrix.backend }}.log || true
@@ -201,7 +215,7 @@ jobs:
           fi
 
       - run: docker rm -f testmodel || true
-        if: always() && matrix.backend != 'qwen3-tts'
+        if: always() && matrix.backend != 'qwen3-tts' && matrix.backend != 'flux-2-klein-4b'
 
       - run: docker system prune -a -f --volumes || true
         if: always()
@@ -215,3 +229,4 @@ jobs:
             /tmp/*.log
             /tmp/images/*.png
             ${{ runner.temp }}/qwen3-tts/
+            ${{ runner.temp }}/flux2/

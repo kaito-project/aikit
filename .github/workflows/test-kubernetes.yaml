@@ -110,17 +110,7 @@ jobs:
           kubectl port-forward service/test-model-service 8080:8080 &
 
       - name: run test
-        run: |
-          result=$(curl --fail --retry 10 --retry-all-errors http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
-            "model": "llama-3.2-1b-instruct",
-            "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
-          }')
-          echo $result
-
-          choices=$(echo "$result" | jq '.choices')
-          if [ -z "$choices" ]; then
-            exit 1
-          fi
+        run: bash test/ci/llama-smoke.sh llama-3.2-1b-instruct
 
       - name: save logs
         if: always()
