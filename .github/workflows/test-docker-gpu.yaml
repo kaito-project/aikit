@@ -22,7 +22,7 @@ permissions: read-all
 
 jobs:
   test:
-    runs-on: [self-hosted, linux, x64, gpu]
+    runs-on: ${{ matrix.backend == 'flux-2-klein-4b' && fromJson('["self-hosted", "linux", "x64", "gpu"]') || fromJson('["self-hosted", "gpu"]') }}
     timeout-minutes: 240
     strategy:
       fail-fast: false
