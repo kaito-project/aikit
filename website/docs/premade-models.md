@@ -58,7 +58,7 @@ The published `llama-cpp` model images in the NVIDIA CUDA section above use a CU
 
 FLUX.2 Klein 4B requires NVIDIA CUDA on Linux AMD64. It uses BF16 with CPU offloading; [upstream reports about 13 GB VRAM](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B#usage). Allow host memory and disk space for the full pipeline as well.
 
-FLUX.2 downloads its pipeline on first use and needs network access and a writable Hugging Face cache. Persist the cache to avoid downloading the weights again after recreating the container. The download is not revision-pinned.
+FLUX.2 includes the complete Diffusers pipeline, about 16 GB of model files, and loads it locally without a first-use model download. All pipeline files are pinned by revision and SHA-256.
 :::
 
 ## AMD ROCm (experimental)

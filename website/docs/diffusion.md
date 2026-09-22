@@ -8,7 +8,7 @@ AIKit documents the [`diffusers`](#diffusers) catalog family for image generatio
 
 The `diffusers` backend uses the Hugging Face [`diffusers`](https://huggingface.co/docs/diffusers/en/index) library to generate images. The currently supported default and runner-enabled plan targets NVIDIA CUDA on Linux AMD64. A frontend release can also contain experimental `diffusers` plans for other runtimes or platforms in standard mode; catalog presence means AIKit can materialize that install plan, not that every model and device combination has been validated end to end. See [Backend catalog selection](specs-inference.md#backend-catalog-selection).
 
-The [FLUX.2 Klein 4B preset](https://github.com/kaito-project/aikit/blob/main/models/flux-2-klein-4b.yaml) replaces FLUX.1 Dev for image generation. It selects the experimental `cuda-12` plan for LocalAI v4.10.0 on AMD64, with BF16, CPU offloading, and four sampling steps. The pipeline downloads from Hugging Face on first use. See [pre-made models](./premade-models.md#nvidia-cuda) for memory and cache requirements.
+The [FLUX.2 Klein 4B preset](https://github.com/kaito-project/aikit/blob/main/models/flux-2-klein-4b.yaml) replaces FLUX.1 Dev for image generation. It selects the experimental `cuda-12` plan for LocalAI v4.10.0 on AMD64, with BF16, CPU offloading, and four sampling steps. The image includes the complete pipeline with revision and SHA-256 pins and loads it locally. See [pre-made models](./premade-models.md#nvidia-cuda) for hardware and storage requirements.
 
 ### Example
 

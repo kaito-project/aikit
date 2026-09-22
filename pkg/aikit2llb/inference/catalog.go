@@ -47,15 +47,6 @@ func ResolveBackendWithResolver(c *config.InferenceConfig, platform specs.Platfo
 		return backendcatalog.Resolution{}, errors.New("only one backend is supported at this time")
 	}
 
-	if c.Runner != nil && *c.Runner {
-		if family == "" {
-			return backendcatalog.Resolution{}, errors.New("runner mode requires an explicit backend")
-		}
-		if len(c.Models) > 0 {
-			return backendcatalog.Resolution{}, errors.New("runner mode cannot include embedded models")
-		}
-	}
-
 	runtime := requestedRuntime(c.Runtime)
 
 	resolution, err := resolver.Resolve(backendcatalog.Request{

@@ -8,11 +8,10 @@ title: Inference API Specifications
 apiVersion: # required. only v1alpha1 is supported at the moment
 debug: # optional. if set to true, debug logs will be printed
 runtime: # optional. omit for CPU; can be "cpu", "cuda", "cuda-12", "cuda-13", "rocm", or "applesilicon"
-runner: # optional. true requests runner mode; false requests standard mode; omit for automatic selection
 backends: # optional. list containing at most one family from the embedded catalog; omit for the catalog default
 loadToMemory: # optional. list of LocalAI model config names to load when the container starts
   - model-name
-models: # optional. list of models to embed; must be empty for runner mode (see runners.md)
+models: # optional. list of models to embed. an explicit backend with no models requests runner mode (see runners.md)
   - name: # required. name of the model
     source: # required. source of the model. can be a url or a local file
     sha256: # optional. sha256 hash of the model file
@@ -27,7 +26,7 @@ If omitted, `runtime` uses CPU. Backend, runtime, and platform compatibility com
 :::
 
 :::tip
-When `runner` is omitted, AIKit enters **runner mode** when `backends` contains one family and `models` is empty. Other builds use standard mode. Set `runner: false` to start LocalAI directly with an inline `config`, even when the backend downloads its model on first use. Set `runner: true` to request runner mode explicitly; it requires one explicit backend and no embedded models. Runner mode also requires an audited `runnerProfile` in the resolved catalog entry. The profile is catalog policy, not an aikitfile field. See [Runner Images](runners.md).
+AIKit enters **runner mode** only when `backends` contains one family and `models` is empty. Every other inference build uses standard mode. Runner mode is available only when the resolved catalog entry has an explicit `runnerProfile`; this is catalog policy, not an aikitfile field. See [Runner Images](runners.md).
 :::
 
 ### Backend catalog selection

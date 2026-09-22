@@ -56,7 +56,7 @@ The recommended presets are listed below. Image names use the prefix `ghcr.io/ka
 
 Gemma 4 uses Google's [Apache 2.0 license](https://ai.google.dev/gemma/apache_2).
 
-| Model | Image | API model ID | GGUF size |
+| Model | Image | API model ID | Model files |
 | --- | --- | --- | --- |
 | [Qwen 3.5 2B](https://huggingface.co/Qwen/Qwen3.5-2B) | `qwen3.5:2b` | `qwen-3.5-2b` | 1.28 GB |
 | [Qwen 3.5 4B](https://huggingface.co/Qwen/Qwen3.5-4B), quickstart | `qwen3.5:4b` | `qwen-3.5-4b` | 2.74 GB |
@@ -66,9 +66,9 @@ Gemma 4 uses Google's [Apache 2.0 license](https://ai.google.dev/gemma/apache_2)
 | [Devstral Small 2 24B](https://huggingface.co/mistralai/Devstral-Small-2-24B-Instruct-2512), coding | `devstral-small2:24b` | `devstral-small-2-24b-instruct` | 14.33 GB |
 | [GPT-OSS 20B](https://huggingface.co/openai/gpt-oss-20b) | `gpt-oss:20b` | `gpt-oss-20b` | 12.11 GB |
 | [GPT-OSS 120B](https://huggingface.co/openai/gpt-oss-120b) | `gpt-oss:120b` | `gpt-oss-120b` | 63.39 GB |
-| [FLUX.2 Klein 4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B), image generation | `flux2:klein-4b` | `flux-2-klein-4b` | Downloads on first use |
+| [FLUX.2 Klein 4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B), image generation | `flux2:klein-4b` | `flux-2-klein-4b` | 15.98 GB |
 
-GGUF sizes are weight downloads, not runtime memory requirements or complete image sizes. The text presets include no multimodal projectors. Gemma's E2B label describes effective parameters; its full model including embeddings is about 5.1B parameters.
+Sizes cover model files; allow additional space for the runtime and memory for inference. The text presets include no multimodal projectors. Gemma's E2B label describes effective parameters; its full model including embeddings is about 5.1B parameters.
 
 Llama 3.2 1B/3B, Llama 3.1 8B, Llama 3.3 70B, and Phi 4 14B remain maintained compatibility options with their existing image tags and API IDs. Gemma 2, Mixtral 8x7B, QwQ 32B, Codestral 22B, and FLUX.1 Dev are retired from publishing and weekly patching. See [pre-made models](https://kaito-project.github.io/aikit/docs/premade-models) for compatibility tags and migration guidance.
 
@@ -80,7 +80,7 @@ Text images support AMD64 and ARM64 and include a CPU backend. Docker selects th
 docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:4b
 ```
 
-FLUX.2 uses the experimental CUDA 12 backend plan on AMD64 and downloads weights from Hugging Face on first use. See [image generation requirements](https://kaito-project.github.io/aikit/docs/premade-models#nvidia-cuda).
+FLUX.2 uses the experimental CUDA 12 backend plan on AMD64 and includes the complete Diffusers pipeline in the image. See [image generation requirements](https://kaito-project.github.io/aikit/docs/premade-models#nvidia-cuda).
 
 ### Apple Silicon, experimental
 

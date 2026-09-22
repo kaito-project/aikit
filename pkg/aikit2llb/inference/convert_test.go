@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -11,7 +12,9 @@ import (
 	"github.com/kaito-project/aikit/pkg/backendcatalog"
 	"github.com/kaito-project/aikit/pkg/utils"
 	"github.com/moby/buildkit/client/llb"
+	"github.com/moby/buildkit/solver/pb"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
+	"gopkg.in/yaml.v2"
 )
 
 const (
@@ -20,6 +23,29 @@ const (
 )
 
 func TestAikit2LLBFluxPreset(t *testing.T) {
+	const modelName = "flux-2-klein-4b"
+	requiredFiles := []string{
+		"LICENSE.md",
+		"model_index.json",
+		"scheduler/scheduler_config.json",
+		"text_encoder/config.json",
+		"text_encoder/generation_config.json",
+		"text_encoder/model-00001-of-00002.safetensors",
+		"text_encoder/model-00002-of-00002.safetensors",
+		"text_encoder/model.safetensors.index.json",
+		"tokenizer/added_tokens.json",
+		"tokenizer/chat_template.jinja",
+		"tokenizer/merges.txt",
+		"tokenizer/special_tokens_map.json",
+		"tokenizer/tokenizer.json",
+		"tokenizer/tokenizer_config.json",
+		"tokenizer/vocab.json",
+		"transformer/config.json",
+		"transformer/diffusion_pytorch_model.safetensors",
+		"vae/config.json",
+		"vae/diffusion_pytorch_model.safetensors",
+	}
+
 	data, err := os.ReadFile("../../../models/flux-2-klein-4b.yaml")
 	if err != nil {
 		t.Fatalf("read FLUX preset: %v", err)
@@ -28,6 +54,25 @@ func TestAikit2LLBFluxPreset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse FLUX preset: %v", err)
 	}
+	var modelConfigs []struct {
+		Parameters struct {
+			Model string `yaml:"model"`
+		} `yaml:"parameters"`
+	}
+	if err := yaml.Unmarshal([]byte(cfg.Config), &modelConfigs); err != nil {
+		t.Fatalf("parse FLUX runtime configuration: %v", err)
+	}
+	if len(modelConfigs) != 1 || modelConfigs[0].Parameters.Model != modelName {
+		t.Fatalf("FLUX runtime must load the bundled %q directory, got %#v", modelName, modelConfigs)
+	}
+	if len(cfg.Models) != len(requiredFiles) {
+		t.Fatalf("FLUX preset has %d model files, want %d pipeline files", len(cfg.Models), len(requiredFiles))
+	}
+	models := make(map[string]config.Model, len(cfg.Models))
+	for _, model := range cfg.Models {
+		models[model.Name] = model
+	}
+
 	platform := &specs.Platform{OS: utils.PlatformLinux, Architecture: utils.PlatformAMD64}
 	backend, err := ResolveBackend(cfg, *platform)
 	if err != nil {
@@ -56,12 +101,20 @@ func TestAikit2LLBFluxPreset(t *testing.T) {
 		t.Fatalf("marshal FLUX definition: %v", err)
 	}
 	foundConfig := false
+	downloads := make(map[string]string)
+	copiedFiles := make(map[string]bool)
 	for _, graphOp := range decodeInferenceDefinition(t, definition) {
+		if source := graphOp.op.GetSource(); source != nil {
+			downloads[source.Identifier] = source.Attrs[pb.AttrHTTPChecksum]
+		}
 		file := graphOp.op.GetFile()
 		if file == nil {
 			continue
 		}
 		for _, action := range file.Actions {
+			if copied := action.GetCopy(); copied != nil {
+				copiedFiles[copied.Dest] = true
+			}
 			mkfile := action.GetMkfile()
 			if mkfile == nil {
 				continue
@@ -79,6 +132,23 @@ func TestAikit2LLBFluxPreset(t *testing.T) {
 	}
 	if !foundConfig {
 		t.Fatal("FLUX image definition is missing its baked configuration")
+	}
+	for _, file := range requiredFiles {
+		model, ok := models[modelName+"/"+file]
+		if !ok {
+			t.Errorf("FLUX preset is missing %s", file)
+			continue
+		}
+		pinnedSource := regexp.MustCompile(`^https://huggingface.co/black-forest-labs/FLUX\.2-klein-4B/resolve/[0-9a-f]{40}/` + regexp.QuoteMeta(file) + `$`)
+		if !pinnedSource.MatchString(model.Source) {
+			t.Errorf("FLUX file %s must use its revision-pinned upstream path, got %q", file, model.Source)
+		}
+		if len(model.SHA256) != 64 || downloads[model.Source] != "sha256:"+model.SHA256 {
+			t.Errorf("FLUX file %s is missing its build-time SHA-256 check", file)
+		}
+		if !copiedFiles["/models/"+model.Name] {
+			t.Errorf("FLUX file %s is missing from the image's pipeline directory", file)
+		}
 	}
 }
 

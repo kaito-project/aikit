@@ -33,13 +33,9 @@ const (
 		"pip install --no-cache-dir --no-compile huggingface-hub==" + runnerHuggingFaceHubVersion + ")"
 )
 
-// isRunnerMode honors an explicit mode or defaults to runner mode for configs
-// that define backends but no models.
+// isRunnerMode returns true when the config defines backends but no models,
+// indicating a "runner" image that resolves models at runtime.
 func isRunnerMode(c *config.InferenceConfig) bool {
-	if c.Runner != nil {
-		return *c.Runner
-	}
-
 	return len(c.Backends) > 0 && len(c.Models) == 0
 }
 
