@@ -111,7 +111,7 @@ If it doesn't include a specific model, you can always [create your own images](
 > [!NOTE]
 > To enable NVIDIA GPU acceleration, please see [GPU Acceleration](https://kaito-project.github.io/aikit/docs/gpu).
 >
-> Published pre-made GPU images include NVIDIA CUDA libraries. For the NVIDIA CUDA commands below, the only difference from the CPU section is the `--gpus all` flag.
+> Published pre-made GPU images include NVIDIA CUDA libraries. For models also listed in the CPU section, the NVIDIA CUDA commands below add the `--gpus all` flag.
 
 | Model           | Optimization  | Parameters | Command                                                                                | Model Name               | License                                                                                                                     |
 | --------------- | ------------- | ---------- | -------------------------------------------------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
