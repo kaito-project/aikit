@@ -82,6 +82,13 @@ AIKit comes with pre-made models that you can use out-of-the-box!
 
 If it doesn't include a specific model, you can always [create your own images](https://kaito-project.github.io/aikit/docs/create-images), and host in a container registry of your choice!
 
+Qwen3-TTS is available as a buildable preset; its GHCR images are not published yet.
+The Base model requires a reference WAV recording. Use the build-and-run links in the CUDA and Apple Silicon tables.
+
+[qwen3-tts-cuda]: https://kaito-project.github.io/aikit/docs/llama-cpp#nvidia-cuda
+[qwen3-tts-applesilicon]: https://kaito-project.github.io/aikit/docs/llama-cpp#apple-silicon
+[qwen3-tts-license]: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base
+
 ## CPU
 
 > [!NOTE]
@@ -119,6 +126,7 @@ If it doesn't include a specific model, you can always [create your own images](
 | Qwen 3.5 | Instruct | 4B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:4b` | `qwen-3.5-4b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
 | Qwen 3.5 | Instruct | 9B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:9b` | `qwen-3.5-9b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
 | Qwen 3.8 | Instruct | 27B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.8:27b` | `qwen-3.8-27b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen3-TTS Base | Text to speech | 1.7B | [Build and run locally][qwen3-tts-cuda] | `qwen3-tts` | [Apache 2.0][qwen3-tts-license] |
 | 🔡 Gemma 4 E2B | Instruct | 5.1B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/gemma4:e2b` | `gemma-4-e2b-instruct` | [Apache 2.0](https://ai.google.dev/gemma/apache_2) |
 | Devstral Small 2 | Code | 24B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/devstral-small2:24b` | `devstral-small-2-24b-instruct` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
 | 📸 Flux 2 Klein | Text to image | 4B | `docker run -d --rm --gpus all -p 8080:8080 ghcr.io/kaito-project/aikit/flux2:klein-4b` | `flux-2-klein-4b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
@@ -154,6 +162,7 @@ If it doesn't include a specific model, you can always [create your own images](
 | Qwen 3.5 | Instruct | 4B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/qwen3.5:4b` | `qwen-3.5-4b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
 | Qwen 3.5 | Instruct | 9B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/qwen3.5:9b` | `qwen-3.5-9b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
 | Qwen 3.8 | Instruct | 27B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/qwen3.8:27b` | `qwen-3.8-27b` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
+| Qwen3-TTS Base | Text to speech | 1.7B | [Build and run locally][qwen3-tts-applesilicon] | `qwen3-tts` | [Apache 2.0][qwen3-tts-license] |
 | 🔡 Gemma 4 E2B | Instruct | 5.1B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/gemma4:e2b` | `gemma-4-e2b-instruct` | [Apache 2.0](https://ai.google.dev/gemma/apache_2) |
 | Devstral Small 2 | Code | 24B | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/devstral-small2:24b` | `devstral-small-2-24b-instruct` | [Apache 2.0](https://choosealicense.com/licenses/apache-2.0/) |
 | 🦙 Llama 3.2 | Instruct     | 1B         | `podman run -d --rm --device /dev/dri -p 8080:8080 ghcr.io/kaito-project/aikit/applesilicon/llama3.2:1b` | `llama-3.2-1b-instruct` | [Llama](https://ai.meta.com/llama/license/)                                        |
