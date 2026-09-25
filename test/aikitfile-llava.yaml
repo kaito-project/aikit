@@ -22,9 +22,9 @@ config: |
     mmap: true
     mmproj: mmproj-model-f16.gguf
     roles:
-      user: \"USER:\"
-      assistant: \"ASSISTANT:\"
-      system: \"SYSTEM:\"
+      user: "USER:"
+      assistant: "ASSISTANT:"
+      system: "SYSTEM:"
     parameters:
       model: ggml-model-q4_k.gguf
       temperature: 0.2

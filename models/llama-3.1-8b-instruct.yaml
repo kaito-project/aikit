@@ -1,78 +1,24 @@
 #syntax=ghcr.io/kaito-project/aikit/aikit:latest
 apiVersion: v1alpha1
-debug: true
 runtime: cuda
 models:
   - name: llama-3.1-8b-instruct
-    source: https://huggingface.co/QuantFactory/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct.Q4_K_M.gguf
-    sha256: "6d86fb9d2910178f5c744234fdf91910e033ef7b03c5e23dcc6d25e98687e5fa"
-    promptTemplates:
-      - name: chatMsg
-        template: |
-          <|start_header_id|>{{if eq .RoleName \"assistant\"}}assistant{{else if eq .RoleName \"system\"}}system{{else if eq .RoleName \"tool\"}}tool{{else if eq .RoleName \"user\"}}user{{end}}<|end_header_id|>
-
-          {{ if .FunctionCall -}}
-          Function call:
-          {{ else if eq .RoleName \"tool\" -}}
-          Function response:
-          {{ end -}}
-          {{ if .Content -}}
-          {{.Content -}}
-          {{ else if .FunctionCall -}}
-          {{ toJson .FunctionCall -}}
-          {{ end -}}
-          <|eot_id|>
-      - name: function
-        template: |
-          <|start_header_id|>system<|end_header_id|>
-
-          You have access to the following functions:
-
-          {{range .Functions}}
-          Use the function '{{.Name}}' to '{{.Description}}'
-          {{toJson .Parameters}}
-          {{end}}
-
-          Think very carefully before calling functions.
-          If a you choose to call a function ONLY reply in the following format with no prefix or suffix:
-
-          <function=example_function_name>{{`{{\"example_name\": \"example_value\"}}`}}</function>
-
-          Reminder:
-          - If looking for real time information use relevant functions before falling back to searching on internet
-          - Function calls MUST follow the specified format, start with <function= and end with </function>
-          - Required parameters MUST be specified
-          - Only call one function at a time
-          - Put the entire function call reply on one line
-          <|eot_id|>
-          {{.Input }}
-          <|start_header_id|>assistant<|end_header_id|>
-      - name: chat
-        template: |
-          {{.Input }}
-          <|start_header_id|>assistant<|end_header_id|>
-      - name: completion
-        template: |
-          {{.Input}}
+    source: https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/bf5b95e96dac0462e2a09145ec66cae9a3f12067/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf
+    sha256: 7b064f5842bf9532c91456deda288a1b672397a54fa729aa665952863033557c
 config: |
   - name: llama-3.1-8b-instruct
-    backend: llama
-    function:
-      disable_no_action: true
-      grammar:
-        disable: false
-      json_regex_match:
-      - "(?s)\\{.*\\}"
+    backend: llama-cpp
     parameters:
-      model: Meta-Llama-3.1-8B-Instruct.Q4_K_M.gguf
+      model: Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf
+      temperature: 0.6
+      top_p: 0.9
+      repeat_penalty: 1.0
     f16: true
+    mmap: true
     template:
-      chat_message: \"chatMsg\"
-      function: \"function\"
-      chat: \"chat\"
-      completion: \"completion\"
-    stopwords:
-      - <|im_end|>
-      - <dummy32000>
-      - \"<|eot_id|>\"
-      - <|end_of_text|>
+      use_tokenizer_template: true
+    options:
+      - "use_jinja:true"
+    function:
+      grammar:
+        disable: true
