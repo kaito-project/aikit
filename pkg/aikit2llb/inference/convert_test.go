@@ -89,7 +89,7 @@ func TestAikit2LLBFluxPreset(t *testing.T) {
 	if !reflect.DeepEqual(img.Config.Entrypoint, []string{localAIEntrypointCommand}) {
 		t.Errorf("entrypoint = %v, want LocalAI without a runner model argument", img.Config.Entrypoint)
 	}
-	if want := []string{imageTestDebugArgument, "--config-file=/config.yaml"}; !reflect.DeepEqual(img.Config.Cmd, want) {
+	if want := []string{"--config-file=/config.yaml"}; !reflect.DeepEqual(img.Config.Cmd, want) {
 		t.Errorf("command = %v, want %v", img.Config.Cmd, want)
 	}
 	if img.Config.Labels["ai.kaito.aikit.runner"] != "" {

@@ -1,6 +1,5 @@
 #syntax=ghcr.io/kaito-project/aikit/aikit:latest
 apiVersion: v1alpha1
-debug: true
 runtime: cuda
 models:
   - name: devstral-small-2-24b-instruct
@@ -13,7 +12,6 @@ config: |
       model: mistralai_Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf
       temperature: 0.15
       repeat_penalty: 1.0
-    context_size: 8192
     f16: true
     mmap: true
     template:

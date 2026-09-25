@@ -127,21 +127,21 @@ models:
     promptTemplates:
       - name: "llama-2-7b-chat"
         template: |
-          {{if eq .RoleName \"assistant\"}}{{.Content}}{{else}}
+          {{if eq .RoleName "assistant"}}{{.Content}}{{else}}
           [INST]
-          {{if .SystemPrompt}}{{.SystemPrompt}}{{else if eq .RoleName \"system\"}}<<SYS>>{{.Content}}<</SYS>>
+          {{if .SystemPrompt}}{{.SystemPrompt}}{{else if eq .RoleName "system"}}<<SYS>>{{.Content}}<</SYS>>
 
           {{else if .Content}}{{.Content}}{{end}}
           [/INST]
           {{end}}
 config: |
-  - name: \"llama-2-7b-chat\"
-    backend: \"llama\"
+  - name: "llama-2-7b-chat"
+    backend: "llama"
     parameters:
       top_k: 80
       temperature: 0.2
       top_p: 0.7
-      model: \"llama-2-7b-chat.Q4_K_M.gguf\"
+      model: "llama-2-7b-chat.Q4_K_M.gguf"
     context_size: 4096
     roles:
       function: 'Function Result:'
@@ -150,6 +150,6 @@ config: |
       user: 'User:'
       system: 'System:'
     template:
-      chat_message: \"llama-2-7b-chat\"
-    system_prompt: \"You are a helpful assistant, below is a conversation, please respond with the next message and do not ask follow-up questions\"
+      chat_message: "llama-2-7b-chat"
+    system_prompt: "You are a helpful assistant, below is a conversation, please respond with the next message and do not ask follow-up questions"
 ```
