@@ -65,7 +65,6 @@ config: |
       - "(?s)\\{.*\\}"
     parameters:
       model: Meta-Llama-3.1-8B-Instruct.Q4_K_M.gguf
-    context_size: 8192
     f16: true
     template:
       chat_message: \"chatMsg\"

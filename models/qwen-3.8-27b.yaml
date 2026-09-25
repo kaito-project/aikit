@@ -17,7 +17,6 @@ config: |
       min_p: 0.0
       presence_penalty: 1.5
       repeat_penalty: 1.0
-    context_size: 8192
     f16: true
     mmap: true
     reasoning_effort: none

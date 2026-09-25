@@ -11,7 +11,6 @@ config: |
     backend: llama
     parameters:
       model: phi-4-Q4_K_M.gguf
-    context_size: 4096
     template:
       chat_message: |
         <|im_start|>{{ .RoleName }}<|im_sep|>
