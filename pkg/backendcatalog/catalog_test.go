@@ -55,7 +55,7 @@ func TestDefaultResolvesCurrentRunnerTuples(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse default catalog: %v", err)
 	}
-	if got, want := len(catalog.Entries), 559; got != want {
+	if got, want := len(catalog.Entries), 563; got != want {
 		t.Fatalf("default entry count = %d, want %d", got, want)
 	}
 	if !regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(catalog.Digest()) {
@@ -233,7 +233,7 @@ func TestDefaultMapsPublicRuntimesToInternalSelectors(t *testing.T) {
 		{name: "family L4T CUDA 13 alias arm64", family: testFamilyVLLMCpp, runtime: RuntimeCUDA, architecture: testArchitectureARM64, wantSelector: SelectorNVIDIAL4T, wantTarget: TargetProfileL4TCUDA13},
 		{name: "exact CUDA 12 amd64", runtime: RuntimeCUDA12, architecture: testArchitectureAMD64, wantSelector: SelectorNVIDIACUDA12, wantTarget: TargetProfileCUDA12},
 		{name: "exact CUDA 12 arm64", runtime: RuntimeCUDA12, architecture: testArchitectureARM64, wantSelector: SelectorL4TCUDA12, wantTarget: TargetProfileL4TCUDA12},
-		{name: "exact CUDA 13 amd64", runtime: RuntimeCUDA13, architecture: testArchitectureAMD64, wantSelector: SelectorNVIDIACUDA13, wantTarget: TargetProfileCUDA13},
+		{name: "exact CUDA 13 amd64", family: testFamilyVLLMCpp, runtime: RuntimeCUDA13, architecture: testArchitectureAMD64, wantSelector: SelectorNVIDIACUDA13, wantTarget: TargetProfileCUDA13},
 		{name: "exact CUDA 13 arm64", runtime: RuntimeCUDA13, architecture: testArchitectureARM64, wantSelector: SelectorL4TCUDA13, wantTarget: TargetProfileL4TCUDA13},
 		{name: "ROCm amd64", runtime: RuntimeROCm, architecture: testArchitectureAMD64, wantSelector: SelectorAMD, wantTarget: TargetProfileROCm},
 		{name: "Apple Silicon arm64", runtime: RuntimeAppleSilicon, architecture: testArchitectureARM64, wantSelector: SelectorVulkan, wantTarget: TargetProfileVulkan},
@@ -277,6 +277,13 @@ func TestResolverRejectsUnsupportedPublicRuntimeTuples(t *testing.T) {
 		request Request
 		wantErr error
 	}{
+		{
+			name: "unpublished llama CUDA 13 does not select CUDA 12",
+			request: Request{Family: testFamilyLlamaCpp, Runtime: RuntimeCUDA13, Platform: Platform{
+				OS: testOSLinux, Architecture: testArchitectureAMD64,
+			}},
+			wantErr: ErrNotFound,
+		},
 		{
 			name: "exact CUDA 12 does not select vllm-cpp CUDA 13",
 			request: Request{Family: testFamilyVLLMCpp, Runtime: RuntimeCUDA12, Platform: Platform{
