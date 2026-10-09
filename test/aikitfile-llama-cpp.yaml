@@ -10,11 +10,11 @@ models:
     promptTemplates:
       - name: chatMsg
         template: |
-          <|start_header_id|>{{if eq .RoleName \"assistant\"}}assistant{{else if eq .RoleName \"system\"}}system{{else if eq .RoleName \"tool\"}}tool{{else if eq .RoleName \"user\"}}user{{end}}<|end_header_id|>
+          <|start_header_id|>{{if eq .RoleName "assistant"}}assistant{{else if eq .RoleName "system"}}system{{else if eq .RoleName "tool"}}tool{{else if eq .RoleName "user"}}user{{end}}<|end_header_id|>
 
           {{ if .FunctionCall -}}
           Function call:
-          {{ else if eq .RoleName \"tool\" -}}
+          {{ else if eq .RoleName "tool" -}}
           Function response:
           {{ end -}}
           {{ if .Content -}}
@@ -37,7 +37,7 @@ models:
           Think very carefully before calling functions.
           If a you choose to call a function ONLY reply in the following format with no prefix or suffix:
 
-          <function=example_function_name>{{`{{\"example_name\": \"example_value\"}}`}}</function>
+          <function=example_function_name>{"example_name": "example_value"}</function>
 
           Reminder:
           - If looking for real time information use relevant functions before falling back to searching on internet
@@ -68,10 +68,10 @@ config: |
       model: Llama-3.2-1B-Instruct.Q4_K_M.gguf
     context_size: 8192
     template:
-      chat_message: \"chatMsg\"
-      function: \"function\"
-      chat: \"chat\"
-      completion: \"completion\"
+      chat_message: "chatMsg"
+      function: "function"
+      chat: "chat"
+      completion: "completion"
     stopwords:
       - <|im_end|>
       - <dummy32000>

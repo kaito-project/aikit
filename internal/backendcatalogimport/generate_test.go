@@ -880,15 +880,21 @@ func TestUnavailableSourcePolicyCannotOverlapReviewedOverlay(t *testing.T) {
 }
 
 func TestUnavailableSourcePolicyMatchingIsExact(t *testing.T) {
-	policy := reviewedUnavailableSources[0]
-	if _, found := reviewedUnavailableSource(policy.Version, policy.Family, policy.Selector, policy.Target, policy.SourceRef); !found {
-		t.Fatal("reviewedUnavailableSource() did not find exact policy")
-	}
-	if _, found := reviewedUnavailableSource(policy.Version, policy.Family, policy.Selector, "rocm-renamed-turboquant", policy.SourceRef); found {
-		t.Fatal("reviewedUnavailableSource() matched a different target")
-	}
-	if _, found := reviewedUnavailableSource(policy.Version, policy.Family, policy.Selector, policy.Target, policy.SourceRef+"-moved"); found {
-		t.Fatal("reviewedUnavailableSource() matched a different source reference")
+	for _, policy := range reviewedUnavailableSources {
+		t.Run(policy.Family+"/"+policy.Selector, func(t *testing.T) {
+			if _, found := reviewedUnavailableSource(policy.Version, policy.Family, policy.Selector, policy.Target, policy.SourceRef); !found {
+				t.Fatal("reviewedUnavailableSource() did not find exact policy")
+			}
+			if _, found := reviewedUnavailableSource(policy.Version, policy.Family, policy.Selector, policy.Target+"-renamed", policy.SourceRef); found {
+				t.Fatal("reviewedUnavailableSource() matched a different target")
+			}
+			if _, found := reviewedUnavailableSource(policy.Version, policy.Family, policy.Selector, policy.Target, policy.SourceRef+"-moved"); found {
+				t.Fatal("reviewedUnavailableSource() matched a different source reference")
+			}
+			if _, found := reviewedUnavailableSource(fixtureFutureVersion, policy.Family, policy.Selector, policy.Target, policy.SourceRef); found {
+				t.Fatal("reviewedUnavailableSource() matched a different release version")
+			}
+		})
 	}
 }
 

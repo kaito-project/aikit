@@ -36,7 +36,7 @@ jobs:
           - https
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@351661ca32ac09a36dc5ee2d536e3128f2a3c8ed # v2.22.0
         with:
           egress-policy: audit
           allowed-endpoints: >
@@ -62,7 +62,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # need containerd image store for testing local images
-      - uses: crazy-max/ghaction-setup-docker@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0
+      - uses: crazy-max/ghaction-setup-docker@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5.5.0
         with:
           version: version=v27.5.1
           daemon-config: |
@@ -118,21 +118,10 @@ jobs:
         run: docker images
 
       - name: run test model
-        run: docker run --name testmodel -d -p 8080:8080 testmodel:test
+        run: docker run --name testmodel -d -p 8080:8080 -e LOCALAI_CONTEXT_SIZE=1024 testmodel:test
 
       - name: run llama test
-        run: |
-          set -e
-          result=$(curl --fail --retry 10 --retry-all-errors \
-            http://127.0.0.1:8080/v1/chat/completions \
-            -H "Content-Type: application/json" \
-            -d "{\"model\": \"${MODEL_NAME}\", \"messages\": [{\"role\": \"user\", \"content\": \"explain kubernetes in a sentence\"}]}")
-          echo $result
-
-          choices=$(echo "$result" | jq '.choices')
-          if [ -z "$choices" ]; then
-            exit 1
-          fi
+        run: bash test/ci/llama-smoke.sh "$MODEL_NAME"
 
       - name: save logs
         if: always()

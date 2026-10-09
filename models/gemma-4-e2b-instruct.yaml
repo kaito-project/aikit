@@ -1,0 +1,26 @@
+#syntax=ghcr.io/kaito-project/aikit/aikit:latest
+apiVersion: v1alpha1
+runtime: cuda
+models:
+  - name: gemma-4-e2b-instruct
+    source: https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/675cff42a74c774d6cb76f76d8eacb49b48c9b93/gemma-4-E2B_q4_0-it.gguf
+    sha256: fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634
+config: |
+  - name: gemma-4-e2b-instruct
+    backend: llama-cpp
+    parameters:
+      model: gemma-4-E2B_q4_0-it.gguf
+      temperature: 1.0
+      top_p: 0.95
+      top_k: 64
+      repeat_penalty: 1.0
+    f16: true
+    mmap: true
+    reasoning_effort: none
+    template:
+      use_tokenizer_template: true
+    options:
+      - "use_jinja:true"
+    function:
+      grammar:
+        disable: true

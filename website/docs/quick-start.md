@@ -5,7 +5,7 @@ title: Quick Start
 You can get started with AIKit quickly on your local machine without a GPU!
 
 ```bash
-docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/llama3.1:8b
+docker run -d --rm -p 8080:8080 ghcr.io/kaito-project/aikit/qwen3.5:4b
 ```
 
 After running this, navigate to [http://localhost:8080/chat](http://localhost:8080/chat) to access the WebUI.
@@ -18,7 +18,7 @@ For example:
 
 ```bash
 curl http://localhost:8080/v1/chat/completions -H "Content-Type: application/json" -d '{
-    "model": "llama-3.1-8b-instruct",
+    "model": "qwen-3.5-4b",
     "messages": [{"role": "user", "content": "explain kubernetes in a sentence"}]
   }'
 ```
@@ -28,7 +28,7 @@ Output should be similar to:
 ```jsonc
 {
   // ...
-    "model": "llama-3.1-8b-instruct",
+    "model": "qwen-3.5-4b",
     "choices": [
         {
             "index": 0,
@@ -51,7 +51,7 @@ https://www.youtube.com/watch?v=O0AOnxXp-o4
 
 ## What's next?
 
-👉 If you are interested in other pre-made models (such as Gemma, Mixtral or Phi), please refer to [Pre-made models](./premade-models.md).
+👉 If you are interested in other pre-made models (such as Gemma, Qwen or Phi), please refer to [Pre-made models](./premade-models.md).
 
 👉  If you are interested in learning more about how to create your own custom model images, please refer to [Creating Model Images](./create-images.md).
 

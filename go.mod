@@ -1,24 +1,24 @@
 module github.com/kaito-project/aikit
 
-go 1.26.3
+go 1.26.8
 
 require (
 	github.com/containerd/platforms v1.0.0-rc.5
-	github.com/moby/buildkit v0.33.0
+	github.com/moby/buildkit v0.33.1
 	github.com/modelpack/model-spec v0.0.7
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/pkg/errors v0.9.1
 	github.com/sirupsen/logrus v1.10.2
 	golang.org/x/sync v0.23.0
-	google.golang.org/grpc v1.83.2
+	google.golang.org/grpc v1.84.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (
 	github.com/agext/levenshtein v1.2.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/containerd/containerd/v2 v2.3.4 // indirect
+	github.com/containerd/containerd/v2 v2.3.6 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/ttrpc v1.2.9 // indirect
@@ -52,7 +52,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/crypto v0.56.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
