@@ -40,8 +40,8 @@
   },
   "qwen3-tts-1.7b-base": {
     "image": "qwen3-tts",
-    "tag": "1.7b",
-    "alias": "1.7b-base"
+    "tag": "1.7b-base",
+    "alias": "1.7b"
   },
   "llama-3.2-1b-instruct": {
     "image": "llama3.2",
