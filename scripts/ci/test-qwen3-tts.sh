@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-  echo "Usage: $0 <docker|podman> <image> <artifact-directory>" >&2
+if [[ $# -lt 3 || $# -gt 4 ]]; then
+  echo "Usage: $0 <docker|podman> <image> <artifact-directory> [gpu|cpu]" >&2
   exit 2
 fi
 
 engine=$1
 image=$2
-case "$engine" in
-  docker)
+mode=${4:-gpu}
+gpu_args=()
+case "$engine:$mode" in
+  docker:gpu)
     gpu_args=(--gpus all)
     device_pattern='using device CUDA[0-9]+'
     ;;
-  podman)
+  podman:gpu)
     gpu_args=(--device /dev/dri)
     device_pattern='using device Vulkan[0-9]+ \(Virtio-GPU Venus.*Apple'
     ;;
+  docker:cpu | podman:cpu) ;;
   *)
-    echo "Unsupported container engine: $engine" >&2
+    echo "Unsupported container engine or mode: $engine $mode" >&2
     exit 2
     ;;
 esac
@@ -54,7 +57,7 @@ container_id=$("$engine" create "$image")
 container_id=
 printf '\n  options:\n    - verbosity:4\n' >> "$artifact_dir/config.yaml"
 
-container_id=$("$engine" run -d "${gpu_args[@]}" \
+container_id=$("$engine" run -d ${gpu_args[@]+"${gpu_args[@]}"} \
   -p 127.0.0.1::8080 \
   --mount "type=bind,source=$artifact_dir/reference.wav,target=/models/reference.wav,readonly" \
   --mount "type=bind,source=$artifact_dir/config.yaml,target=/config.yaml,readonly" \
@@ -87,5 +90,9 @@ with wave.open(sys.argv[1], "rb") as audio:
 PY
 
 "$engine" logs "$container_id" > "$artifact_dir/server.log" 2>&1
-grep -E "$device_pattern" "$artifact_dir/server.log"
-grep -E 'offloaded [1-9][0-9]*/[1-9][0-9]* layers to GPU' "$artifact_dir/server.log"
+if [[ $mode == gpu ]]; then
+  grep -E "$device_pattern" "$artifact_dir/server.log"
+  grep -E 'offloaded [1-9][0-9]*/[1-9][0-9]* layers to GPU' "$artifact_dir/server.log"
+else
+  grep -E 'Loading external backend.*/backends/cpu-llama-cpp/run\.sh' "$artifact_dir/server.log"
+fi
