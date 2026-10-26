@@ -50,6 +50,8 @@ jobs:
             arch: amd64
           - backend: parakeet-cpp
             arch: amd64
+          - backend: qwen3-tts # this tests cpu inference with the published cuda preset
+            arch: amd64
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
@@ -108,6 +110,7 @@ jobs:
             --platform linux/${{ matrix.arch }}
 
       - name: build test model
+        if: matrix.backend != 'qwen3-tts'
         run: |
           CACHE_FLAGS=""
           if [ "${{ github.event.inputs.enable_cache }}" = "true" ]; then
@@ -120,11 +123,26 @@ jobs:
             --platform linux/${{ matrix.arch }} \
             ${{ matrix.backend == 'llama-cuda' && '--build-arg=runtime=cuda' || '' }}
 
+      - name: build Qwen3-TTS preset
+        if: matrix.backend == 'qwen3-tts'
+        run: |
+          docker buildx build . -t testmodel:test \
+            -f models/qwen3-tts-1.7b-base.yaml \
+            --build-arg BUILDKIT_SYNTAX=aikit:test \
+            --load --provenance=false --progress plain \
+            --platform linux/${{ matrix.arch }}
+
       - name: list images
         run: docker images
 
       - name: run test model
+        if: matrix.backend != 'qwen3-tts'
         run: docker run --name testmodel -d -p 8080:8080 --platform "linux/${{ matrix.arch }}" testmodel:test
+
+      - name: run Qwen3-TTS speech test
+        if: matrix.backend == 'qwen3-tts'
+        timeout-minutes: 15
+        run: bash scripts/ci/test-qwen3-tts.sh docker testmodel:test /tmp/qwen3-tts cpu
 
       - name: run llama test
         if: matrix.backend == 'llama' || matrix.backend == 'llama-cuda'
@@ -283,7 +301,7 @@ jobs:
             /tmp/parakeet-response.json
 
       - name: save logs
-        if: always()
+        if: always() && matrix.backend != 'qwen3-tts'
         run: docker logs testmodel > /tmp/docker-${{ matrix.backend }}-${{ matrix.arch }}.log 2>&1
 
       - name: publish test artifacts
@@ -296,6 +314,7 @@ jobs:
             /tmp/*-response.json
             /tmp/piper.wav
             /tmp/images/*.png
+            /tmp/qwen3-tts/
 
   test-protocol:
     runs-on: ubuntu-latest-16-cores
