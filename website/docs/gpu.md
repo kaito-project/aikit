@@ -266,9 +266,10 @@ AMD recommends setting VRAM to the minimum needed and using the `amd-ttm` tool t
 Apple Silicon is an experimental runtime and it may change in the future. This runtime is specific to Apple Silicon only, and it will not work as expected on other architectures, including Intel Macs.
 :::
 
-AIKit supports Apple Silicon GPU acceleration with Podman Desktop for Mac with [`libkrun`](https://github.com/containers/libkrun). Please see [Podman Desktop documentation](https://podman-desktop.io/docs/podman/gpu) on how to enable GPU support.
+Apple Silicon GPU acceleration uses a [`libkrun`](https://github.com/containers/libkrun)/[`krunkit`](https://github.com/containers/krunkit)
+virtual machine to expose the GPU through Vulkan. This section covers Podman Desktop for Mac and Docker Engine with Colima.
 
-To get started with Apple Silicon GPU-accelerated inferencing, make sure to set the following in your `aikitfile` and build your model.
+For custom images, set the runtime in your `aikitfile` and [build the image](create-images.md) for `linux/arm64`:
 
 ```yaml
 runtime: applesilicon         # use Apple Silicon runtime
@@ -276,14 +277,61 @@ runtime: applesilicon         # use Apple Silicon runtime
 
 This guide and the published Apple Silicon model images use the default `llama-cpp` Apple Silicon profile with GGUF models. A frontend release can contain other experimental Apple Silicon tuples for standard builds; catalog presence does not promise a published image or a validated end-to-end workflow, and runner mode still requires an explicit runner profile.
 
-After building the model, you can run it with:
+### Podman
+
+Follow the [Podman Desktop GPU setup](https://podman-desktop.io/docs/podman/gpu) to create a machine using `libkrun`.
+After building the model, run it with:
 
 ```bash
 # for pre-made models, replace "my-model" with the image name
 podman run --rm --device /dev/dri -p 8080:8080 my-model
 ```
 
-If GPU acceleration is working, you'll see output that is similar to following in the debug logs:
+### Colima with Docker
+
+This experimental setup requires an Apple Silicon Mac running macOS 14 or newer,
+[Colima 0.10.0 or newer](https://github.com/abiosoft/colima#ai-models-gpu-accelerated), the Docker CLI, and [krunkit](https://github.com/containers/krunkit).
+
+These commands target Colima's Docker Engine. Docker Desktop can build the images, but its
+[GPU support](https://docs.docker.com/desktop/features/gpu/) does not provide Apple GPU access to these containers.
+
+Install Colima, the Docker CLI, and krunkit with Homebrew:
+
+```bash
+brew install colima docker
+brew tap slp/krun
+brew install krunkit
+```
+
+Create a dedicated Colima profile with the `krunkit` VM type and Docker Engine:
+
+```bash
+colima start aikit-gpu --runtime docker --vm-type krunkit \
+  --memory 8 --activate=false
+```
+
+This creates the `colima-aikit-gpu` Docker context. The example allocates 8 GiB of VM memory; adjust `--memory` for your model.
+
+Run a published Apple Silicon image:
+
+```bash
+docker --context colima-aikit-gpu run --rm \
+  --device /dev/dri -p 8080:8080 \
+  ghcr.io/kaito-project/aikit/applesilicon/llama3.2:1b
+```
+
+To run a custom image, replace the image name. Docker Desktop and Colima store images separately.
+If `my-model` was built in Docker Desktop, transfer it to Colima before running it:
+
+```bash
+docker --context desktop-linux save my-model | \
+  docker --context colima-aikit-gpu load
+```
+
+### Verify GPU acceleration
+
+After sending an inference request, check the debug logs for an Apple `Virtio-GPU Venus` device
+and a nonzero number of layers offloaded to the GPU:
 
 ```bash
 6:16AM DBG GRPC(phi-3.5-3.8b-instruct-127.0.0.1:39883): stderr ggml_vulkan: Found 1 Vulkan devices:
